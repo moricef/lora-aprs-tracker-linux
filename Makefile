@@ -4,8 +4,8 @@
 CXX = g++
 CXXFLAGS = -std=c++11 -Wall -O2
 
-# RadioLib base path (adjust if needed)
-RADIO = $(HOME)/Developpement/LoRa_APRS/CA2RXU/LoRa_APRS_Tracker-devel/.pio/libdeps/ttgo_t_deck_plus_433/RadioLib/src
+# RadioLib base path (local copy)
+RADIO = lib/RadioLib
 
 INC = -Iinclude -I$(RADIO) -I$(RADIO)/modules/SX126x -I$(RADIO)/utils -I$(RADIO)/protocols/PhysicalLayer
 
@@ -30,7 +30,7 @@ TARGET = lora_rx
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CXX) $(OBJS) -o $@ -lpthread
+	$(CXX) $(OBJS) -o $@ -lpthread -lgps
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(INC) -c $< -o $@
