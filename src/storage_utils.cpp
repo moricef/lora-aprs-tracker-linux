@@ -232,6 +232,10 @@ namespace STORAGE_Utils {
     }
 
     const std::vector<String>& getLastFrames(int) { return _lastFrames; }
+    void appendFrame(const String &f) {
+        _lastFrames.push_back(f);
+        if (_lastFrames.size() > 500) _lastFrames.erase(_lastFrames.begin());
+    }
     void checkFramesLogRotation() {}  // TODO: rotate if > 1 MB
     void loadFramesFromSD() {}
 
@@ -287,6 +291,10 @@ namespace STORAGE_Utils {
     const std::vector<DigiStats>&    getDigiStats()       { return _digiStats; }
     const std::vector<StationStats>& getStationStats()    { return _stationStats; }
     const std::vector<DashboardRxEntry>& getDashboardLastRx() { return _dashRx; }
+    void addRxEntry(const DashboardRxEntry &e) {
+        _dashRx.insert(_dashRx.begin(), e);
+        if (_dashRx.size() > 4) _dashRx.resize(4);
+    }
     const std::vector<int>&   getRssiHistory()            { return _rssiHistory; }
     const std::vector<float>& getSnrHistory()             { return _snrHistory; }
 

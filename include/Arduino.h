@@ -5,6 +5,7 @@
 #include <math.h>
 #include <string>
 #include <algorithm>
+#include <unistd.h>
 #include <time.h>
 
 typedef uint8_t byte;
@@ -19,6 +20,8 @@ template<typename T> inline T sq(T x) { return x * x; }
 
 // millis() — monotonic, wraps at ~49 days like Arduino
 uint32_t millis();
+inline void delay(unsigned long ms) { usleep(ms * 1000); }
+inline void yield() {}
 
 // random(max) → [0, max-1],  random(min, max) → [min, max-1]
 inline long random(long max) { return max > 0 ? (long)(rand() % max) : 0; }

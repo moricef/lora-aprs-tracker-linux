@@ -93,6 +93,8 @@ namespace STORAGE_Utils {
     const std::vector<StationStats>& getStationStats();
 
     const std::vector<DashboardRxEntry>& getDashboardLastRx();
+    void addRxEntry(const DashboardRxEntry &e);
+    void appendFrame(const String &f);
 
     const int HISTORY_SIZE = 50;
     const std::vector<int>&   getRssiHistory();

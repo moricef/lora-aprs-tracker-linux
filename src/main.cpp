@@ -268,6 +268,11 @@ int main(int argc, char** argv) {
     }
 
     ESP_LOGI(TAG, "Loop started");
+    printf("CFG:%s,%.3f,%s\n",
+           currentBeacon->callsign.c_str(),
+           (float)currentLoRaType->frequency / 1000000.0f,
+           Config.path.c_str());
+    fflush(stdout);
     while (running) loop();
 
     LoRa_Utils::sleepRadio();
