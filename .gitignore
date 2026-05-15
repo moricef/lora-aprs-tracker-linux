@@ -1,4 +1,5 @@
 *.o
 lora_rx
-lib/
+lora_aprs_tracker
+lib/RadioLib/
 CLAUDE.md
