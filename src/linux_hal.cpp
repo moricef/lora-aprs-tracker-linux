@@ -137,15 +137,18 @@ void LinuxHal::attachInterrupt(uint32_t interruptNum, void (*interruptCb)(void),
     _irqThread = std::thread([this]() {
         int fd = gpioGetFd(_interruptPin);
         if (fd < 0) return;
+        // Clear any pending state before entering the loop
+        char buf[2];
+        lseek(fd, 0, SEEK_SET);
+        (void)!read(fd, buf, 1);
         while (_irqRunning) {
-            char buf[2];
-            lseek(fd, 0, SEEK_SET);
             fd_set fds;
             FD_ZERO(&fds);
             FD_SET(fd, &fds);
-            struct timeval tv = {0, 100000}; // 100ms timeout
+            struct timeval tv = {0, 100000};
             int ret = select(fd + 1, NULL, NULL, &fds, &tv);
             if (ret > 0) {
+                lseek(fd, 0, SEEK_SET);
                 (void)!read(fd, buf, 1);
                 if (_interruptCb) _interruptCb();
             }

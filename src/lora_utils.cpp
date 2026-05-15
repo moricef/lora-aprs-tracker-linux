@@ -198,8 +198,6 @@ namespace LoRa_Utils {
                 pkt.rssi      = (int)_radio->getRSSI();
                 pkt.snr       = _radio->getSNR();
                 pkt.freqError = (int)_radio->getFrequencyError();
-                ESP_LOGI(TAG, "RX RSSI:%d SNR:%.1f → %s",
-                         pkt.rssi, pkt.snr, pkt.text.substring(3).c_str());
             }
         } else {
             _radio->startReceive(RADIOLIB_SX126X_RX_TIMEOUT_NONE);
