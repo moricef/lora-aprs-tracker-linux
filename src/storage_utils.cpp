@@ -11,15 +11,42 @@
 
 static const char* TAG = "Storage";
 
-static const char* ROOT_DIR      = "/data/LoRa_Tracker";
-static const char* MESSAGES_DIR  = "/data/LoRa_Tracker/Messages";
-static const char* INBOX_DIR     = "/data/LoRa_Tracker/Messages/inbox";
-static const char* OUTBOX_DIR    = "/data/LoRa_Tracker/Messages/outbox";
-static const char* CONTACTS_DIR  = "/data/LoRa_Tracker/Contacts";
-static const char* CONTACTS_FILE = "/data/LoRa_Tracker/Contacts/contacts.json";
-static const char* MAPS_DIR      = "/data/LoRa_Tracker/Maps";
-static const char* STATS_FILE    = "/data/LoRa_Tracker/stats.json";
-static const char* FRAMES_FILE   = "/data/LoRa_Tracker/frames.log";
+static std::string _rootDir;
+static std::string _messagesDir, _inboxDir, _outboxDir;
+static std::string _contactsDir, _contactsFile, _mapsDir;
+static std::string _statsFile, _framesFile;
+
+static const char* ROOT_DIR      = nullptr;
+static const char* MESSAGES_DIR  = nullptr;
+static const char* INBOX_DIR     = nullptr;
+static const char* OUTBOX_DIR    = nullptr;
+static const char* CONTACTS_DIR  = nullptr;
+static const char* CONTACTS_FILE = nullptr;
+static const char* MAPS_DIR      = nullptr;
+static const char* STATS_FILE    = nullptr;
+static const char* FRAMES_FILE   = nullptr;
+
+static void initPaths() {
+    const char* env = getenv("TRACKER_DATA");
+    _rootDir      = env ? env : "/data/LoRa_Tracker";
+    _messagesDir  = _rootDir + "/Messages";
+    _inboxDir     = _rootDir + "/Messages/inbox";
+    _outboxDir    = _rootDir + "/Messages/outbox";
+    _contactsDir  = _rootDir + "/Contacts";
+    _contactsFile = _rootDir + "/Contacts/contacts.json";
+    _mapsDir      = _rootDir + "/Maps";
+    _statsFile    = _rootDir + "/stats.json";
+    _framesFile   = _rootDir + "/frames.log";
+    ROOT_DIR      = _rootDir.c_str();
+    MESSAGES_DIR  = _messagesDir.c_str();
+    INBOX_DIR     = _inboxDir.c_str();
+    OUTBOX_DIR    = _outboxDir.c_str();
+    CONTACTS_DIR  = _contactsDir.c_str();
+    CONTACTS_FILE = _contactsFile.c_str();
+    MAPS_DIR      = _mapsDir.c_str();
+    STATS_FILE    = _statsFile.c_str();
+    FRAMES_FILE   = _framesFile.c_str();
+}
 
 static LinkStats             _stats = {};
 static std::vector<DigiStats>   _digiStats;
@@ -41,6 +68,7 @@ static void mkdirP(const char* path) { mkdir(path, 0755); }
 namespace STORAGE_Utils {
 
     void setup() {
+        initPaths();
         mkdirP(ROOT_DIR);
         mkdirP(MESSAGES_DIR);
         mkdirP(INBOX_DIR);
@@ -63,24 +91,21 @@ namespace STORAGE_Utils {
     String getContactsPath() { return String(CONTACTS_DIR); }
     String getMapsPath()     { return String(MAPS_DIR); }
 
+    static std::string resolvePath(const String& path) {
+        std::string p = path.c_str();
+        if (p[0] != '/') return std::string(ROOT_DIR) + "/" + p;
+        if (p.rfind(ROOT_DIR, 0) == 0) return p; // already under root
+        if (p.rfind("/data/", 0) == 0) return p;  // SPIFFS-style
+        return std::string(ROOT_DIR) + p;
+    }
     bool fileExists(const String& path) {
+        std::string full = resolvePath(path);
         struct stat st;
-        return stat(path.c_str(), &st) == 0;
+        return stat(full.c_str(), &st) == 0;
     }
 
     File openFile(const String& path, const char* mode) {
-        // Resolve relative paths to ROOT_DIR
-        std::string fullPath;
-        if (path.c_str()[0] != '/') {
-            fullPath = std::string(ROOT_DIR) + "/" + path.c_str();
-        } else if (strncmp(path.c_str(), ROOT_DIR, strlen(ROOT_DIR)) != 0 &&
-                   strncmp(path.c_str(), "/data/", 6) != 0) {
-            // SPIFFS-style path like /aprsMessages.txt → prepend root
-            fullPath = std::string(ROOT_DIR) + path.c_str();
-        } else {
-            fullPath = path.c_str();
-        }
-        return File(fullPath.c_str(), mode);
+        return File(resolvePath(path).c_str(), mode);
     }
 
     bool removeFile(const String& path) {

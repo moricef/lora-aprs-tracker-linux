@@ -73,10 +73,10 @@ namespace MSG_Utils {
     std::vector<String>& getLoadedWLNKMails()    { return loadedWLNKMails; }
 
     void saveToConversation(const String& callsign, const String& message, bool outgoing) {
-        String convDir = STORAGE_Utils::getRootPath() + "/conversations";
+        String convDir = STORAGE_Utils::getMessagesPath() + "/conversations";
         if (!STORAGE_Utils::fileExists(convDir)) STORAGE_Utils::mkdir(convDir);
 
-        String filename = "/conversations/" + callsign + ".txt";
+        String filename = "/Messages/conversations/" + callsign + ".txt";
         if (STORAGE_Utils::fileExists(filename)) {
             File rf = STORAGE_Utils::openFile(filename, "r");
             if (rf) {
@@ -105,7 +105,7 @@ namespace MSG_Utils {
 
     std::vector<String> getConversationsList() {
         std::vector<String> callsigns;
-        String convDir = STORAGE_Utils::getRootPath() + "/conversations";
+        String convDir = STORAGE_Utils::getMessagesPath() + "/conversations";
         if (!STORAGE_Utils::fileExists(convDir)) return callsigns;
         File dir = File(convDir.c_str(), "r");
         if (!dir || !dir.isDirectory()) return callsigns;
@@ -132,7 +132,7 @@ namespace MSG_Utils {
 
     std::vector<String> getMessagesForContact(const String& callsign) {
         std::vector<String> result;
-        String filename = "/conversations/" + callsign + ".txt";
+        String filename = "/Messages/conversations/" + callsign + ".txt";
         if (!STORAGE_Utils::fileExists(filename)) return result;
         File f = STORAGE_Utils::openFile(filename, "r");
         if (!f) return result;
@@ -184,7 +184,7 @@ namespace MSG_Utils {
     void deleteFile(uint8_t typeOfFile) {
         if (typeOfFile == 0) {
             STORAGE_Utils::removeFile("/aprsMessages.txt");
-            String convDir = STORAGE_Utils::getRootPath() + "/conversations";
+            String convDir = STORAGE_Utils::getMessagesPath() + "/conversations";
             if (STORAGE_Utils::fileExists(convDir)) {
                 File dir = File(convDir.c_str(), "r");
                 if (dir && dir.isDirectory()) {
@@ -224,7 +224,7 @@ namespace MSG_Utils {
     }
 
     bool deleteMessageFromConversation(const String& callsign, int index) {
-        String filename = "/conversations/" + callsign + ".txt";
+        String filename = "/Messages/conversations/" + callsign + ".txt";
         if (!STORAGE_Utils::fileExists(filename)) return false;
         std::vector<String> msgs = getMessagesForContact(callsign);
         if (index < 0 || index >= (int)msgs.size()) return false;
