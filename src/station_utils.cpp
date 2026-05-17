@@ -279,6 +279,7 @@ namespace STATION_Utils {
         }
 
         ESP_LOGI(TAG, "TX: %s", packet.c_str());
+        printf("TX:%s\n", packet.c_str()); fflush(stdout);
         LoRa_Utils::sendNewPacket(packet);
 
         if (APRS_IS_Utils::isConnected()) APRS_IS_Utils::upload(packet);
