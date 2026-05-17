@@ -260,6 +260,7 @@ namespace STORAGE_Utils {
     void appendFrame(const String &f) {
         _lastFrames.push_back(f);
         if (_lastFrames.size() > 500) _lastFrames.erase(_lastFrames.begin());
+        _framesDirty = true;
     }
     void checkFramesLogRotation() {}  // TODO: rotate if > 1 MB
     void loadFramesFromSD() {}
@@ -283,11 +284,6 @@ namespace STORAGE_Utils {
         if ((int)_rssiHistory.size() > HISTORY_SIZE) _rssiHistory.erase(_rssiHistory.begin());
         if ((int)_snrHistory.size()  > HISTORY_SIZE) _snrHistory.erase(_snrHistory.begin());
         _statsDirty = true;
-        // Dashboard last RX
-        DashboardRxEntry e;
-        e.rssi = rssi; e.snr = snr; e.timestamp = millis();
-        _dashRx.push_back(e);
-        if (_dashRx.size() > 4) _dashRx.erase(_dashRx.begin());
     }
 
     void updateTxStats() { _stats.txCount++; _statsDirty = true; }
