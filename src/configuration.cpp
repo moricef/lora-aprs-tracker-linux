@@ -382,3 +382,7 @@ void Configuration::init() {
         writeFile();
     }
 }
+
+bool Configuration::reload() {
+    return readFile();
+}

@@ -162,6 +162,7 @@ public:
     void setDefaultValues();
     bool writeFile();
     void init();
+    bool reload();
     Configuration();
 
 private:
