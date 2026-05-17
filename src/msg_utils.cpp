@@ -359,6 +359,7 @@ namespace MSG_Utils {
 
                 message.trim();
                 saveNewMessage(0, aprs.sender, message);
+                printf("MSG:%s:%s\n", aprs.sender.c_str(), message.c_str()); fflush(stdout);
             }
         }
     }
