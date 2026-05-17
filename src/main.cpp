@@ -50,12 +50,14 @@ extern bool gpsIsActive;       // defined in gps_utils.cpp
 extern SmartBeaconValues currentSmartBeaconValues;
 
 static volatile bool running = true;
+static volatile bool reloadConfig = false;
 
 static void sigHandler(int sig) {
     if (sig == SIGUSR1) {
-        // Manual beacon trigger
         sendUpdate = true;
         ESP_LOGI(TAG, "SIGUSR1 → beacon triggered");
+    } else if (sig == SIGHUP) {
+        reloadConfig = true;
     } else {
         running = false;
     }
@@ -87,6 +89,7 @@ static void setup() {
     signal(SIGINT,  sigHandler);
     signal(SIGTERM, sigHandler);
     signal(SIGUSR1, sigHandler);
+    signal(SIGHUP,  sigHandler);
 
     ESP_LOGI(TAG, "=== LoRa APRS Tracker Linux ===");
 
@@ -135,6 +138,21 @@ static void setup() {
 
 // ─── loop() ──────────────────────────────────────────────────────────────────
 static void loop() {
+    if (reloadConfig) {
+        reloadConfig = false;
+        Config.reload();
+        myBeaconsSize   = (int)Config.beacons.size();
+        loraIndexSize   = (int)Config.loraTypes.size();
+        currentBeacon   = &Config.beacons[myBeaconsIndex];
+        currentLoRaType = &Config.loraTypes[loraIndex];
+        miceActive = APRSPacketLib::validateMicE(currentBeacon->micE);
+        LoRa_Utils::processPendingChanges();
+        ESP_LOGI(TAG, "Config reloaded: %s  %.3f MHz",
+                 currentBeacon->callsign.c_str(),
+                 (float)currentLoRaType->frequency / 1000000.0f);
+        printf("CFG:reload\n"); fflush(stdout);
+    }
+
     currentBeacon = &Config.beacons[myBeaconsIndex];
 
     if (APRSPacketLib::checkNocall(currentBeacon->callsign)) {
