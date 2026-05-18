@@ -27,6 +27,8 @@ SRCS += src/station_utils.cpp
 SRCS += src/storage_utils.cpp
 SRCS += src/msg_utils.cpp
 SRCS += src/aprs_is_utils.cpp
+SRCS += src/webconf_httpd.cpp
+SRCS += src/notification_utils.cpp
 SRCS += lib/APRSPacketLib/src/APRSPacketLib.cpp
 SRCS += lib/gps_math/gps_math.cpp
 
@@ -48,7 +50,7 @@ TARGET = lora_aprs_tracker
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CXX) $(OBJS) -o $@ -lpthread -lgps -lm
+	$(CXX) $(OBJS) -o $@ -lpthread -lgps -lm -lmicrohttpd
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(INC) -c $< -o $@

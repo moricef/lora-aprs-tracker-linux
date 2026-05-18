@@ -15,6 +15,8 @@
 #include "msg_utils.h"
 #include "aprs_is_utils.h"
 #include "linux_stubs.h"
+#include "webconf_httpd.h"
+#include "notification_utils.h"
 #include <APRSPacketLib.h>
 
 static const char* TAG = "Main";
@@ -115,6 +117,8 @@ static void setup() {
     GPS_Utils::setup();
     LoRa_Utils::setup();
     APRS_IS_Utils::setup();
+    WEBCONF::start(8080);
+    NOTIFICATION_Utils::start();
 
     miceActive = APRSPacketLib::validateMicE(currentBeacon->micE);
 
@@ -293,8 +297,10 @@ int main(int argc, char** argv) {
     fflush(stdout);
     while (running) loop();
 
+    NOTIFICATION_Utils::shutDownBeep();
     LoRa_Utils::sleepRadio();
     APRS_IS_Utils::disconnect();
+    WEBCONF::stop();
     ESP_LOGI(TAG, "Done.");
     return 0;
 }
