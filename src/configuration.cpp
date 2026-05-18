@@ -5,7 +5,15 @@
 #include "smartbeacon_utils.h"
 
 static const char* TAG = "Config";
-static const char* CONFIG_PATH = "/data/LoRa_Tracker/tracker_conf.json";
+
+static std::string _configPathStr;
+static const char* configPath() {
+    if (_configPathStr.empty()) {
+        const char *td = getenv("TRACKER_DATA");
+        _configPathStr = std::string(td ? td : "/data/LoRa_Tracker") + "/tracker_conf.json";
+    }
+    return _configPathStr.c_str();
+}
 
 using json = nlohmann::json;
 
@@ -47,15 +55,11 @@ void Configuration::setDefaultValues() {
 
     aprs_is = {false, "euro.aprs2.net", 14580, "-1"};
 
-    LoraType lt;
-    lt.frequency       = 433775000L;
-    lt.spreadingFactor = 12;
-    lt.signalBandwidth = 125000L;
-    lt.codingRate4     = 5;
-    lt.power           = 20;
-    lt.dataRate        = 300;
+    // 3 profils LoRa par défaut (freq, SF, BW, CR4, power, dataRate)
     loraTypes.clear();
-    loraTypes.push_back(lt);
+    loraTypes.push_back({433775000L, 12, 125000L, 5, 20,  300});
+    loraTypes.push_back({434855000L,  9, 125000L, 7, 20, 1200});
+    loraTypes.push_back({439912500L, 12, 125000L, 5, 20,  300});
 
     lora = {true, false};
 
@@ -71,7 +75,7 @@ void Configuration::setDefaultValues() {
 }
 
 bool Configuration::readFile() {
-    std::ifstream f(CONFIG_PATH);
+    std::ifstream f(configPath());
     if (!f.is_open()) {
         ESP_LOGW(TAG, "Config file not found, using defaults");
         return false;
@@ -347,8 +351,12 @@ bool Configuration::writeFile() {
     data["notification"]["ledMessagePin"]    = notification.ledMessagePin;
     data["notification"]["buzzerActive"]     = notification.buzzerActive;
     data["notification"]["volume"]           = notification.volume;
+    data["notification"]["bootUpBeep"]       = notification.bootUpBeep;
     data["notification"]["txBeep"]           = notification.txBeep;
     data["notification"]["messageRxBeep"]    = notification.messageRxBeep;
+    data["notification"]["stationBeep"]      = notification.stationBeep;
+    data["notification"]["shutDownBeep"]     = notification.shutDownBeep;
+    data["notification"]["lowBatteryBeep"]   = notification.lowBatteryBeep;
 
     data["pttTrigger"]["active"]    = ptt.active;
     data["pttTrigger"]["io_pin"]    = ptt.io_pin;
@@ -366,9 +374,9 @@ bool Configuration::writeFile() {
     data["other"]["disableGPS"]               = disableGPS;
     data["other"]["email"]                    = email.s;
 
-    std::ofstream f(CONFIG_PATH);
+    std::ofstream f(configPath());
     if (!f.is_open()) {
-        ESP_LOGE(TAG, "Cannot write config to %s", CONFIG_PATH);
+        ESP_LOGE(TAG, "Cannot write config to %s", configPath());
         return false;
     }
     f << data.dump(2);

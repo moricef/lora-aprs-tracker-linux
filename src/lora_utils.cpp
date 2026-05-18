@@ -5,6 +5,7 @@
 #include "lora_utils.h"
 #include "configuration.h"
 #include "storage_utils.h"
+#include "notification_utils.h"
 
 static const char* TAG = "LoRa";
 
@@ -167,6 +168,7 @@ namespace LoRa_Utils {
         transmitFlag = true;
         if (state == RADIOLIB_ERR_NONE) {
             STORAGE_Utils::updateTxStats();
+            NOTIFICATION_Utils::beaconTxBeep();
         } else {
             ESP_LOGE(TAG, "TX failed: %d", state);
         }
@@ -184,6 +186,14 @@ namespace LoRa_Utils {
         if (transmitFlag) {
             _radio->startReceive(RADIOLIB_SX126X_RX_TIMEOUT_NONE);
             transmitFlag = false;
+            return pkt;
+        }
+
+        // Vérifie un vrai RxDone : sans ça, une interruption redéclenchée
+        // sans nouveau paquet fait relire le buffer périmé (trame dupliquée).
+        uint32_t irq = _radio->getIrqFlags();
+        if (!(irq & RADIOLIB_SX126X_IRQ_RX_DONE)) {
+            _radio->startReceive(RADIOLIB_SX126X_RX_TIMEOUT_NONE);
             return pkt;
         }
 

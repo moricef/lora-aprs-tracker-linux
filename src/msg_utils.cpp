@@ -1,4 +1,5 @@
 #include "esp_log.h"
+#include "notification_utils.h"
 #include <APRSPacketLib.h>
 #include <algorithm>
 #include <utility>
@@ -318,6 +319,7 @@ namespace MSG_Utils {
             STATION_Utils::addMapStation(aprs.sender, aprs.latitude, aprs.longitude,
                                          aprs.symbol, aprs.overlay, packetReceived.rssi);
             GPS_Utils::calculateDistanceCourse(aprs.sender, aprs.latitude, aprs.longitude);
+            NOTIFICATION_Utils::stationHeardBeep();
         }
 
         // Handle APRS messages addressed to us
@@ -359,6 +361,7 @@ namespace MSG_Utils {
 
                 message.trim();
                 saveNewMessage(0, aprs.sender, message);
+                NOTIFICATION_Utils::messageBeep();
                 printf("MSG:%s:%s\n", aprs.sender.c_str(), message.c_str()); fflush(stdout);
             }
         }
