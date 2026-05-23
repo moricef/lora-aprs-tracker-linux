@@ -75,17 +75,20 @@ static void* gpsThread(void*) {
                 gpsFix.hdop = sqrt(gpsData.fix.epx*gpsData.fix.epx + gpsData.fix.epy*gpsData.fix.epy);
             gpsFix.satellites = gpsData.satellites_used;
 
-            // time
-            struct timeval tv;
-            gettimeofday(&tv, nullptr);
-            struct tm* t = gmtime(&tv.tv_sec);
-            gpsFix.hours   = t->tm_hour;
-            gpsFix.minutes = t->tm_min;
-            gpsFix.seconds = t->tm_sec;
-            gpsFix.date    = t->tm_mday;
-            gpsFix.month   = t->tm_mon + 1;
-            gpsFix.year    = 1900 + t->tm_year;
-            gpsFix.valid_time = gpsFix.valid_date = true;
+            // Vraie heure GPS (UTC) depuis gpsd, pas l'horloge système
+            if (gpsData.fix.time.tv_sec > 0) {
+                time_t gpsSec = (time_t)gpsData.fix.time.tv_sec;
+                struct tm* t = gmtime(&gpsSec);
+                gpsFix.hours   = t->tm_hour;
+                gpsFix.minutes = t->tm_min;
+                gpsFix.seconds = t->tm_sec;
+                gpsFix.date    = t->tm_mday;
+                gpsFix.month   = t->tm_mon + 1;
+                gpsFix.year    = 1900 + t->tm_year;
+                gpsFix.valid_time = gpsFix.valid_date = true;
+            } else {
+                gpsFix.valid_time = gpsFix.valid_date = false;
+            }
 
             _newFix = true;
             pthread_mutex_unlock(&_gpsMutex);
@@ -125,16 +128,10 @@ namespace GPS_Utils {
     bool hasNewFix() { return !_fixConsumed; }
 
     void setDateFromData() {
-        if (!gpsFix.valid_time || !gpsFix.valid_date) return;
-        struct tm t = {};
-        t.tm_year  = gpsFix.year  - 1900;
-        t.tm_mon   = gpsFix.month - 1;
-        t.tm_mday  = gpsFix.date;
-        t.tm_hour  = gpsFix.hours;
-        t.tm_min   = gpsFix.minutes;
-        t.tm_sec   = gpsFix.seconds;
-        struct timeval tv = { mktime(&t), 0 };
-        settimeofday(&tv, nullptr);
+        // Sur Linux l'horloge système est gérée par NTP/systemd-timesyncd.
+        // Le firmware ESP32 a besoin de setter (pas de RTC ni NTP) ; ici non.
+        // L'appeler en boucle saute l'heure de plusieurs jours et fait virer
+        // toutes les mapStations via cleanOldMapStations().
     }
 
     void calculateDistanceCourse(const String& callsign, double checkLat, double checkLon) {
