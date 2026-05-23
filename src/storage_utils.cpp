@@ -220,20 +220,31 @@ namespace STORAGE_Utils {
 
     // ─── Frame logging ───────────────────────────────────────────────────────
     bool logRawFrame(const String& frame, int rssi, float snr, bool isDirect) {
-        char buf[16]; time_t now = time(nullptr);
+        time_t now = time(nullptr);
+        struct tm *tm_info = localtime(&now);
+
+        // Timestamp formaté une fois pour toutes à la réception
+        char ts[15];
+        snprintf(ts, sizeof(ts), "%02d-%02d %02d:%02d",
+                tm_info->tm_mon + 1, tm_info->tm_mday,
+                tm_info->tm_hour, tm_info->tm_min);
+
         FILE* f = fopen(FRAMES_FILE, "a");
         if (!f) return false;
-        fprintf(f, "%ld RSSI:%d SNR:%.1f %s %s\n",
-                (long)now, rssi, snr, isDirect ? "D" : "R", frame.c_str());
+        int snr_int = (int)snr;
+        int snr_dec = abs((int)((snr - snr_int) * 10));
+        fprintf(f, "%s RSSI:%d SNR:%d.%d %s\n",
+            ts, rssi, snr_int, snr_dec, isDirect ? "D" : "R", frame.c_str());
         fclose(f);
-        // RAM cache (last 50)
-        String entry = String((long)now) + " RSSI:" + String(rssi) + " SNR:" + String(snr,1) + " " + frame;
+
+        // RAM cache
+        String entry = String(ts) + " RSSI:" + String(rssi) + " SNR:" + String(snr_int) + "." + String(snr_dec) + " " + frame;
         _lastFrames.push_back(entry);
         if ((int)_lastFrames.size() > HISTORY_SIZE) _lastFrames.erase(_lastFrames.begin());
         _framesDirty = true;
         return true;
     }
-
+    
     void updateStationStats(const String& callsign, int rssi, float snr, bool isDirect) {
         for (auto& s : _stationStats) {
             if (s.callsign == callsign) {
