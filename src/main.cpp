@@ -256,13 +256,15 @@ static void loop() {
 
         if (gps_time_update) SMARTBEACON_Utils::checkInterval(currentSpeed);
 
-        // Periodic GPS status to stdout
+        // Periodic GPS status to stdout — skip si pas de fix (évite le spam 0,0,0,...)
         if (millis() - refreshDisplayTime >= 1000) {
-            printf("GPS:%.5f,%.5f,%.0f,%.1f,%.1f,%d,%02d%02d%02d\n",
-                   gpsFix.lat, gpsFix.lon, gpsFix.alt, gpsFix.speed_kph,
-                   gpsFix.hdop, gpsFix.satellites,
-                   gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
-            fflush(stdout);
+            if (gpsFix.lat != 0.0 || gpsFix.lon != 0.0) {
+                printf("GPS:%.5f,%.5f,%.0f,%.1f,%.1f,%d,%02d%02d%02d\n",
+                       gpsFix.lat, gpsFix.lon, gpsFix.alt, gpsFix.speed_kph,
+                       gpsFix.hdop, gpsFix.satellites,
+                       gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
+                fflush(stdout);
+            }
             refreshDisplayTime = millis();
         }
     } else {
