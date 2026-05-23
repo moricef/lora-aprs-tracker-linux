@@ -1,4 +1,5 @@
 #include "esp_log.h"
+#include <unistd.h>
 #include "linux_hal.h"
 #include "Module.h"
 #include "modules/SX126x/SX1262.h"
@@ -189,15 +190,19 @@ namespace LoRa_Utils {
             return pkt;
         }
 
-        // Vérifie un vrai RxDone : sans ça, une interruption redéclenchée
-        // sans nouveau paquet fait relire le buffer périmé (trame dupliquée).
         uint32_t irq = _radio->getIrqFlags();
         if (!(irq & RADIOLIB_SX126X_IRQ_RX_DONE)) {
-            _radio->startReceive(RADIOLIB_SX126X_RX_TIMEOUT_NONE);
+            // Spurious sysfs GPIO event : on NE re-arme PAS (la radio est déjà
+            // en RX continu via RX_TIMEOUT_NONE). Appeler startReceive ici
+            // re-toggle DIO1 → boucle infinie d'interruptions parasites.
             return pkt;
         }
 
-        // Read received data
+        uint32_t busyWaitStart = millis();
+        while (_hal->digitalRead(PIN_BUSY) && (millis() - busyWaitStart < 500)) {
+            usleep(1000);
+        }
+
         size_t len = _radio->getPacketLength();
         if (len > 0 && len <= 255) {
             uint8_t buf[256];
