@@ -597,7 +597,7 @@ namespace APRSPacketLib {
             aprsPacket.path     = temp1.substring(temp1.indexOf(",") + 1, temp1.indexOf(":"));
         }
 
-        if (temp0.indexOf(":=") > 10 || temp0.indexOf(":!") > 10 || temp0.indexOf(":@") > 10 ) {
+        if (temp0.indexOf(":=") > 10 || temp0.indexOf(":!") > 10 || temp0.indexOf(":@") > 10 || temp0.indexOf(":/") > 10) {
             aprsPacket.type = 0;
             String gpsChars = ":=";
             int gpsCharsOffset = 2;
@@ -605,6 +605,10 @@ namespace APRSPacketLib {
             if (temp0.indexOf(":@") > 10) {
                 gpsChars = ":@";
                 gpsCharsOffset = 9;
+            }
+            if (temp0.indexOf(":/") > 10) {
+                gpsChars = ":/";
+                gpsCharsOffset = 9;   // 2 + 7 octets de timestamp
             }
             int gpsCharsIndex       = temp0.indexOf(gpsChars);
             int payloadOffset       = gpsCharsIndex + gpsCharsOffset;

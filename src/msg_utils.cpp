@@ -314,8 +314,10 @@ namespace MSG_Utils {
         lastHeardTracker = aprs.sender;
         lastReceivedPacket = aprs;
 
-        // Update map station if position available
-        if (aprs.latitude != 0.0f || aprs.longitude != 0.0f) {
+        // Stations sur la map : uniquement position (0), Mic-E (4), objet (5)
+        // Les messages (1), telemetry (2), weather (3) n'ont pas de coordonnées utiles
+        if ((aprs.type == 0 || aprs.type == 4 || aprs.type == 5) &&
+            (aprs.latitude != 0.0f || aprs.longitude != 0.0f)) {
             STATION_Utils::addMapStation(aprs.sender, aprs.latitude, aprs.longitude,
                                          aprs.symbol, aprs.overlay, packetReceived.rssi);
             GPS_Utils::calculateDistanceCourse(aprs.sender, aprs.latitude, aprs.longitude);

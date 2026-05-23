@@ -204,9 +204,10 @@ namespace LoRa_Utils {
             int state = _radio->readData(buf, len);
             _radio->startReceive(RADIOLIB_SX126X_RX_TIMEOUT_NONE);
             if (state == RADIOLIB_ERR_NONE && len > 3) {
-                // Prepend sync word \x3c\xff\x01 so substring(3) in main loop strips it
-                // (same as ESP32 C3 proto bridge, see lora_utils.cpp onLoraRx)
-                pkt.text = String("\x3c\xff\x01") + String(std::string((char*)buf, len).c_str());
+                bool hasPreamble = (buf[0] == 0x3c && buf[1] == 0xff && buf[2] == 0x01);
+                pkt.text = hasPreamble
+                    ? String(std::string((char*)buf, len).c_str())
+                    : String("\x3c\xff\x01") + String(std::string((char*)buf, len).c_str());
                 pkt.rssi      = (int)_radio->getRSSI();
                 pkt.snr       = _radio->getSNR();
                 pkt.freqError = (int)_radio->getFrequencyError();
