@@ -181,6 +181,22 @@ namespace LoRa_Utils {
     ReceivedLoRaPacket receivePacket() {
         ReceivedLoRaPacket pkt;
         if (!loraInitOk) return pkt;
+
+        // Watchdog temporel : si pas de RX depuis 120s, force clearIrqFlags +
+        // startReceive. Couvre les deux modes de blocage observés sur Linux
+        // (sysfs GPIO + SX126x) :
+        //   - DIO1 stuck high : IRQ jamais clearée → polling ne peut plus fire
+        //   - DIO1 stuck low  : radio sortie de RX, plus aucun event possible
+        static uint32_t lastRxTime = millis();
+        if (millis() - lastRxTime > 120000) {
+            ESP_LOGW(TAG, "Watchdog: no RX since %ums, forcing re-arm",
+                     (unsigned)(millis() - lastRxTime));
+            _radio->clearIrqFlags(0xFFFFFFFF);
+            _radio->standby();
+            _radio->startReceive(RADIOLIB_SX126X_RX_TIMEOUT_NONE);
+            lastRxTime = millis();
+        }
+
         if (!operationDone) return pkt;
         operationDone = false;
 
@@ -216,6 +232,7 @@ namespace LoRa_Utils {
                 pkt.rssi      = (int)_radio->getRSSI();
                 pkt.snr       = _radio->getSNR();
                 pkt.freqError = (int)_radio->getFrequencyError();
+                lastRxTime    = millis();   // watchdog reset
             }
         } else {
             _radio->startReceive(RADIOLIB_SX126X_RX_TIMEOUT_NONE);
