@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctime>
 #include "configuration.h"
 #include "lora_utils.h"
 #include "gps_utils.h"
@@ -276,6 +277,15 @@ static void loop() {
     }
 
     currentBeacon = &Config.beacons[myBeaconsIndex];
+#ifdef USE_LVGL_UI
+    {
+        static String lastCallsign = "";
+        if (currentBeacon->callsign != lastCallsign) {
+            lastCallsign = currentBeacon->callsign;
+            UIDashboard::updateCallsign(lastCallsign.c_str());
+        }
+    }
+#endif
 
     if (APRSPacketLib::checkNocall(currentBeacon->callsign)) {
         static uint32_t lastNocallWarn = 0;
@@ -398,17 +408,35 @@ static void loop() {
 #ifdef USE_LVGL_UI
                 UIDashboard::updateGPS(gpsFix.lat, gpsFix.lon, gpsFix.alt,
                                        gpsFix.speed_kph, gpsFix.satellites, gpsFix.hdop);
-                UIDashboard::updateTime(gpsFix.date, gpsFix.month, gpsFix.year + 1900,
-                                        gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
-                UIDashboard::updateUtcTime(gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
                 UIDashboard::updateCallsign(currentBeacon->callsign.c_str());
 #endif
             }
+#ifdef USE_LVGL_UI
+            // Heure locale : toujours affichée (système ou GPS)
+            {
+                time_t now = time(nullptr);
+                struct tm* lt = localtime(&now);
+                UIDashboard::updateTime(lt->tm_mday, lt->tm_mon + 1, lt->tm_year + 1900,
+                                        lt->tm_hour, lt->tm_min, lt->tm_sec);
+                // Heure UTC : seulement si sync GPS
+                if (gpsFix.valid_time) {
+                    UIDashboard::updateUtcTime(gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
+                }
+            }
+#endif
             refreshDisplayTime = millis();
         }
     } else {
         if (lastTx > txInterval) STATION_Utils::checkStandingUpdateTime();
-        if (millis() - refreshDisplayTime >= 1000) refreshDisplayTime = millis();
+        if (millis() - refreshDisplayTime >= 1000) {
+#ifdef USE_LVGL_UI
+            time_t now = time(nullptr);
+            struct tm* lt = localtime(&now);
+            UIDashboard::updateTime(lt->tm_mday, lt->tm_mon + 1, lt->tm_year + 1900,
+                                    lt->tm_hour, lt->tm_min, lt->tm_sec);
+#endif
+            refreshDisplayTime = millis();
+        }
     }
 
     STORAGE_Utils::checkStatsSave();
