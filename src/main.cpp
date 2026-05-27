@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctime>
+#include <dirent.h>
 #include "configuration.h"
 #include "lora_utils.h"
 #include "gps_utils.h"
@@ -36,6 +37,7 @@
 #include "ui_popups.h"
 #include "map_state.h"
 #include "map/map_raster.h"
+#include "map/map_vector.h"
 #include <sys/stat.h>
 #endif
 
@@ -201,6 +203,28 @@ static void setup() {
 
     STORAGE_Utils::loadStats();
     MSG_Utils::loadNumMessages();
+
+    // Vector tiles (optional — fails silently if file absent)
+    // Searches /data/LoRa_Tracker/VectorMaps/ for .pmtiles files
+    // (same convention as firmware: /LoRa_Tracker/VectMaps/<region>/)
+    {
+        const char *vecDir = "/data/LoRa_Tracker/VectMaps";
+        DIR *d = opendir(vecDir);
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d))) {
+                if (e->d_type != DT_DIR || e->d_name[0] == '.') continue;
+                std::string path = std::string(vecDir) + "/" + e->d_name + "/" + e->d_name + ".pmtiles";
+                struct stat st;
+                if (stat(path.c_str(), &st) == 0) {
+                    MapVector::open(path.c_str());
+                    if (MapVector::isOpen()) MapVector::startWorker();
+                    break;  // first region found
+                }
+            }
+            closedir(d);
+        }
+    }
 
     GPS_Utils::setup();
     LoRa_Utils::setup();
