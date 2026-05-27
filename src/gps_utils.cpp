@@ -128,16 +128,10 @@ namespace GPS_Utils {
     bool hasNewFix() { return !_fixConsumed; }
 
     void setDateFromData() {
-        if (!gpsFix.valid_time || !gpsFix.valid_date) return;
-        struct tm t = {};
-        t.tm_year  = gpsFix.year  - 1900;
-        t.tm_mon   = gpsFix.month - 1;
-        t.tm_mday  = gpsFix.date;
-        t.tm_hour  = gpsFix.hours;
-        t.tm_min   = gpsFix.minutes;
-        t.tm_sec   = gpsFix.seconds;
-        struct timeval tv = { mktime(&t), 0 };
-        settimeofday(&tv, nullptr);
+        // On Linux the system clock is managed by NTP/systemd-timesyncd.
+        // The ESP32 firmware must set it (no RTC/NTP); here we don't.
+        // Calling settimeofday() would jump the system clock and break
+        // millis()-based timers (mapStations TTL, dedup, etc.).
     }
 
     void calculateDistanceCourse(const String& callsign, double checkLat, double checkLon) {
