@@ -75,10 +75,22 @@ static void* gpsThread(void*) {
                 gpsFix.hdop = sqrt(gpsData.fix.epx*gpsData.fix.epx + gpsData.fix.epy*gpsData.fix.epy);
             gpsFix.satellites = gpsData.satellites_used;
 
-            // time
-            struct timeval tv;
-            gettimeofday(&tv, nullptr);
-            struct tm* t = gmtime(&tv.tv_sec);
+            _newFix = true;
+            pthread_mutex_unlock(&_gpsMutex);
+        } else {
+            pthread_mutex_lock(&_gpsMutex);
+            gpsFix.mode           = gpsData.fix.mode;
+            gpsFix.valid_location = false;
+            if (gpsData.satellites_used > 0)
+                gpsFix.satellites = gpsData.satellites_used;
+            pthread_mutex_unlock(&_gpsMutex);
+        }
+
+        // GPS time from satellite (available even without 2D fix)
+        if (gpsData.fix.time.tv_sec > 0) {
+            pthread_mutex_lock(&_gpsMutex);
+            time_t gpsSec = (time_t)gpsData.fix.time.tv_sec;
+            struct tm* t = gmtime(&gpsSec);
             gpsFix.hours   = t->tm_hour;
             gpsFix.minutes = t->tm_min;
             gpsFix.seconds = t->tm_sec;
@@ -86,15 +98,6 @@ static void* gpsThread(void*) {
             gpsFix.month   = t->tm_mon + 1;
             gpsFix.year    = 1900 + t->tm_year;
             gpsFix.valid_time = gpsFix.valid_date = true;
-
-            _newFix = true;
-            pthread_mutex_unlock(&_gpsMutex);
-        } else {
-            pthread_mutex_lock(&_gpsMutex);
-            gpsFix.mode           = 0;
-            gpsFix.valid_location = false;
-            if (gpsData.satellites_used > 0)
-                gpsFix.satellites = gpsData.satellites_used;
             pthread_mutex_unlock(&_gpsMutex);
         }
     }
