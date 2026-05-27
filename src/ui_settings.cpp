@@ -23,6 +23,8 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <string>
+#include <ifaddrs.h>
+#include <arpa/inet.h>
 #include "webconf_httpd.h"
 
 static const char *TAG = "UISettings";
@@ -486,9 +488,8 @@ void UISettings::createFreqScreen() {
 
 static void speed_item_clicked(lv_event_t *e) {
     lv_obj_t *btn = (lv_obj_t*)lv_event_get_current_target(e);
-    int index = (int)(intptr_t)lv_event_get_user_data(e);
-    ESP_LOGD(TAG, "Speed index %d selected", index);
-    LoRa_Utils::requestFrequencyChange(index);
+    int dataRate = (int)(intptr_t)lv_event_get_user_data(e);
+    LoRa_Utils::requestDataRateChange(dataRate);
 
     if (current_speed_btn && current_speed_btn != btn) {
         lv_obj_set_style_bg_color(current_speed_btn, lv_color_hex(UIColors::BG_DARKER), 0);
@@ -539,18 +540,22 @@ void UISettings::createSpeedScreen() {
     lv_obj_set_style_border_color(list, lv_color_hex(UIColors::BG_HEADER), 0);
     lv_obj_set_style_radius(list, 8, 0);
 
-    for (int i = 0; i < loraIndexSize && i < (int)Config.loraTypes.size(); i++) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%d bps  SF%d  BW%.0f  CR4/%d",
-                 Config.loraTypes[i].dataRate,
-                 Config.loraTypes[i].spreadingFactor,
-                 Config.loraTypes[i].signalBandwidth,
-                 Config.loraTypes[i].codingRate4);
+    struct SpeedOption { int dataRate; const char *label; };
+    const SpeedOption speeds[] = {
+        {1200, "1200 bps (SF9,  Fast)"},
+        { 610,  "610 bps (SF10)"},
+        { 300,  "300 bps (SF12, Long range)"},
+        { 244,  "244 bps (SF12)"},
+        { 209,  "209 bps (SF12)"},
+        { 183,  "183 bps (SF12, Longest)"},
+    };
 
-        lv_obj_t *btn = lv_list_add_btn(list, LV_SYMBOL_SHUFFLE, buf);
-        lv_obj_add_event_cb(btn, speed_item_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-        if (i == loraIndex) {
+    int currentDR = Config.loraTypes[loraIndex].dataRate;
+    for (int i = 0; i < 6; i++) {
+        lv_obj_t *btn = lv_list_add_btn(list, LV_SYMBOL_SHUFFLE, speeds[i].label);
+        lv_obj_add_event_cb(btn, speed_item_clicked, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)speeds[i].dataRate);
+        if (speeds[i].dataRate == currentDR) {
             lv_obj_set_style_bg_color(btn, lv_color_hex(UIColors::TEXT_GREEN), 0);
             lv_obj_set_style_text_color(btn, lv_color_hex(0x000000), 0);
             current_speed_btn = btn;
@@ -1739,34 +1744,36 @@ void UISettings::openWebConf() {
 
     lv_scr_load(screen_webconf);
 
-    // Webconf runs inside linux_tracker on the tracker host
-    const char *tracker_host = getenv("TRACKER_HOST");
-    if (!tracker_host) tracker_host = "192.168.1.168";
+    // Server port
     static char webconf_url[64];
-    snprintf(webconf_url, sizeof(webconf_url), "http://%s:8080", tracker_host);
-
-    webconf_browser_pid = fork();
-    if (webconf_browser_pid == 0) {
-        usleep(500000);
-        execl("/usr/bin/chromium-browser", "chromium-browser",
-              "--no-first-run", "--start-maximized", webconf_url, nullptr);
-        execl("/usr/bin/chromium", "chromium",
-              "--no-first-run", "--start-maximized", webconf_url, nullptr);
-        _exit(1);
+    webconf_url[0] = '\0';
+    struct ifaddrs *ifaddr, *ifa;
+    if (getifaddrs(&ifaddr) == 0) {
+        for (ifa = ifaddr; ifa; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+            // Skip loopback
+            if (strcmp(ifa->ifa_name, "lo") == 0) continue;
+            struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
+            snprintf(webconf_url, sizeof(webconf_url), "http://%s:8080",
+                     inet_ntoa(sin->sin_addr));
+            break;
+        }
+        freeifaddrs(ifaddr);
     }
+    if (!webconf_url[0]) strcpy(webconf_url, "http://<ip>:8080");
 
     lv_obj_t *lbl_status = lv_label_create(content);
-    lv_label_set_text(lbl_status, "Webconf actif sur le tracker");
+    lv_label_set_text(lbl_status, "Serveur web : actif");
     lv_obj_set_style_text_color(lbl_status, lv_color_hex(UIColors::TEXT_GREEN), 0);
     lv_obj_set_style_text_font(lbl_status, &lv_font_montserrat_18, 0);
 
     lv_obj_t *lbl_url = lv_label_create(content);
     lv_label_set_text(lbl_url, webconf_url);
     lv_obj_set_style_text_color(lbl_url, lv_color_hex(UIColors::BTN_BLUE), 0);
-    lv_obj_set_style_text_font(lbl_url, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(lbl_url, &lv_font_montserrat_20, 0);
 
     lv_obj_t *lbl_info = lv_label_create(content);
-    lv_label_set_text(lbl_info, "Configurer dans Chromium\npuis cliquer Fermer.");
+    lv_label_set_text(lbl_info, "Ouvrir dans un navigateur\nsur PC ou telephone");
     lv_obj_set_style_text_color(lbl_info, lv_color_hex(0xaaaaaa), 0);
     lv_obj_set_style_text_font(lbl_info, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_align(lbl_info, LV_TEXT_ALIGN_CENTER, 0);
