@@ -4,8 +4,12 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/select.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "configuration.h"
 #include "lora_utils.h"
 #include "gps_utils.h"
@@ -15,9 +19,23 @@
 #include "msg_utils.h"
 #include "aprs_is_utils.h"
 #include "linux_stubs.h"
+#include "FreeRTOS.h"
+#include "map_state.h"
 #include "webconf_httpd.h"
 #include "notification_utils.h"
 #include <APRSPacketLib.h>
+
+#ifdef USE_LVGL_UI
+#include "lvgl/lvgl.h"
+#include "lvgl/src/drivers/display/drm/lv_linux_drm.h"
+#include "lvgl/src/drivers/evdev/lv_evdev.h"
+#include "ui_dashboard.h"
+#include "ui_messaging.h"
+#include "ui_settings.h"
+#include "ui_popups.h"
+#include "map_state.h"
+#include <sys/stat.h>
+#endif
 
 static const char* TAG = "Main";
 
@@ -47,6 +65,22 @@ uint32_t refreshDisplayTime = 0;
 uint32_t lastGPSTime        = 0;
 
 APRSPacket lastReceivedPacket;
+
+// UI globals (référencées par ui_*.cpp)
+String versionDate = "2026-05-26";
+String versionNumber = "2.11.0-linux";
+bool   WiFiConnected = false, WiFiEcoMode = false, WiFiUserDisabled = false;
+bool   bluetoothActive = false, bluetoothConnected = false;
+SemaphoreHandle_t spiMutex = 0;
+uint32_t lastActivityTime = 0;
+bool   screenDimmed = false;
+uint8_t screenBrightness = 255;
+bool   displayEcoMode = false;
+uint32_t last_tick = 0;
+int    wifiRetryCount = 0;
+const char *symbolArray[] = {"/>"};
+extern const int symbolArraySize = 1;
+const uint8_t *symbolsAPRS[] = {nullptr};
 
 extern bool gpsIsActive;       // defined in gps_utils.cpp
 extern SmartBeaconValues currentSmartBeaconValues;
@@ -86,6 +120,58 @@ static void* cmdThread(void*) {
     return nullptr;
 }
 
+// TCP bridge thread : écoute sur 9876, lit lignes "TXPKT:<frame>" depuis
+// la simu PC et les transmet via LoRa. Permet l'envoi de messages APRS
+// depuis l'interface dashboard pendant le dev (avant qu'on ait l'écran
+// directement sur l'Odroid en mode monolithique).
+static void* txBridgeThread(void*) {
+    int srv = socket(AF_INET, SOCK_STREAM, 0);
+    if (srv < 0) { ESP_LOGE(TAG, "TXbridge: socket failed"); return nullptr; }
+    int yes = 1;
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    struct sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(9876);
+    if (bind(srv, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        ESP_LOGE(TAG, "TXbridge: bind 9876 failed: %s", strerror(errno));
+        close(srv); return nullptr;
+    }
+    listen(srv, 1);
+    ESP_LOGI(TAG, "TXbridge: listening on 9876");
+
+    while (running) {
+        int cli = accept(srv, nullptr, nullptr);
+        if (cli < 0) continue;
+        ESP_LOGI(TAG, "TXbridge: client connected");
+        char buf[1024];
+        std::string acc;
+        while (running) {
+            int n = recv(cli, buf, sizeof(buf), 0);
+            if (n <= 0) break;
+            acc.append(buf, n);
+            // Process complete lines
+            size_t pos;
+            while ((pos = acc.find('\n')) != std::string::npos) {
+                std::string line = acc.substr(0, pos);
+                acc.erase(0, pos + 1);
+                if (line.rfind("TXPKT:", 0) == 0) {
+                    String frame(line.substr(6).c_str());
+                    LoRa_Utils::sendNewPacket(frame);
+                    ESP_LOGI(TAG, "TXbridge: TX %s", frame.c_str());
+                } else if (line == "BCN" || line == "TX") {
+                    sendUpdate = true;
+                    ESP_LOGI(TAG, "TXbridge: beacon triggered");
+                }
+            }
+        }
+        close(cli);
+        ESP_LOGI(TAG, "TXbridge: client disconnected");
+    }
+    close(srv);
+    return nullptr;
+}
+
 // ─── setup() ─────────────────────────────────────────────────────────────────
 static void setup() {
     signal(SIGINT,  sigHandler);
@@ -122,6 +208,33 @@ static void setup() {
 
     miceActive = APRSPacketLib::validateMicE(currentBeacon->micE);
 
+#ifdef USE_LVGL_UI
+    fprintf(stderr, "[UI] lv_init...\n"); fflush(stderr);
+    lv_init();
+    lv_display_t *disp = lv_linux_drm_create();
+    if (!disp) {
+        ESP_LOGE(TAG, "drm_create failed — /dev/dri/card0 inaccessible?");
+    } else {
+        lv_result_t drm_ok = lv_linux_drm_set_file(disp, "/dev/dri/card0", -1);
+        lv_display_set_default(disp);
+        lv_timer_handler();  // initialise le rendu display avant création widgets
+        fprintf(stderr, "[UI] evdev...\n"); fflush(stderr);
+        // /dev/input/by-path/ contient le chemin stable Waveshare
+        const char *touchPath = "/dev/input/by-path/platform-c9100000.usb-usb-0:1.2:1.0-event";
+        // fallback event5 si by-path absent
+        struct stat st;
+        if (stat(touchPath, &st) != 0) touchPath = "/dev/input/event5";
+        lv_indev_t *touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, touchPath);
+        if (touch) {
+            lv_indev_set_display(touch, disp);
+            lv_evdev_set_calibration(touch, 0, 0, 1023, 599);
+        }
+        UIDashboard::createDashboard();
+        { FILE *f = fopen("/tmp/ui_ok.txt", "w"); if (f) { fprintf(f, "DASH OK\n"); fclose(f); } }
+        ESP_LOGI(TAG, "Display: fbdev 1024x600, touch=%s", touch ? "OK" : "none");
+    }
+#endif
+
     // stdout: pipe to dashboard
     // format: GPS:<lat>,<lon>,<alt>,<speed>,<hdop>,<sats>,<time>
     // LoRa RX frames: forwarded as-is via logRawFrame → frames.log
@@ -135,6 +248,11 @@ static void setup() {
     static pthread_t cmdTid;
     pthread_create(&cmdTid, nullptr, cmdThread, nullptr);
     pthread_detach(cmdTid);
+
+    // Start TCP command listener (bridge depuis simu PC en dev)
+    static pthread_t txTid;
+    pthread_create(&txTid, nullptr, txBridgeThread, nullptr);
+    pthread_detach(txTid);
 
     refreshDisplayTime = millis();
     lastTxTime         = millis();
@@ -178,6 +296,9 @@ static void loop() {
     APRS_IS_Utils::checkConnection();
 
     LoRa_Utils::processPendingChanges();
+#ifdef USE_LVGL_UI
+    UIDashboard::refreshLoRaInfo();
+#endif
 
     // ── RX ──────────────────────────────────────────────────────────────────
     ReceivedLoRaPacket packet = LoRa_Utils::receivePacket();
@@ -216,6 +337,16 @@ static void loop() {
         // Forward raw frame to stdout for dashboard pipe
         printf("RX RSSI:%d SNR:%.1f %s\n", packet.rssi, packet.snr, rawFrame.c_str());
         fflush(stdout);
+
+#ifdef USE_LVGL_UI
+        {
+            char rxLine[512];
+            snprintf(rxLine, sizeof(rxLine), "RSSI:%d SNR:%.1f %s",
+                     packet.rssi, packet.snr, rawFrame.c_str());
+            UIDashboard::addRxLine(rxLine);
+            UIMessaging::refreshFramesList();
+        }
+#endif
     }
 
     MSG_Utils::checkReceivedMessage(packet);
@@ -264,6 +395,14 @@ static void loop() {
                        gpsFix.hdop, gpsFix.satellites,
                        gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
                 fflush(stdout);
+#ifdef USE_LVGL_UI
+                UIDashboard::updateGPS(gpsFix.lat, gpsFix.lon, gpsFix.alt,
+                                       gpsFix.speed_kph, gpsFix.satellites, gpsFix.hdop);
+                UIDashboard::updateTime(gpsFix.date, gpsFix.month, gpsFix.year + 1900,
+                                        gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
+                UIDashboard::updateUtcTime(gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
+                UIDashboard::updateCallsign(currentBeacon->callsign.c_str());
+#endif
             }
             refreshDisplayTime = millis();
         }
@@ -274,8 +413,20 @@ static void loop() {
 
     STORAGE_Utils::checkStatsSave();
 
+#ifdef USE_LVGL_UI
+    {
+        uint32_t d = lv_timer_handler();
+        if (d == LV_NO_TIMER_READY) d = 5;
+        usleep(d * 1000);
+    }
+#else
     usleep(10000);  // 10 ms
+#endif
 }
+
+// MapState global members (needed by ui_settings / map_raster)
+lv_obj_t* MapState::screen_map = nullptr;
+bool MapState::blePausedForMap = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
 int main(int argc, char** argv) {

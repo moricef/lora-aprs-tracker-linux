@@ -1,0 +1,12 @@
+name: Install homebrew packages on macOS
+
+runs:
+  using: composite
+  steps:
+    - name: Install homebrew packages
+      run: |
+        brew install \
+          boost \
+          doxygen \
+          graphviz
+      shell: bash

@@ -1,61 +1,85 @@
-# LoRa APRS Tracker - Linux port
-# Build on Odroid C2 (aarch64) or dev machine (x86_64)
+# LoRa APRS Tracker — Linux port (Odroid C2/C4)
+# Modelé sur l'architecture firmware ESP32 : src/, include/, lib/
+#
+#   make                  → headless (stdout pipe)
+#   make WITH_DISPLAY=1   → LVGL fbdev UI + tracker intégré
 
-CXX = g++
-CXXFLAGS = -std=c++11 -Wall -O2 -g
+CXX      = g++
+CC       = gcc
+CXXFLAGS = -std=gnu++17 -Wall -O2 -g -DLV_CONF_INCLUDE_SIMPLE
+CFLAGS   = -O2 -g -DLV_CONF_INCLUDE_SIMPLE
 
-# RadioLib base path (local copy)
-RADIO = lib/RadioLib
+# ---- L
+# ---- Dependances lib/ -------------------------------------------------------
+RADIO    = lib/RadioLib
 
-INC = -Iinclude \
-      -Ilib/APRSPacketLib/include \
-      -Ilib/gps_math \
-      -I$(RADIO) \
-      -I$(RADIO)/modules/SX126x \
-      -I$(RADIO)/utils \
-      -I$(RADIO)/protocols/PhysicalLayer
+INC  = -Iinclude -Iinclude/map -Isrc
+INC += -Ilib -Ilib/lvgl -Ilib/lvgl/src
+INC += -Ilib/gps_math
+INC += -Ilib/APRSPacketLib/include -Ilib/APRSPacketLib/src
+INC += -Ilib/PMTiles/cpp -Ilib/vtzero/include -Ilib/protozero/include
+INC += -I$(RADIO) -I$(RADIO)/modules/SX126x
+INC += -I$(RADIO)/utils -I$(RADIO)/protocols/PhysicalLayer
+INC += -I/usr/include/libdrm
 
-# ── Tracker sources ─────────────────────────────────────────────────────────
+# ---- Sources headless (toujours compilés) -----------------------------------
 SRCS  = src/main.cpp
-SRCS += src/arduino_compat.cpp
-SRCS += src/linux_hal.cpp
-SRCS += src/lora_utils.cpp
-SRCS += src/gps_utils.cpp
-SRCS += src/configuration.cpp
-SRCS += src/smartbeacon_utils.cpp
-SRCS += src/station_utils.cpp
-SRCS += src/storage_utils.cpp
-SRCS += src/msg_utils.cpp
-SRCS += src/aprs_is_utils.cpp
-SRCS += src/webconf_httpd.cpp
-SRCS += src/notification_utils.cpp
-SRCS += lib/APRSPacketLib/src/APRSPacketLib.cpp
-SRCS += lib/gps_math/gps_math.cpp
-
-# ── RadioLib sources (minimal for SX1262) ───────────────────────────────────
-SRCS += $(RADIO)/Hal.cpp
-SRCS += $(RADIO)/Module.cpp
+SRCS += src/arduino_compat.cpp src/linux_hal.cpp src/lora_utils.cpp
+SRCS += src/gps_utils.cpp src/configuration.cpp src/smartbeacon_utils.cpp
+SRCS += src/station_utils.cpp src/storage_utils.cpp src/msg_utils.cpp
+SRCS += src/aprs_is_utils.cpp src/webconf_httpd.cpp src/notification_utils.cpp
+SRCS += lib/APRSPacketLib/src/APRSPacketLib.cpp lib/gps_math/gps_math.cpp
+SRCS += $(RADIO)/Hal.cpp $(RADIO)/Module.cpp
 SRCS += $(RADIO)/modules/SX126x/SX126x.cpp
 SRCS += $(RADIO)/modules/SX126x/SX1262.cpp
 SRCS += $(RADIO)/modules/SX126x/SX126x_LR_FHSS.cpp
 SRCS += $(RADIO)/protocols/PhysicalLayer/PhysicalLayer.cpp
-SRCS += $(RADIO)/utils/Utils.cpp
-SRCS += $(RADIO)/utils/CRC.cpp
-SRCS += $(RADIO)/utils/FEC.cpp
-SRCS += $(RADIO)/utils/Cryptography.cpp
+SRCS += $(RADIO)/utils/Utils.cpp $(RADIO)/utils/CRC.cpp
+SRCS += $(RADIO)/utils/FEC.cpp $(RADIO)/utils/Cryptography.cpp
 
-OBJS   = $(SRCS:.cpp=.o)
-TARGET = lora_aprs_tracker
+TARGET  = lora_aprs_tracker
+LDFLAGS = -lpthread -lgps -lm -lmicrohttpd -ldrm
 
+# ── WITH_DISPLAY=1 ─────────────────────────────────────────────────────────
+ifdef WITH_DISPLAY
+  CXXFLAGS += -DUSE_LVGL_UI
+  # main.cpp gère les deux modes (headless + UI) via #ifdef USE_LVGL_UI
+
+  # UI sources
+  SRCS += src/ui_dashboard.cpp src/ui_messaging.cpp src/ui_settings.cpp
+  SRCS += src/ui_popups.cpp src/thorvg_stubs.cpp
+  SRCS += src/map/map_raster.cpp src/map/map_vector.cpp
+  SRCS += src/map/map_coordinate_math.cpp
+  SRCS += src/lv_font_mono_16.c src/mouse_cursor_icon.c
+
+  # Vector tiles
+  LDFLAGS += -lz
+
+  # LVGL C (tous sauf ThorVG vector + drivers SDL)
+  LVGL_C := $(shell find lib/lvgl/src -name '*.c' 2>/dev/null \
+             | grep -v lv_draw_vector \
+             | grep -v '/sdl/' \
+             | sort)
+  SRCS += $(LVGL_C)
+endif
+
+OBJS := $(SRCS:.cpp=.o)
+OBJS := $(OBJS:.c=.o)
+
+# ---- Règles -----------------------------------------------------------------
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
-	$(CXX) $(OBJS) -o $@ -lpthread -lgps -lm -lmicrohttpd
+	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(INC) -c $< -o $@
 
+%.o: %.c
+	$(CC) $(CFLAGS) $(INC) -c $< -o $@
+
 clean:
 	rm -f $(OBJS) $(TARGET)
+	find lib -name "*.o" -delete
 
 .PHONY: all clean
