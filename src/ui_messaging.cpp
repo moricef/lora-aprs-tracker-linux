@@ -1,0 +1,1893 @@
+/* LVGL UI Messaging Module
+ * Messages, conversations, contacts, compose, frames, stats screens
+ *
+ * Extracted from lvgl_ui.cpp for modularization
+ */
+
+#ifdef USE_LVGL_UI
+
+#include "ui_messaging.h"
+#include "ui_common.h"
+#include "ui_popups.h"
+#include "ui_dashboard.h"
+#include "ui_settings.h"
+#include "lvgl_ui.h"
+
+#include <Arduino.h>
+#include <esp_log.h>
+#include <lvgl.h>
+#include <vector>
+#include <algorithm>
+#include <TimeLib.h>
+
+#include "configuration.h"
+#include "msg_utils.h"
+#include "storage_utils.h"
+#include "display.h"
+
+static const char *TAG = "UIMessaging";
+
+// External variables
+extern Configuration Config;
+extern uint32_t lastActivityTime;
+extern bool screenDimmed;
+extern uint8_t screenBrightness;
+
+// Screen dimensions
+#if defined(CROWPANEL_ADVANCE_35)
+#define SCREEN_WIDTH 480
+#define SCREEN_HEIGHT 320
+#elif defined(WAVESHARE_S3_TOUCH_LCD_7)
+#define SCREEN_WIDTH 800
+#define SCREEN_HEIGHT 480
+#elif defined(LINUX_SIM) || !defined(ARDUINO)
+#define SCREEN_WIDTH 1024
+#define SCREEN_HEIGHT 600
+#else
+#define SCREEN_WIDTH 320
+#define SCREEN_HEIGHT 240
+#endif
+
+namespace UIMessaging {
+
+// =============================================================================
+// Module State - Screen Pointers
+// =============================================================================
+
+static lv_obj_t *screen_msg = nullptr;
+static lv_obj_t *msg_tabview = nullptr;
+static lv_obj_t *list_aprs_global = nullptr;
+static lv_obj_t *list_wlnk_global = nullptr;
+static lv_obj_t *list_contacts_global = nullptr;
+static lv_obj_t *list_frames_global = nullptr;
+static lv_obj_t *cont_stats_global = nullptr;
+static int current_msg_type = 0; // 0 = APRS, 1 = Winlink, 2 = Contacts, 3 = Frames, 4 = Stats
+
+// Compose screen variables
+static lv_obj_t *screen_compose = nullptr;
+static lv_obj_t *compose_to_input = nullptr;
+static lv_obj_t *compose_msg_input = nullptr;
+static lv_obj_t *compose_keyboard = nullptr;
+static lv_obj_t *current_focused_input = nullptr;
+static bool compose_screen_active = false;
+static lv_obj_t *compose_return_screen = nullptr;
+
+// Conversation screen variables
+static lv_obj_t *screen_conversation = nullptr;
+static lv_obj_t *conversation_list = nullptr;
+static String current_conversation_callsign = "";
+static int pending_conversation_msg_delete = -1;
+static bool conversation_msg_longpress_handled = false;
+static lv_obj_t *conversation_confirm_msgbox = nullptr;
+static lv_obj_t *msgbox_to_delete = nullptr;
+static bool need_conversation_refresh = false;
+
+// Contact edit screen variables
+static lv_obj_t *screen_contact_edit = nullptr;
+static lv_obj_t *contact_callsign_input = nullptr;
+static lv_obj_t *contact_name_input = nullptr;
+static lv_obj_t *contact_comment_input = nullptr;
+static lv_obj_t *contact_edit_keyboard = nullptr;
+static lv_obj_t *contact_current_input = nullptr;
+static String editing_contact_callsign = "";
+
+// Message detail popup
+static lv_obj_t *detail_msgbox = nullptr;
+
+// Delete confirmation
+static lv_obj_t *confirm_msgbox = nullptr;
+static lv_obj_t *confirm_msgbox_to_delete = nullptr;
+static int pending_delete_msg_index = -1;
+static bool msg_longpress_handled = false;
+static bool need_aprs_list_refresh = false;
+
+// Stats tab persistent widgets
+static lv_obj_t *stats_title_lbl = nullptr;
+static lv_obj_t *stats_table = nullptr;
+
+// Frame item pool for object recycling (avoids alloc/dealloc churn)
+static const int MAX_FRAME_ITEMS = 20;
+struct FrameItemPool {
+    lv_obj_t *container;
+    lv_obj_t *summary_label;
+    lv_obj_t *full_label;
+};
+static FrameItemPool frame_pool[MAX_FRAME_ITEMS];
+static bool frame_pool_initialized = false;
+static lv_style_t style_header_text; // Style declaration for stats table headers
+static bool style_header_text_initialized = false; // Flag for style initialization
+
+// Contact long-press flag
+static bool contact_longpress_handled = false;
+
+// Caps Lock and Symbol Lock state for physical keyboard
+static bool capsLockActive = false;
+static bool symbolLockActive = false;
+static uint32_t lastShiftTime = 0;
+static uint32_t lastSymbolTime = 0;
+static const uint32_t DOUBLE_TAP_MS = 400;
+
+// T-Deck keyboard special key codes
+static const char KEY_SHIFT = 0x01;
+static const char KEY_SYMBOL = 0x02;
+
+// =============================================================================
+// Forward Declarations
+// =============================================================================
+
+static void populate_msg_list(lv_obj_t *list, int type);
+static void populate_contacts_list(lv_obj_t *list);
+static void populate_frames_list(lv_obj_t *list);
+static void populate_stats(lv_obj_t *cont);
+static void create_conversation_screen(const String &callsign);
+static void refresh_conversation_messages();
+static void show_contact_edit_screen(const Contact *contact);
+static void show_message_detail(const char *msg);
+static void show_delete_confirmation(const char *message, int msg_index);
+static void frame_item_clicked(lv_event_t *e);
+
+// =============================================================================
+// Module Initialization
+// =============================================================================
+
+void init() {
+    // Nothing to initialize yet
+}
+
+// =============================================================================
+// Screen Getters
+// =============================================================================
+
+lv_obj_t* getMsgScreen() { return screen_msg; }
+lv_obj_t* getMsgTabview() { return msg_tabview; }
+lv_obj_t* getContactsList() { return list_contacts_global; }
+bool isComposeScreenActive() { return compose_screen_active; }
+bool isCapsLockActive() { return capsLockActive; }
+
+// =============================================================================
+// Message Detail Popup
+// =============================================================================
+
+static void detail_msgbox_deleted_cb(lv_event_t *e) { detail_msgbox = nullptr; }
+
+static void show_message_detail(const char *msg) {
+    if (detail_msgbox && lv_obj_is_valid(detail_msgbox)) {
+        lv_msgbox_close(detail_msgbox);
+    }
+    detail_msgbox = nullptr;
+
+    // NULL crée un backdrop 100%x100% qui intercepte les touch events
+    // et évite que le tabview interprète le Close comme un swipe gauche
+    detail_msgbox = lv_msgbox_create(NULL);
+    lv_obj_t *backdrop = lv_obj_get_parent(detail_msgbox);
+    if (backdrop) lv_obj_set_style_bg_opa(backdrop, LV_OPA_TRANSP, 0);
+    lv_msgbox_add_title(detail_msgbox, "Message");
+    lv_msgbox_add_text(detail_msgbox, msg);
+    lv_obj_set_style_bg_color(detail_msgbox, lv_color_hex(0x1a1a2e), 0);
+    lv_obj_set_style_text_color(detail_msgbox, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_set_width(detail_msgbox, SCREEN_WIDTH - 40);
+    lv_obj_center(detail_msgbox);
+    lv_obj_add_event_cb(detail_msgbox, detail_msgbox_deleted_cb, LV_EVENT_DELETE, NULL);
+    // Close button
+    lv_obj_t *closeBtn = lv_msgbox_add_footer_button(detail_msgbox, "Close");
+    lv_obj_add_event_cb(closeBtn, [](lv_event_t*) { if (detail_msgbox) lv_msgbox_close(detail_msgbox); }, LV_EVENT_CLICKED, NULL);
+}
+
+// =============================================================================
+// Delete Confirmation System
+// =============================================================================
+
+static void delete_confirm_msgbox_timer_cb(lv_timer_t *timer) {
+    ESP_LOGD(TAG, "delete_confirm_msgbox_timer_cb called");
+    if (confirm_msgbox_to_delete && lv_obj_is_valid(confirm_msgbox_to_delete)) {
+        lv_obj_del(confirm_msgbox_to_delete);
+        ESP_LOGD(TAG, "Msgbox deleted");
+    }
+    confirm_msgbox_to_delete = nullptr;
+
+    lv_obj_invalidate(lv_layer_top());
+    lv_refr_now(NULL);
+
+    if (need_aprs_list_refresh) {
+        if (list_aprs_global) {
+            ESP_LOGD(TAG, "Refreshing APRS list after delete");
+            populate_msg_list(list_aprs_global, 0);
+        }
+        if (list_wlnk_global) {
+            populate_msg_list(list_wlnk_global, 1);
+        }
+        need_aprs_list_refresh = false;
+    }
+
+    lv_timer_del(timer);
+}
+
+static void confirm_close_only() {
+    if (!confirm_msgbox) return;
+    confirm_msgbox_to_delete = confirm_msgbox;
+    confirm_msgbox = nullptr;
+    pending_delete_msg_index = -1;
+    lv_timer_create(delete_confirm_msgbox_timer_cb, 10, NULL);
+}
+
+static void confirm_yes_cb(lv_event_t *) {
+    ESP_LOGI(TAG, "confirm Yes: pending_index=%d type=%d",
+             pending_delete_msg_index, current_msg_type);
+    need_aprs_list_refresh = false;
+    if (pending_delete_msg_index == -1) {
+        MSG_Utils::deleteFile(current_msg_type);
+    } else {
+        MSG_Utils::deleteMessageByIndex(current_msg_type, pending_delete_msg_index);
+    }
+    need_aprs_list_refresh = true;
+    confirm_close_only();
+}
+
+static void confirm_no_cb(lv_event_t *) {
+    ESP_LOGI(TAG, "confirm No → close");
+    confirm_close_only();
+}
+
+static void show_delete_confirmation(const char *message, int msg_index) {
+    if (confirm_msgbox != nullptr)
+        return;
+
+    pending_delete_msg_index = msg_index;
+
+    // Backdrop bloquant les events sous-jacents (lv_msgbox_create(NULL))
+    confirm_msgbox = lv_msgbox_create(NULL);
+    lv_obj_t *backdrop = lv_obj_get_parent(confirm_msgbox);
+    if (backdrop) lv_obj_set_style_bg_opa(backdrop, LV_OPA_30, 0);
+    lv_msgbox_add_title(confirm_msgbox, "Confirmation");
+    lv_msgbox_add_text(confirm_msgbox, message);
+    lv_obj_t *btn_yes = lv_msgbox_add_footer_button(confirm_msgbox, "Yes");
+    lv_obj_t *btn_no  = lv_msgbox_add_footer_button(confirm_msgbox, "No");
+    lv_obj_add_event_cb(btn_yes, confirm_yes_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn_no,  confirm_no_cb,  LV_EVENT_CLICKED, NULL);
+    lv_obj_set_style_bg_color(confirm_msgbox, lv_color_hex(0x1a1a2e), 0);
+    lv_obj_set_style_bg_opa(confirm_msgbox, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(confirm_msgbox, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_set_width(confirm_msgbox, 220);
+    lv_obj_center(confirm_msgbox);
+}
+
+// =============================================================================
+// Message List Callbacks
+// =============================================================================
+
+static void msg_item_clicked(lv_event_t *e) {
+    if (msg_longpress_handled) {
+        msg_longpress_handled = false;
+        return;
+    }
+
+    lv_obj_t *btn = (lv_obj_t*)lv_event_get_target(e);
+    lv_obj_t *label = lv_obj_get_child(btn, 0);
+    if (label) {
+        const char *text = lv_label_get_text(label);
+        show_message_detail(text);
+    }
+}
+
+static void msg_item_longpress(lv_event_t *e) {
+    int msg_index = (int)(intptr_t)lv_event_get_user_data(e);
+    ESP_LOGD(TAG, "Message long-press: index %d", msg_index);
+    msg_longpress_handled = true;
+    show_delete_confirmation("Delete this message?", msg_index);
+}
+
+static void conversation_item_clicked(lv_event_t *e) {
+    if (msg_longpress_handled) {
+        msg_longpress_handled = false;
+        return;
+    }
+
+    const char *callsign = (const char *)lv_event_get_user_data(e);
+    if (!callsign)
+        return;
+
+    ESP_LOGD(TAG, "Conversation clicked: %s", callsign);
+    create_conversation_screen(String(callsign));
+}
+
+// =============================================================================
+// Populate Message List
+// =============================================================================
+
+static void populate_msg_list(lv_obj_t *list, int type) {
+    lv_obj_clean(list);
+
+    if (type == 0) {
+        // APRS messages - show conversations
+        std::vector<String> conversations = MSG_Utils::getConversationsList();
+
+        static std::vector<String> callsign_storage;
+        callsign_storage.clear();
+
+        if (conversations.size() == 0) {
+            lv_obj_t *empty = lv_label_create(list);
+            lv_label_set_text(empty, "No conversations");
+            lv_obj_set_style_text_color(empty, lv_color_hex(0x888888), 0);
+        } else {
+            callsign_storage.reserve(conversations.size());
+            for (size_t i = 0; i < conversations.size(); i++) {
+                callsign_storage.push_back(conversations[i]);
+            }
+
+            // Display in order (already sorted by most recent first)
+            // Static buffer for preview text (reused, no heap alloc per iteration)
+            static char previewBuf[80];
+
+            for (size_t i = 0; i < conversations.size(); i++) {
+                std::vector<String> messages = MSG_Utils::getMessagesForContact(conversations[i]);
+                const char* callsign = conversations[i].c_str();
+                size_t callLen = strlen(callsign);
+                if (callLen > 15) callLen = 15;
+
+                memcpy(previewBuf, callsign, callLen);
+                size_t pos = callLen;
+
+                if (messages.size() > 0) {
+                    const String& lastMsg = messages[messages.size() - 1];
+                    const char* msgPtr = lastMsg.c_str();
+                    // Find second comma to get message content
+                    const char* comma1 = strchr(msgPtr, ',');
+                    if (comma1) {
+                        const char* comma2 = strchr(comma1 + 1, ',');
+                        if (comma2) {
+                            const char* content = comma2 + 1;
+                            size_t contentLen = strlen(content);
+                            previewBuf[pos++] = '\n';
+                            if (contentLen > 30) {
+                                memcpy(previewBuf + pos, content, 27);
+                                pos += 27;
+                                memcpy(previewBuf + pos, "...", 3);
+                                pos += 3;
+                            } else {
+                                memcpy(previewBuf + pos, content, contentLen);
+                                pos += contentLen;
+                            }
+                        }
+                    }
+                }
+                previewBuf[pos] = '\0';
+
+                lv_obj_t *btn = lv_list_add_btn(list, LV_SYMBOL_ENVELOPE, previewBuf);
+                lv_obj_add_event_cb(btn, conversation_item_clicked, LV_EVENT_CLICKED,
+                                    (void *)callsign_storage[i].c_str());
+            }
+        }
+    } else {
+        // Winlink messages
+        MSG_Utils::loadMessagesFromMemory(1);
+        std::vector<String> &messages = MSG_Utils::getLoadedWLNKMails();
+
+        if (messages.size() == 0) {
+            lv_obj_t *empty = lv_label_create(list);
+            lv_label_set_text(empty, "No Winlink mails");
+            lv_obj_set_style_text_color(empty, lv_color_hex(0x888888), 0);
+        } else {
+            for (int i = messages.size() - 1; i >= 0; i--) {
+                lv_obj_t *btn = lv_list_add_btn(list, LV_SYMBOL_ENVELOPE, messages[i].c_str());
+                lv_obj_add_event_cb(btn, msg_item_clicked, LV_EVENT_CLICKED, NULL);
+                lv_obj_add_event_cb(btn, msg_item_longpress, LV_EVENT_LONG_PRESSED,
+                                    (void *)(intptr_t)i);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Conversation Screen
+// =============================================================================
+
+static void delete_msgbox_timer_cb(lv_timer_t *timer) {
+    if (msgbox_to_delete && lv_obj_is_valid(msgbox_to_delete)) {
+        lv_obj_del(msgbox_to_delete);
+    }
+    msgbox_to_delete = nullptr;
+
+    lv_obj_invalidate(lv_layer_top());
+    lv_refr_now(NULL);
+
+    if (need_conversation_refresh) {
+        refresh_conversation_messages();
+        need_conversation_refresh = false;
+    }
+
+    lv_timer_del(timer);
+}
+
+static void conv_close_only() {
+    if (!conversation_confirm_msgbox) return;
+    msgbox_to_delete = conversation_confirm_msgbox;
+    conversation_confirm_msgbox = nullptr;
+    pending_conversation_msg_delete = -1;
+    lv_timer_create(delete_msgbox_timer_cb, 10, NULL);
+}
+
+static void conv_yes_cb(lv_event_t *) {
+    ESP_LOGI(TAG, "conv confirm Yes: index=%d", pending_conversation_msg_delete);
+    need_conversation_refresh = false;
+    MSG_Utils::deleteMessageFromConversation(current_conversation_callsign,
+                                             pending_conversation_msg_delete);
+    need_conversation_refresh = true;
+    conv_close_only();
+}
+
+static void conv_no_cb(lv_event_t *) {
+    ESP_LOGI(TAG, "conv confirm No → close");
+    conv_close_only();
+}
+
+static void show_conversation_delete_confirmation(int msg_index) {
+    if (conversation_confirm_msgbox != nullptr)
+        return;
+
+    pending_conversation_msg_delete = msg_index;
+
+    conversation_confirm_msgbox = lv_msgbox_create(NULL);
+    lv_obj_t *backdrop = lv_obj_get_parent(conversation_confirm_msgbox);
+    if (backdrop) lv_obj_set_style_bg_opa(backdrop, LV_OPA_30, 0);
+    lv_msgbox_add_title(conversation_confirm_msgbox, "Delete message?");
+    lv_msgbox_add_text(conversation_confirm_msgbox, "Delete this message?");
+    lv_obj_t *by = lv_msgbox_add_footer_button(conversation_confirm_msgbox, "Yes");
+    lv_obj_t *bn = lv_msgbox_add_footer_button(conversation_confirm_msgbox, "No");
+    lv_obj_add_event_cb(by, conv_yes_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(bn, conv_no_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_style_bg_color(conversation_confirm_msgbox, lv_color_hex(0x1a1a2e), 0);
+    lv_obj_set_style_bg_opa(conversation_confirm_msgbox, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(conversation_confirm_msgbox, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_set_width(conversation_confirm_msgbox, 240);
+    lv_obj_center(conversation_confirm_msgbox);
+}
+
+static void conversation_msg_longpress(lv_event_t *e) {
+    int msg_index = (int)(intptr_t)lv_event_get_user_data(e);
+    ESP_LOGD(TAG, "Conversation message long-press: index %d", msg_index);
+    conversation_msg_longpress_handled = true;
+    show_conversation_delete_confirmation(msg_index);
+}
+
+static void conversation_msg_clicked(lv_event_t *e) {
+    if (conversation_msg_longpress_handled) {
+        conversation_msg_longpress_handled = false;
+        return;
+    }
+}
+
+static void refresh_conversation_messages() {
+    if (!conversation_list)
+        return;
+
+    lv_obj_clean(conversation_list);
+
+    std::vector<String> messages = MSG_Utils::getMessagesForContact(current_conversation_callsign);
+
+    if (messages.size() == 0) {
+        lv_obj_t *empty = lv_label_create(conversation_list);
+        lv_label_set_text(empty, "No messages");
+        lv_obj_set_style_text_color(empty, lv_color_hex(0x888888), 0);
+    } else {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            const char* msgPtr = messages[i].c_str();
+            // Parse: "timestamp,direction,content" using C-style
+            const char* comma1 = strchr(msgPtr, ',');
+            if (!comma1) continue;
+            const char* comma2 = strchr(comma1 + 1, ',');
+            if (!comma2) continue;
+
+            // Check direction (between comma1 and comma2)
+            bool isOutgoing = (strncmp(comma1 + 1, "OUT", 3) == 0);
+            const char* content = comma2 + 1;
+
+            lv_obj_t *bubble_container = lv_obj_create(conversation_list);
+            lv_obj_set_width(bubble_container, lv_pct(100));
+            lv_obj_set_height(bubble_container, LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(bubble_container, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(bubble_container, 0, 0);
+            lv_obj_set_style_pad_all(bubble_container, 2, 0);
+            lv_obj_clear_flag(bubble_container, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *bubble = lv_obj_create(bubble_container);
+            lv_obj_set_width(bubble, lv_pct(75));
+            lv_obj_set_height(bubble, LV_SIZE_CONTENT);
+            lv_obj_set_style_pad_all(bubble, 8, 0);
+            lv_obj_set_style_radius(bubble, 10, 0);
+            lv_obj_set_style_border_width(bubble, 0, 0);
+
+            lv_obj_add_flag(bubble, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(bubble, conversation_msg_clicked, LV_EVENT_CLICKED,
+                                (void *)(intptr_t)i);
+            lv_obj_add_event_cb(bubble, conversation_msg_longpress, LV_EVENT_LONG_PRESSED,
+                                (void *)(intptr_t)i);
+
+            if (isOutgoing) {
+                lv_obj_align(bubble, LV_ALIGN_RIGHT_MID, 0, 0);
+                lv_obj_set_style_bg_color(bubble, lv_color_hex(0x82aaff), 0);
+            } else {
+                lv_obj_align(bubble, LV_ALIGN_LEFT_MID, 0, 0);
+                lv_obj_set_style_bg_color(bubble, lv_color_hex(0x2a2a3e), 0);
+            }
+
+            lv_obj_t *msg_label = lv_label_create(bubble);
+            lv_label_set_text(msg_label, content);  // Direct pointer, no String copy
+            lv_label_set_long_mode(msg_label, LV_LABEL_LONG_WRAP);
+            lv_obj_set_width(msg_label, lv_pct(100));
+            lv_obj_set_style_text_color(msg_label, lv_color_hex(0xffffff), 0);
+        }
+    }
+
+    lv_obj_scroll_to_y(conversation_list, 0, LV_ANIM_OFF);
+    ESP_LOGD(TAG, "Conversation messages refreshed: %d messages", messages.size());
+}
+
+static void btn_conversation_back_clicked(lv_event_t *e) {
+    if (screen_msg) {
+        if (list_aprs_global) {
+            populate_msg_list(list_aprs_global, 0);
+        }
+        UI_SCR_LOAD_ANIM(screen_msg, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 100, 0, false);
+    }
+}
+
+static void btn_conversation_reply_clicked(lv_event_t *e);
+
+static void create_conversation_screen(const String &callsign) {
+    current_conversation_callsign = callsign;
+
+    bool isRefresh = (screen_conversation != nullptr && lv_screen_active() == screen_conversation);
+    lv_obj_t *old_screen = screen_conversation;
+
+    screen_conversation = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen_conversation, lv_color_hex(0x1a1a2e), 0);
+
+    // Title bar
+    lv_obj_t *title_bar = lv_obj_create(screen_conversation);
+    lv_obj_set_size(title_bar, SCREEN_WIDTH, 35);
+    lv_obj_set_pos(title_bar, 0, 0);
+    lv_obj_set_style_bg_color(title_bar, lv_color_hex(0x0f0f23), 0);
+    lv_obj_set_style_border_width(title_bar, 0, 0);
+    lv_obj_set_style_radius(title_bar, 0, 0);
+    lv_obj_clear_flag(title_bar, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Back button
+    lv_obj_t *btn_back = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_back, 50, 28);
+    lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 5, 0);
+    lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x82aaff), 0);
+    lv_obj_add_event_cb(btn_back, btn_conversation_back_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_back = lv_label_create(btn_back);
+    lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);
+    lv_obj_center(lbl_back);
+
+    // Title
+    lv_obj_t *title = lv_label_create(title_bar);
+    lv_label_set_text(title, callsign.c_str());
+    lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+
+    // Reply button
+    lv_obj_t *btn_reply = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_reply, 50, 28);
+    lv_obj_align(btn_reply, LV_ALIGN_RIGHT_MID, -5, 0);
+    lv_obj_set_style_bg_color(btn_reply, lv_color_hex(0x89ddff), 0);
+    lv_obj_add_event_cb(btn_reply, btn_conversation_reply_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_reply = lv_label_create(btn_reply);
+    lv_label_set_text(lbl_reply, LV_SYMBOL_EDIT);
+    lv_obj_center(lbl_reply);
+
+    // Chat container
+    conversation_list = lv_obj_create(screen_conversation);
+    lv_obj_set_size(conversation_list, SCREEN_WIDTH - 10, SCREEN_HEIGHT - 45);
+    lv_obj_set_pos(conversation_list, 5, 38);
+    lv_obj_set_style_bg_color(conversation_list, lv_color_hex(0x0f0f23), 0);
+    lv_obj_set_style_border_width(conversation_list, 0, 0);
+    lv_obj_set_style_pad_all(conversation_list, 5, 0);
+    lv_obj_set_flex_flow(conversation_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(conversation_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    // Load and display messages
+    std::vector<String> messages = MSG_Utils::getMessagesForContact(callsign);
+
+    if (messages.size() == 0) {
+        lv_obj_t *empty = lv_label_create(conversation_list);
+        lv_label_set_text(empty, "No messages");
+        lv_obj_set_style_text_color(empty, lv_color_hex(0x888888), 0);
+    } else {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            const char* msgPtr = messages[i].c_str();
+            // Parse: "timestamp,direction,content" using C-style
+            const char* comma1 = strchr(msgPtr, ',');
+            if (!comma1) continue;
+            const char* comma2 = strchr(comma1 + 1, ',');
+            if (!comma2) continue;
+
+            // Check direction (between comma1 and comma2)
+            bool isOutgoing = (strncmp(comma1 + 1, "OUT", 3) == 0);
+            const char* content = comma2 + 1;
+
+            lv_obj_t *bubble_container = lv_obj_create(conversation_list);
+            lv_obj_set_width(bubble_container, lv_pct(100));
+            lv_obj_set_height(bubble_container, LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(bubble_container, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(bubble_container, 0, 0);
+            lv_obj_set_style_pad_all(bubble_container, 2, 0);
+            lv_obj_clear_flag(bubble_container, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *bubble = lv_obj_create(bubble_container);
+            lv_obj_set_width(bubble, lv_pct(75));
+            lv_obj_set_height(bubble, LV_SIZE_CONTENT);
+            lv_obj_set_style_pad_all(bubble, 8, 0);
+            lv_obj_set_style_radius(bubble, 10, 0);
+            lv_obj_set_style_border_width(bubble, 0, 0);
+
+            lv_obj_add_flag(bubble, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(bubble, conversation_msg_clicked, LV_EVENT_CLICKED,
+                                (void *)(intptr_t)i);
+            lv_obj_add_event_cb(bubble, conversation_msg_longpress, LV_EVENT_LONG_PRESSED,
+                                (void *)(intptr_t)i);
+
+            if (isOutgoing) {
+                lv_obj_align(bubble, LV_ALIGN_RIGHT_MID, 0, 0);
+                lv_obj_set_style_bg_color(bubble, lv_color_hex(0x82aaff), 0);
+            } else {
+                lv_obj_align(bubble, LV_ALIGN_LEFT_MID, 0, 0);
+                lv_obj_set_style_bg_color(bubble, lv_color_hex(0x2a2a3e), 0);
+            }
+
+            lv_obj_t *msg_label = lv_label_create(bubble);
+            lv_label_set_text(msg_label, content);  // Direct pointer, no String copy
+            lv_label_set_long_mode(msg_label, LV_LABEL_LONG_WRAP);
+            lv_obj_set_width(msg_label, lv_pct(100));
+            lv_obj_set_style_text_color(msg_label, lv_color_hex(0xffffff), 0);
+        }
+    }
+
+    lv_obj_scroll_to_y(conversation_list, 0, LV_ANIM_OFF);
+
+    if (isRefresh) {
+        lv_screen_load(screen_conversation);
+        if (old_screen) {
+            lv_obj_del(old_screen);
+        }
+    } else {
+        if (old_screen) {
+            lv_obj_del(old_screen);
+        }
+        UI_SCR_LOAD_ANIM(screen_conversation, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
+    }
+    ESP_LOGD(TAG, "Conversation screen created for %s with %d messages",
+                  callsign.c_str(), messages.size());
+}
+
+// =============================================================================
+// Contacts Screen
+// =============================================================================
+
+static void contact_item_clicked(lv_event_t *e);
+static void contact_item_longpress(lv_event_t *e);
+
+static void populate_contacts_list(lv_obj_t *list) {
+    lv_obj_clean(list);
+
+    std::vector<Contact> contacts = STORAGE_Utils::loadContacts();
+
+    if (contacts.size() == 0) {
+        lv_obj_t *empty = lv_label_create(list);
+        lv_label_set_text(empty, "No contacts\nTap + to add");
+        lv_obj_set_style_text_color(empty, lv_color_hex(0x888888), 0);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+    } else {
+        // Static buffer for display text (reused, no heap alloc per iteration)
+        static char displayBuf[100];
+
+        for (size_t i = 0; i < contacts.size(); i++) {
+            Contact *c = STORAGE_Utils::findContact(contacts[i].callsign);
+            const char* callsign = contacts[i].callsign.c_str();
+            const char* name = contacts[i].name.c_str();
+            const char* comment = contacts[i].comment.c_str();
+
+            size_t pos = 0;
+            size_t callLen = strlen(callsign);
+            if (callLen > 15) callLen = 15;
+            memcpy(displayBuf, callsign, callLen);
+            pos = callLen;
+
+            if (name[0] != '\0') {
+                memcpy(displayBuf + pos, " - ", 3);
+                pos += 3;
+                size_t nameLen = strlen(name);
+                if (nameLen > 30) nameLen = 30;
+                memcpy(displayBuf + pos, name, nameLen);
+                pos += nameLen;
+            }
+
+            if (comment[0] != '\0') {
+                displayBuf[pos++] = '\n';
+                size_t commentLen = strlen(comment);
+                if (commentLen > 40) commentLen = 40;
+                memcpy(displayBuf + pos, comment, commentLen);
+                pos += commentLen;
+            }
+
+            displayBuf[pos] = '\0';
+
+            lv_obj_t *btn = lv_list_add_btn(list, LV_SYMBOL_CALL, displayBuf);
+            lv_obj_add_event_cb(btn, contact_item_clicked, LV_EVENT_CLICKED, c);
+            lv_obj_add_event_cb(btn, contact_item_longpress, LV_EVENT_LONG_PRESSED, c);
+        }
+    }
+}
+
+static void contact_item_clicked(lv_event_t *e) {
+    if (contact_longpress_handled) {
+        contact_longpress_handled = false;
+        return;
+    }
+
+    Contact *contact = (Contact *)lv_event_get_user_data(e);
+    if (!contact)
+        return;
+
+    ESP_LOGD(TAG, "Contact clicked: %s - opening compose", contact->callsign.c_str());
+    openComposeWithCallsign(contact->callsign);
+}
+
+static void contact_item_longpress(lv_event_t *e) {
+    Contact *contact = (Contact *)lv_event_get_user_data(e);
+    if (!contact)
+        return;
+    ESP_LOGD(TAG, "Contact long-press: %s", contact->callsign.c_str());
+    contact_longpress_handled = true;
+    show_contact_edit_screen(contact);
+}
+
+// =============================================================================
+// Contact Edit Screen
+// =============================================================================
+
+static void contact_edit_input_focused(lv_event_t *e) {
+    lv_obj_t *ta = (lv_obj_t*)lv_event_get_target(e);
+    contact_current_input = ta;
+    lv_keyboard_set_textarea(contact_edit_keyboard, ta);
+}
+
+static void contact_edit_keyboard_event(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+        lv_obj_add_flag(contact_edit_keyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void btn_contact_save_clicked(lv_event_t *e) {
+    Contact contact;
+    contact.callsign = String(lv_textarea_get_text(contact_callsign_input));
+    contact.name = String(lv_textarea_get_text(contact_name_input));
+    contact.comment = String(lv_textarea_get_text(contact_comment_input));
+
+    contact.callsign.trim();
+    contact.callsign.toUpperCase();
+
+    if (contact.callsign.length() == 0) {
+        show_message_detail("Callsign required");
+        return;
+    }
+
+    bool success;
+    if (editing_contact_callsign.length() > 0) {
+        success = STORAGE_Utils::updateContact(editing_contact_callsign, contact);
+    } else {
+        success = STORAGE_Utils::addContact(contact);
+    }
+
+    if (success) {
+        ESP_LOGI(TAG, "Contact saved: %s", contact.callsign.c_str());
+        lv_scr_load(screen_msg);
+        if (list_contacts_global) {
+            populate_contacts_list(list_contacts_global);
+        }
+    } else {
+        show_message_detail("Failed to save contact\n(duplicate callsign?)");
+    }
+}
+
+static void btn_contact_delete_clicked(lv_event_t *e) {
+    if (editing_contact_callsign.length() > 0) {
+        bool success = STORAGE_Utils::removeContact(editing_contact_callsign);
+        if (success) {
+            ESP_LOGI(TAG, "Contact deleted: %s", editing_contact_callsign.c_str());
+            lv_scr_load(screen_msg);
+            if (list_contacts_global) {
+                populate_contacts_list(list_contacts_global);
+            }
+        }
+    }
+}
+
+static void btn_contact_cancel_clicked(lv_event_t *e) {
+    lv_scr_load(screen_msg);
+}
+
+static void btn_contact_kb_toggle_clicked(lv_event_t *e) {
+    if (lv_obj_has_flag(contact_edit_keyboard, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_clear_flag(contact_edit_keyboard, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(contact_edit_keyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+// =============================================================================
+// Contact Edit Screen
+// =============================================================================
+
+static void show_contact_edit_screen(const Contact *contact) {
+    // Determine if we are editing an existing contact or adding a new one
+    if (contact) {
+        editing_contact_callsign = contact->callsign;
+    } else {
+        editing_contact_callsign = "";
+    }
+
+    // Create the screen and UI objects if they don't exist yet
+    if (!screen_contact_edit) {
+        screen_contact_edit = lv_obj_create(NULL);
+        lv_obj_set_style_bg_color(screen_contact_edit, lv_color_hex(0x0f0f23), 0);
+
+        // --- Title Bar ---
+        lv_obj_t *title_bar = lv_obj_create(screen_contact_edit);
+        lv_obj_set_size(title_bar, SCREEN_WIDTH, 35);
+        lv_obj_set_pos(title_bar, 0, 0);
+        lv_obj_set_style_bg_color(title_bar, lv_color_hex(0x1a1a2e), 0);
+        lv_obj_set_style_border_width(title_bar, 0, 0);
+        lv_obj_set_style_pad_all(title_bar, 5, 0);
+
+        // Back button
+        lv_obj_t *btn_back = lv_btn_create(title_bar);
+        lv_obj_set_size(btn_back, 30, 25);
+        lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x444444), 0);
+        lv_obj_add_event_cb(btn_back, btn_contact_cancel_clicked, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl_back = lv_label_create(btn_back);
+        lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);
+        lv_obj_center(lbl_back);
+
+        // Title
+        lv_obj_t *title = lv_label_create(title_bar);
+        lv_label_set_text(title, "Contact");
+        lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
+        lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+
+        // Save button
+        lv_obj_t *btn_save = lv_btn_create(title_bar);
+        lv_obj_set_size(btn_save, 40, 25);
+        lv_obj_align(btn_save, LV_ALIGN_RIGHT_MID, -50, 0);
+        lv_obj_set_style_bg_color(btn_save, lv_color_hex(0x00aa55), 0);
+        lv_obj_add_event_cb(btn_save, btn_contact_save_clicked, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl_save = lv_label_create(btn_save);
+        lv_label_set_text(lbl_save, LV_SYMBOL_OK);
+        lv_obj_center(lbl_save);
+
+        // Delete button
+        lv_obj_t *btn_del = lv_btn_create(title_bar);
+        lv_obj_set_size(btn_del, 40, 25);
+        lv_obj_align(btn_del, LV_ALIGN_RIGHT_MID, -5, 0);
+        lv_obj_set_style_bg_color(btn_del, lv_color_hex(0xff4444), 0);
+        lv_obj_add_event_cb(btn_del, btn_contact_delete_clicked, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl_del = lv_label_create(btn_del);
+        lv_label_set_text(lbl_del, LV_SYMBOL_TRASH);
+        lv_obj_center(lbl_del);
+
+        // --- Form Container ---
+        lv_obj_t *form = lv_obj_create(screen_contact_edit);
+        lv_obj_set_size(form, SCREEN_WIDTH - 10, 160);
+        lv_obj_set_pos(form, 5, 40);
+        lv_obj_set_scrollbar_mode(form, LV_SCROLLBAR_MODE_AUTO);
+        lv_obj_set_style_bg_color(form, lv_color_hex(0x1a1a2e), 0);
+        lv_obj_set_style_border_width(form, 0, 0);
+        lv_obj_set_style_pad_all(form, 5, 0);
+        lv_obj_set_flex_flow(form, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(form, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+        // Callsign input
+        lv_obj_t *lbl_call = lv_label_create(form);
+        lv_label_set_text(lbl_call, "Callsign:");
+        lv_obj_set_style_text_color(lbl_call, lv_color_hex(0x82aaff), 0);
+
+        contact_callsign_input = lv_textarea_create(form);
+        lv_obj_set_size(contact_callsign_input, lv_pct(100), 32);
+        lv_textarea_set_one_line(contact_callsign_input, true);
+        lv_textarea_set_placeholder_text(contact_callsign_input, "e.g. F4ABC-9");
+        lv_obj_add_event_cb(contact_callsign_input, contact_edit_input_focused, LV_EVENT_FOCUSED, NULL);
+
+        // Name input
+        lv_obj_t *lbl_name = lv_label_create(form);
+        lv_label_set_text(lbl_name, "Name:");
+        lv_obj_set_style_text_color(lbl_name, lv_color_hex(0x82aaff), 0);
+
+        contact_name_input = lv_textarea_create(form);
+        lv_obj_set_size(contact_name_input, lv_pct(100), 32);
+        lv_textarea_set_one_line(contact_name_input, true);
+        lv_textarea_set_placeholder_text(contact_name_input, "e.g. Jean");
+        lv_obj_add_event_cb(contact_name_input, contact_edit_input_focused, LV_EVENT_FOCUSED, NULL);
+
+        // Comment/Note input
+        lv_obj_t *lbl_comment = lv_label_create(form);
+        lv_label_set_text(lbl_comment, "Note:");
+        lv_obj_set_style_text_color(lbl_comment, lv_color_hex(0x82aaff), 0);
+
+        contact_comment_input = lv_textarea_create(form);
+        lv_obj_set_size(contact_comment_input, lv_pct(100), 32);
+        lv_textarea_set_one_line(contact_comment_input, true);
+        lv_textarea_set_placeholder_text(contact_comment_input, "e.g. Paris");
+        lv_obj_add_event_cb(contact_comment_input, contact_edit_input_focused, LV_EVENT_FOCUSED, NULL);
+
+        // --- Virtual Keyboard Button ---
+        lv_obj_t *btn_kb = lv_btn_create(screen_contact_edit);
+        lv_obj_set_size(btn_kb, 40, 30);
+        lv_obj_set_pos(btn_kb, SCREEN_WIDTH - 50, 165);
+        lv_obj_set_style_bg_color(btn_kb, lv_color_hex(0x555555), 0);
+        // Link the toggle callback (Fixes "unused function" warning)
+        lv_obj_add_event_cb(btn_kb, btn_contact_kb_toggle_clicked, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl_kb = lv_label_create(btn_kb);
+        lv_label_set_text(lbl_kb, LV_SYMBOL_KEYBOARD);
+        lv_obj_center(lbl_kb);
+
+        // --- Virtual Keyboard ---
+        contact_edit_keyboard = lv_keyboard_create(screen_contact_edit);
+        lv_obj_set_size(contact_edit_keyboard, SCREEN_WIDTH, 100);
+        lv_obj_align(contact_edit_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_add_flag(contact_edit_keyboard, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_event_cb(contact_edit_keyboard, contact_edit_keyboard_event, LV_EVENT_ALL, NULL);
+    }
+
+    // --- Data Filling (Fixes the empty fields issue) ---
+    if (contact) {
+        // Edit mode: populate with existing contact data
+        lv_textarea_set_text(contact_callsign_input, contact->callsign.c_str());
+        lv_textarea_set_text(contact_name_input, contact->name.c_str());
+        lv_textarea_set_text(contact_comment_input, contact->comment.c_str());
+    } else {
+        // Add mode: clear all fields
+        lv_textarea_set_text(contact_callsign_input, "");
+        lv_textarea_set_text(contact_name_input, "");
+        lv_textarea_set_text(contact_comment_input, "");
+    }
+
+    // Load the screen
+    lv_scr_load(screen_contact_edit);
+    
+    // --- Initial Setup for Physical Keyboard and Focus ---
+    // 1. Set the initial target for physical keyboard typing
+    contact_current_input = contact_callsign_input;
+    
+    // 2. Link virtual keyboard to the first field
+    if (contact_edit_keyboard) {
+        lv_keyboard_set_textarea(contact_edit_keyboard, contact_callsign_input);
+    }
+
+    // 3. Visual Focus (Orange glow on the Callsign field)
+    lv_obj_clear_state(contact_name_input, LV_STATE_FOCUSED);
+    lv_obj_clear_state(contact_comment_input, LV_STATE_FOCUSED);
+    lv_obj_add_state(contact_callsign_input, LV_STATE_FOCUSED);
+}
+
+// =============================================================================
+// Frames List (Optimized with Object Pooling)
+// =============================================================================
+
+static void frame_item_clicked(lv_event_t *e) {
+    lv_obj_t *cont = (lv_obj_t*)lv_event_get_target(e);
+    // Hidden label is the 2nd child (index 1)
+    lv_obj_t *hidden_label = lv_obj_get_child(cont, 1);
+    if (hidden_label) {
+        const char *full_text = lv_label_get_text(hidden_label);
+        show_message_detail(full_text);
+    }
+}
+
+// Initialize the frame item pool (called once on first use)
+static void init_frame_pool(lv_obj_t *list) {
+    if (frame_pool_initialized) return;
+
+    for (int i = 0; i < MAX_FRAME_ITEMS; i++) {
+        lv_obj_t *cont = lv_obj_create(list);
+        lv_obj_set_width(cont, lv_pct(100));
+        lv_obj_set_height(cont, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(cont, lv_color_hex(0x0a0a14), 0);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7)
+        lv_obj_set_style_pad_all(cont, 10, 0);
+#else
+        lv_obj_set_style_pad_all(cont, 6, 0);
+#endif
+        lv_obj_set_style_border_width(cont, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_side(cont, LV_BORDER_SIDE_BOTTOM, LV_PART_MAIN);
+        lv_obj_set_style_border_color(cont, lv_color_hex(0x333344), 0);
+        lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(cont, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(cont, frame_item_clicked, LV_EVENT_CLICKED, NULL);
+
+        lv_obj_t *label_summary = lv_label_create(cont);
+        lv_obj_set_width(label_summary, lv_pct(100));
+        lv_label_set_long_mode(label_summary, LV_LABEL_LONG_DOT);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7)
+        lv_obj_set_style_text_font(label_summary, &lv_font_mono_16, 0);
+#else
+        lv_obj_set_style_text_font(label_summary, &lv_font_montserrat_14, 0);
+#endif
+
+        lv_obj_t *label_full = lv_label_create(cont);
+        lv_obj_add_flag(label_full, LV_OBJ_FLAG_HIDDEN);
+
+        // Hide all items by default
+        lv_obj_add_flag(cont, LV_OBJ_FLAG_HIDDEN);
+
+        frame_pool[i].container = cont;
+        frame_pool[i].summary_label = label_summary;
+        frame_pool[i].full_label = label_full;
+    }
+
+    frame_pool_initialized = true;
+    ESP_LOGD(TAG, "Frame pool initialized (20 items)");
+}
+
+// Update a single frame item in the pool (no String alloc - uses static buffer)
+static void update_frame_item(int index, const String& rawLine) {
+    if (index < 0 || index >= MAX_FRAME_ITEMS)
+        return;
+
+    FrameItemPool& item = frame_pool[index];
+    const char* raw = rawLine.c_str();
+
+    static char summary[128];
+
+    // Affichage :
+    // "05-21 21:20 RSSI:-72 SNR:-10.5 F4GCF-14>..."
+
+    snprintf(summary,
+             sizeof(summary),
+             "%.16s%s",
+             raw,
+             (strlen(raw) > 16) ? raw + 16 : "");
+
+    // Supprime éventuel retour ligne
+    char* nl = strchr(summary, '\n');
+    if (nl)
+        *nl = '\0';
+
+    lv_label_set_text(item.summary_label, summary);
+    lv_label_set_text(item.full_label, raw);
+
+    // Détection trame directe / relayée
+    bool isDirect = true;
+
+    const char* gt = strchr(raw, '>');
+    const char* colon = gt ? strchr(gt, ':') : nullptr;
+
+    if (gt && colon) {
+        for (const char* p = gt; p < colon; p++) {
+            if (*p == '*') {
+                isDirect = false;
+                break;
+            }
+        }
+    }
+
+    lv_color_t frameColor = isDirect
+        ? lv_color_hex(0x00e676)   // vert = direct
+        : lv_color_hex(0xff9800);  // orange = relayé
+
+    lv_obj_set_style_text_color(item.summary_label, frameColor, 0);
+    lv_obj_clear_flag(item.container, LV_OBJ_FLAG_HIDDEN);
+}
+    
+static void populate_frames_list(lv_obj_t *list) {
+    // Initialize pool on first call
+    if (!frame_pool_initialized) {
+        init_frame_pool(list);
+    }
+
+    const std::vector<String> &frames = STORAGE_Utils::getLastFrames(20);
+
+    // Update existing pool items with new data
+    size_t frameCount = std::min(frames.size(), (size_t)MAX_FRAME_ITEMS);
+    for (size_t i = 0; i < frameCount; i++) {
+        update_frame_item(i, frames[frames.size() - 1 - i]);
+    }
+
+    // Hide unused items
+    for (size_t i = frameCount; i < MAX_FRAME_ITEMS; i++) {
+        lv_obj_add_flag(frame_pool[i].container, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+// =============================================================================
+// Stats Tab
+// =============================================================================
+
+static void populate_stats(lv_obj_t *cont) {
+    const std::vector<StationStats> &stations = STORAGE_Utils::getStationStats();
+
+    uint32_t freeHeap = 1048576;
+    if (freeHeap < 8000) {
+        return;
+    }
+
+    char buf[32];
+
+    // Create title and table if not exists
+    if (!stats_title_lbl) {
+        stats_title_lbl = lv_label_create(cont);
+        if (stats_title_lbl) {
+            lv_label_set_text(stats_title_lbl, "Stations Heard");
+            lv_obj_set_style_text_color(stats_title_lbl, lv_color_hex(0x4CAF50), 0);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7)
+            lv_obj_set_style_text_font(stats_title_lbl, &lv_font_montserrat_18, 0);
+#else
+            lv_obj_set_style_text_font(stats_title_lbl, &lv_font_montserrat_14, 0);
+#endif
+        }
+
+        stats_table = lv_table_create(cont);
+        if (stats_table) {
+            lv_table_set_col_cnt(stats_table, 4); // Remove the "Time" column
+            lv_obj_set_width(stats_table, lv_pct(100));
+            lv_obj_set_style_bg_color(stats_table, lv_color_hex(0x0f0f23), 0);
+            lv_obj_set_style_border_color(stats_table, lv_color_hex(0x333344), 0);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7)
+            lv_obj_set_style_pad_all(stats_table, 5, LV_PART_ITEMS);
+#else
+            lv_obj_set_style_pad_all(stats_table, 2, LV_PART_ITEMS);
+#endif
+            // Default text color for table elements (data rows)
+            lv_obj_set_style_text_color(stats_table, lv_color_hex(0x759a9e), LV_PART_ITEMS);
+
+            // Initialize header style only once
+            if (!style_header_text_initialized) { // Check if style is already initialized
+                lv_style_init(&style_header_text);
+                lv_style_set_text_color(&style_header_text, lv_color_hex(0xFF8C00)); // Orange
+#if defined(WAVESHARE_S3_TOUCH_LCD_7)
+                lv_style_set_text_font(&style_header_text, &lv_font_montserrat_18); // Specify font for headers
+#else
+                lv_style_set_text_font(&style_header_text, &lv_font_montserrat_14); // Specify font for headers
+#endif
+                    style_header_text_initialized = true; // Mark style as initialized
+                }
+                // Apply style for headers (using custom state)
+                lv_obj_add_style(stats_table, &style_header_text, (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_USER_1));
+
+                // Column widths adjusted (total ~290px for content area)
+#if defined(WAVESHARE_S3_TOUCH_LCD_7)
+            lv_table_set_col_width(stats_table, 0, 280);  // Station
+            lv_table_set_col_width(stats_table, 1, 120);  // Pkts
+            lv_table_set_col_width(stats_table, 2, 190);  // RSSI
+            lv_table_set_col_width(stats_table, 3, 190);  // SNR
+#elif defined(LINUX_SIM) || !defined(ARDUINO)
+            lv_table_set_col_width(stats_table, 0, 420);  // Station
+            lv_table_set_col_width(stats_table, 1, 180);  // Pkts
+            lv_table_set_col_width(stats_table, 2, 200);  // RSSI
+            lv_table_set_col_width(stats_table, 3, 200);  // SNR
+#else
+            lv_table_set_col_width(stats_table, 0, 100);  // Station
+            lv_table_set_col_width(stats_table, 1, 40);   // Pkts
+            lv_table_set_col_width(stats_table, 2, 70);   // RSSI
+            lv_table_set_col_width(stats_table, 3, 70);   // SNR
+#endif
+
+            // Center text in all table columns
+            lv_obj_set_style_text_align(stats_table, LV_TEXT_ALIGN_CENTER, LV_PART_ITEMS);
+        }
+    }
+
+    // Update table
+    if (stats_table) {
+        // Header row
+        lv_table_set_cell_value(stats_table, 0, 0, "Station");
+        lv_table_set_cell_value(stats_table, 0, 1, "Pkts");
+        lv_table_set_cell_value(stats_table, 0, 2, "RSSI");
+        lv_table_set_cell_value(stats_table, 0, 3, "SNR");
+        // Apply custom state to header cells for styling
+        lv_table_set_cell_ctrl(stats_table, 0, 0, LV_TABLE_CELL_CTRL_CUSTOM_1);
+        lv_table_set_cell_ctrl(stats_table, 0, 1, LV_TABLE_CELL_CTRL_CUSTOM_1);
+        lv_table_set_cell_ctrl(stats_table, 0, 2, LV_TABLE_CELL_CTRL_CUSTOM_1);
+        lv_table_set_cell_ctrl(stats_table, 0, 3, LV_TABLE_CELL_CTRL_CUSTOM_1);
+
+        if (stations.size() == 0) {
+            lv_table_set_row_cnt(stats_table, 2);
+            lv_table_set_cell_value(stats_table, 1, 0, "No stations");
+            lv_table_set_cell_value(stats_table, 1, 1, "heard yet");
+            lv_table_set_cell_value(stats_table, 1, 2, "");
+            lv_table_set_cell_value(stats_table, 1, 3, "");
+        } else {
+            // Sort stations by packet count in descending order
+            std::vector<size_t> indices(stations.size());
+            for (size_t i = 0; i < stations.size(); i++) indices[i] = i;
+            std::sort(indices.begin(), indices.end(), [&stations](size_t a, size_t b) {
+                return stations[a].count > stations[b].count; // Sort by packet count
+            });
+
+            size_t rowCount = (indices.size() < 10) ? indices.size() : 10;
+            lv_table_set_row_cnt(stats_table, rowCount + 1); // +1 for header
+
+            for (size_t i = 0; i < rowCount; i++) {
+                const StationStats &s = stations[indices[i]];
+                int row = i + 1; // Skip header row
+
+                // Station
+                lv_table_set_cell_value(stats_table, row, 0, s.callsign.c_str());
+
+                // Packets
+                snprintf(buf, sizeof(buf), "%u", (unsigned)s.count);
+                lv_table_set_cell_value(stats_table, row, 1, buf);
+
+                // RSSI (average)
+                float avgRssi = s.count > 0 ? (float)s.rssiTotal / s.count : 0.0f;
+                snprintf(buf, sizeof(buf), "%.1f", avgRssi);
+                lv_table_set_cell_value(stats_table, row, 2, buf);
+
+                // SNR (average)
+                float avgSnr = s.count > 0 ? s.snrTotal / s.count : 0.0f;
+                snprintf(buf, sizeof(buf), "%.1f", avgSnr);
+                lv_table_set_cell_value(stats_table, row, 3, buf);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Tab Changed Callback
+// =============================================================================
+
+static void msg_tab_changed(lv_event_t *e) {
+    lv_obj_t *tabview = (lv_obj_t*)lv_event_get_target(e);
+
+    if (!tabview || tabview != msg_tabview) {
+        return;
+    }
+
+    uint16_t tab_idx = lv_tabview_get_tab_act(tabview);
+
+    if (tab_idx > 4 || tab_idx == 0xFFFF) {
+        return;
+    }
+
+    if (current_msg_type != (int)tab_idx) {
+        current_msg_type = (int)tab_idx;
+        ESP_LOGD(TAG, "Messages tab changed to %d", current_msg_type);
+
+        if (current_msg_type == 1 && list_wlnk_global) {
+            populate_msg_list(list_wlnk_global, 1);
+        }
+        if (current_msg_type == 2 && list_contacts_global) {
+            populate_contacts_list(list_contacts_global);
+        }
+        if (current_msg_type == 3 && list_frames_global) {
+            populate_frames_list(list_frames_global);
+            STORAGE_Utils::clearFramesDirty();  // Data is now up-to-date
+        }
+        if (current_msg_type == 4 && cont_stats_global) {
+            populate_stats(cont_stats_global);
+            STORAGE_Utils::clearStatsDirty();  // Data is now up-to-date
+        }
+    }
+}
+
+// =============================================================================
+// Delete All Messages
+// =============================================================================
+
+static void btn_delete_msgs_clicked(lv_event_t *e) {
+    ESP_LOGI(TAG, "Delete all button pressed, type %d", current_msg_type);
+
+    if (current_msg_type >= 2) {
+        return;
+    }
+
+    const char *msg = (current_msg_type == 0) ? "Delete all APRS messages?"
+                                              : "Delete all Winlink mails?";
+    show_delete_confirmation(msg, -1);
+}
+
+// =============================================================================
+// Compose Screen
+// =============================================================================
+
+static void compose_keyboard_event(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+        lv_obj_add_flag(compose_keyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void compose_input_focused(lv_event_t *e) {
+    lv_obj_t *ta = (lv_obj_t*)lv_event_get_target(e);
+    current_focused_input = ta;
+    lv_keyboard_set_textarea(compose_keyboard, ta);
+}
+
+static void btn_send_msg_clicked(lv_event_t *e) {
+    const char *to = lv_textarea_get_text(compose_to_input);
+    const char *msg = lv_textarea_get_text(compose_msg_input);
+
+    if (strlen(to) > 0 && strlen(msg) > 0) {
+        ESP_LOGI(TAG, "Sending message to %s: %s", to, msg);
+        MSG_Utils::saveToConversation(String(to), String(msg), true);
+
+        // Show confirmation popup
+        UIPopups::showTxPacket(msg);
+
+        // Clear inputs and go back
+        lv_textarea_set_text(compose_to_input, "");
+        lv_textarea_set_text(compose_msg_input, "");
+        compose_screen_active = false;
+
+        if (compose_return_screen && lv_obj_is_valid(compose_return_screen)) {
+            if (compose_return_screen == screen_conversation) {
+                refresh_conversation_messages();
+            }
+            UI_SCR_LOAD_ANIM(compose_return_screen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 100, 0, false);
+        } else {
+            UIDashboard::returnToDashboard();
+        }
+    }
+}
+
+static void btn_compose_back_clicked(lv_event_t *e) {
+    compose_screen_active = false;
+    if (compose_return_screen && lv_obj_is_valid(compose_return_screen)) {
+        UI_SCR_LOAD_ANIM(compose_return_screen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 100, 0, false);
+    } else {
+        UIDashboard::returnToDashboard();
+    }
+}
+
+void createComposeScreen() {
+    if (screen_compose)
+        return;
+
+    screen_compose = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen_compose, lv_color_hex(0x1a1a2e), 0);
+
+    // Title bar
+    lv_obj_t *title_bar = lv_obj_create(screen_compose);
+    lv_obj_set_size(title_bar, SCREEN_WIDTH, 35);
+    lv_obj_set_pos(title_bar, 0, 0);
+    lv_obj_set_style_bg_color(title_bar, lv_color_hex(0x006600), 0);
+    lv_obj_set_style_border_width(title_bar, 0, 0);
+    lv_obj_set_style_radius(title_bar, 0, 0);
+    lv_obj_set_style_pad_all(title_bar, 5, 0);
+
+    // Back button
+    lv_obj_t *btn_back = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_back, 60, 25);
+    lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x16213e), 0);
+    lv_obj_add_event_cb(btn_back, btn_compose_back_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_back = lv_label_create(btn_back);
+    lv_label_set_text(lbl_back, "< BACK");
+    lv_obj_center(lbl_back);
+
+    // Title
+    lv_obj_t *title = lv_label_create(title_bar);
+    lv_label_set_text(title, "Compose Message");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 30, 0);
+
+    // Send button
+    lv_obj_t *btn_send = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_send, 60, 25);
+    lv_obj_align(btn_send, LV_ALIGN_RIGHT_MID, -5, 0);
+    lv_obj_set_style_bg_color(btn_send, lv_color_hex(0x16213e), 0);
+    lv_obj_add_event_cb(btn_send, btn_send_msg_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_send = lv_label_create(btn_send);
+    lv_label_set_text(lbl_send, "SEND");
+    lv_obj_center(lbl_send);
+
+    // "To:" label and input
+    lv_obj_t *lbl_to = lv_label_create(screen_compose);
+    lv_label_set_text(lbl_to, "To:");
+    lv_obj_set_pos(lbl_to, 10, 45);
+    lv_obj_set_style_text_color(lbl_to, lv_color_hex(0xffffff), 0);
+
+    compose_to_input = lv_textarea_create(screen_compose);
+    lv_obj_set_size(compose_to_input, SCREEN_WIDTH - 50, 30);
+    lv_obj_set_pos(compose_to_input, 40, 40);
+    lv_textarea_set_one_line(compose_to_input, true);
+    lv_textarea_set_placeholder_text(compose_to_input, "CALLSIGN-SSID");
+    lv_obj_add_event_cb(compose_to_input, compose_input_focused, LV_EVENT_FOCUSED, NULL);
+
+    // "Msg:" label and input
+    lv_obj_t *lbl_msg = lv_label_create(screen_compose);
+    lv_label_set_text(lbl_msg, "Msg:");
+    lv_obj_set_pos(lbl_msg, 10, 80);
+    lv_obj_set_style_text_color(lbl_msg, lv_color_hex(0xffffff), 0);
+
+    compose_msg_input = lv_textarea_create(screen_compose);
+    lv_obj_set_size(compose_msg_input, SCREEN_WIDTH - 20, 50);
+    lv_obj_set_pos(compose_msg_input, 10, 95);
+    lv_textarea_set_placeholder_text(compose_msg_input, "Your message...");
+    lv_obj_add_event_cb(compose_msg_input, compose_input_focused, LV_EVENT_FOCUSED, NULL);
+
+    // Virtual Keyboard (hidden by default)
+    compose_keyboard = lv_keyboard_create(screen_compose);
+    lv_obj_set_size(compose_keyboard, SCREEN_WIDTH, 90);
+    lv_obj_align(compose_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_textarea(compose_keyboard, compose_to_input);
+    lv_obj_add_event_cb(compose_keyboard, compose_keyboard_event, LV_EVENT_ALL, NULL);
+    lv_obj_add_flag(compose_keyboard, LV_OBJ_FLAG_HIDDEN);
+
+    // Toggle keyboard button
+    lv_obj_t *btn_kbd = lv_btn_create(screen_compose);
+    lv_obj_set_size(btn_kbd, 40, 30);
+    lv_obj_align(btn_kbd, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+    lv_obj_set_style_bg_color(btn_kbd, lv_color_hex(0x444466), 0);
+    lv_obj_add_event_cb(btn_kbd, [](lv_event_t *e) {
+        if (lv_obj_has_flag(compose_keyboard, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_clear_flag(compose_keyboard, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(compose_keyboard, LV_OBJ_FLAG_HIDDEN);
+        }
+    }, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_kbd = lv_label_create(btn_kbd);
+    lv_label_set_text(lbl_kbd, LV_SYMBOL_KEYBOARD);
+    lv_obj_center(lbl_kbd);
+
+    ESP_LOGD(TAG, "Compose screen created");
+}
+
+// Reply button uses compose
+static void btn_conversation_reply_clicked(lv_event_t *e) {
+    if (current_conversation_callsign.length() > 0) {
+        createComposeScreen();
+        compose_screen_active = true;
+        compose_return_screen = lv_screen_active();
+        lv_textarea_set_text(compose_to_input, current_conversation_callsign.c_str());
+        current_focused_input = compose_msg_input;
+        lv_keyboard_set_textarea(compose_keyboard, compose_msg_input);
+        UI_SCR_LOAD_ANIM(screen_compose, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
+    }
+}
+
+// =============================================================================
+// Messages Screen Buttons
+// =============================================================================
+
+static void btn_back_clicked(lv_event_t *e) {
+    ESP_LOGD(TAG, "BACK button pressed");
+    UIPopups::closeAll();
+    UIDashboard::returnToDashboard();
+}
+
+
+static void btn_compose_clicked(lv_event_t *e) {
+    createComposeScreen();
+    compose_screen_active = true;
+    compose_return_screen = lv_screen_active();
+    current_focused_input = compose_to_input;
+    UI_SCR_LOAD_ANIM(screen_compose, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
+}
+
+static void btn_add_contact_clicked(lv_event_t *e) {
+    show_contact_edit_screen(nullptr);
+}
+
+// =============================================================================
+// Create Messages Screen
+// =============================================================================
+
+void createMsgScreen() {
+    screen_msg = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen_msg, lv_color_hex(0x1a1a2e), 0);
+    // Title bar
+    lv_obj_t *title_bar = lv_obj_create(screen_msg);
+    lv_obj_set_size(title_bar, SCREEN_WIDTH, 35);
+    lv_obj_set_pos(title_bar, 0, 0);
+    lv_obj_set_style_bg_color(title_bar, lv_color_hex(0x0000cc), 0);
+    lv_obj_set_style_border_width(title_bar, 0, 0);
+    lv_obj_set_style_radius(title_bar, 0, 0);
+    lv_obj_set_style_pad_all(title_bar, 5, 0);
+
+    // Back button
+    lv_obj_t *btn_back = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_back, 50, 25);
+    lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x16213e), 0);
+    lv_obj_add_event_cb(btn_back, btn_back_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_back = lv_label_create(btn_back);
+    lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);
+    lv_obj_center(lbl_back);
+
+    // Title
+    lv_obj_t *title = lv_label_create(title_bar);
+    lv_label_set_text(title, "Messages");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, -40, 0);
+
+   // --- 1. Compose button (Green) ---
+    lv_obj_t *btn_compose = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_compose, 40, 25);
+    lv_obj_align(btn_compose, LV_ALIGN_RIGHT_MID, -50, 0);
+    lv_obj_set_style_bg_color(btn_compose, lv_color_hex(0x00aa55), 0);
+    lv_obj_add_event_cb(btn_compose, btn_compose_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_compose = lv_label_create(btn_compose);
+    lv_label_set_text(lbl_compose, LV_SYMBOL_EDIT);
+    lv_obj_center(lbl_compose);
+
+    // --- 2. Add Contact button (Blue) ---
+    lv_obj_t *btn_add_contact = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_add_contact, 40, 25);
+    lv_obj_align(btn_add_contact, LV_ALIGN_RIGHT_MID, -95, 0); 
+    lv_obj_set_style_bg_color(btn_add_contact, lv_color_hex(0x82aaff), 0);
+    lv_obj_add_event_cb(btn_add_contact, btn_add_contact_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_add = lv_label_create(btn_add_contact);
+    lv_label_set_text(lbl_add, LV_SYMBOL_PLUS);
+    lv_obj_center(lbl_add);
+
+    // --- 3. Delete All button (Red) ---
+    lv_obj_t *btn_delete = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_delete, 40, 25);
+    lv_obj_align(btn_delete, LV_ALIGN_RIGHT_MID, -5, 0);
+    lv_obj_set_style_bg_color(btn_delete, lv_color_hex(0xff4444), 0);
+    lv_obj_add_event_cb(btn_delete, btn_delete_msgs_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_delete = lv_label_create(btn_delete);
+    lv_label_set_text(lbl_delete, LV_SYMBOL_TRASH);
+    lv_obj_center(lbl_delete);
+    
+    // Tabview
+    msg_tabview = lv_tabview_create(screen_msg);
+    lv_tabview_set_tab_bar_position(msg_tabview, LV_DIR_TOP);
+    lv_tabview_set_tab_bar_size(msg_tabview, 30);
+    if (!msg_tabview) {
+        ESP_LOGE(TAG, "Failed to create msg_tabview!");
+        return;
+    }
+    lv_obj_set_size(msg_tabview, SCREEN_WIDTH, SCREEN_HEIGHT - 35);
+    lv_obj_set_pos(msg_tabview, 0, 35);
+    lv_obj_set_style_bg_color(msg_tabview, lv_color_hex(0x0f0f23), 0);
+    lv_obj_add_event_cb(msg_tabview, msg_tab_changed, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lv_obj_t *tab_bar = lv_tabview_get_tab_btns(msg_tabview);
+    if (tab_bar) {
+        lv_obj_set_style_pad_column(tab_bar, 0, 0);
+        // Inactive tabs: white background (LVGL default), orange text
+        lv_obj_set_style_text_color(tab_bar, lv_color_hex(0xFF8C00), LV_PART_ITEMS); // Orange
+        lv_obj_set_style_border_color(tab_bar, lv_color_hex(0x9DB2CC), LV_PART_ITEMS);
+        lv_obj_set_style_border_width(tab_bar, 1, LV_PART_ITEMS);
+        lv_obj_set_style_border_side(tab_bar, LV_BORDER_SIDE_RIGHT, LV_PART_ITEMS);
+        // Active tab: light blue background, dark blue border and text
+        lv_obj_set_style_bg_color(tab_bar, lv_color_hex(0x86B8F7), (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+        lv_obj_set_style_text_color(tab_bar, lv_color_hex(0x0952AD), (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+        lv_obj_set_style_border_color(tab_bar, lv_color_hex(0x0952AD), (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+        lv_obj_set_style_border_width(tab_bar, 3, (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+        lv_obj_set_style_border_side(tab_bar, LV_BORDER_SIDE_BOTTOM, (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+    }
+
+    // APRS Tab
+    lv_obj_t *tab_aprs = lv_tabview_add_tab(msg_tabview, "APRS");
+    if (tab_aprs) {
+        lv_obj_set_style_bg_color(tab_aprs, lv_color_hex(0x0f0f23), 0);
+        lv_obj_set_style_pad_all(tab_aprs, 5, 0);
+
+        list_aprs_global = lv_list_create(tab_aprs);
+        if (list_aprs_global) {
+            lv_obj_set_size(list_aprs_global, lv_pct(100), lv_pct(100));
+            lv_obj_set_style_bg_color(list_aprs_global, lv_color_hex(0x0f0f23), 0);
+            lv_obj_set_style_border_width(list_aprs_global, 0, 0);
+            populate_msg_list(list_aprs_global, 0);
+        }
+    }
+
+    // Winlink Tab
+    lv_obj_t *tab_wlnk = lv_tabview_add_tab(msg_tabview, "Winlink");
+    if (tab_wlnk) {
+        lv_obj_set_style_bg_color(tab_wlnk, lv_color_hex(0x0f0f23), 0);
+        lv_obj_set_style_pad_all(tab_wlnk, 5, 0);
+
+        list_wlnk_global = lv_list_create(tab_wlnk);
+        if (list_wlnk_global) {
+            lv_obj_set_size(list_wlnk_global, lv_pct(100), lv_pct(100));
+            lv_obj_set_style_bg_color(list_wlnk_global, lv_color_hex(0x0f0f23), 0);
+            lv_obj_set_style_border_width(list_wlnk_global, 0, 0);
+        }
+    }
+
+    // Contacts Tab
+    lv_obj_t *tab_contacts = lv_tabview_add_tab(msg_tabview, "Contacts");
+    if (tab_contacts) {
+        lv_obj_set_style_bg_color(tab_contacts, lv_color_hex(0x0f0f23), 0);
+        lv_obj_set_style_pad_all(tab_contacts, 5, 0);
+
+        list_contacts_global = lv_list_create(tab_contacts);
+        if (list_contacts_global) {
+            lv_obj_set_size(list_contacts_global, lv_pct(100), lv_pct(100));
+            lv_obj_set_style_bg_color(list_contacts_global, lv_color_hex(0x0f0f23), 0);
+            lv_obj_set_style_border_width(list_contacts_global, 0, 0);
+        }
+    }
+
+    // Frames Tab
+    lv_obj_t *tab_frames = lv_tabview_add_tab(msg_tabview, "Frames");
+    if (tab_frames) {
+        lv_obj_set_style_bg_color(tab_frames, lv_color_hex(0x0f0f23), 0);
+        lv_obj_set_style_pad_all(tab_frames, 5, 0);
+
+        list_frames_global = lv_list_create(tab_frames);
+        if (list_frames_global) {
+            lv_obj_set_size(list_frames_global, lv_pct(100), lv_pct(100));
+            lv_obj_set_style_bg_color(list_frames_global, lv_color_hex(0x0f0f23), 0);
+            lv_obj_set_style_border_width(list_frames_global, 0, 0);
+        }
+    }
+
+    // Stats Tab
+    lv_obj_t *tab_stats = lv_tabview_add_tab(msg_tabview, "Stats");
+    if (tab_stats) {
+        lv_obj_set_style_bg_color(tab_stats, lv_color_hex(0x0f0f23), 0);
+        lv_obj_set_style_pad_all(tab_stats, 5, 0); // Reduce padding to increase usable width
+
+        cont_stats_global = lv_obj_create(tab_stats);
+        if (cont_stats_global) {
+            lv_obj_set_size(cont_stats_global, lv_pct(100), lv_pct(100));
+            lv_obj_set_style_bg_color(cont_stats_global, lv_color_hex(0x0f0f23), 0);
+            lv_obj_set_style_border_width(cont_stats_global, 0, 0);
+            lv_obj_set_flex_flow(cont_stats_global, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(cont_stats_global, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+            lv_obj_set_style_pad_row(cont_stats_global, 4, 0);
+        }
+    }
+
+    ESP_LOGD(TAG, "Messages screen created with tabs");
+}
+
+// =============================================================================
+// Public Navigation Functions
+// =============================================================================
+
+void openMessagesScreen() {
+    if (!screen_msg) {
+        createMsgScreen();
+    } else {
+        if (list_aprs_global) {
+            populate_msg_list(list_aprs_global, 0);
+        }
+    }
+    UI_SCR_LOAD_ANIM(screen_msg, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
+}
+
+void openComposeWithCallsign(const String& callsign) {
+    createComposeScreen();
+    compose_return_screen = lv_screen_active();
+
+    if (compose_to_input) {
+        lv_textarea_set_text(compose_to_input, callsign.c_str());
+    }
+
+    compose_screen_active = true;
+    current_focused_input = compose_msg_input;
+    lv_keyboard_set_textarea(compose_keyboard, compose_msg_input);
+
+    UI_SCR_LOAD_ANIM(screen_compose, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
+    ESP_LOGD(TAG, "Opening compose for: %s", callsign.c_str());
+}
+
+void refreshConversationsList() {
+    if (list_aprs_global) {
+        populate_msg_list(list_aprs_global, 0);
+    }
+}
+
+void refreshContactsList() {
+    if (list_contacts_global) {
+        populate_contacts_list(list_contacts_global);
+    }
+}
+
+void refreshFramesList() {
+    // Only refresh if data changed AND Messages screen is active AND Frames tab is visible
+    if (!STORAGE_Utils::isFramesDirty()) return;
+
+    if (screen_msg && lv_screen_active() == screen_msg && msg_tabview) {
+        if (lv_tabview_get_tab_act(msg_tabview) == 3 && list_frames_global) {
+            // With object pooling, just update all items (no alloc/dealloc)
+            populate_frames_list(list_frames_global);
+            lv_obj_scroll_to_y(list_frames_global, 0, LV_ANIM_ON);
+            STORAGE_Utils::clearFramesDirty();
+        }
+    }
+}
+
+void refreshStatsIfActive() {
+    // Only refresh if data changed AND Stats tab is currently active
+    if (!STORAGE_Utils::isStatsDirty()) return;
+
+    if (screen_msg && lv_screen_active() == screen_msg && msg_tabview) {
+        if (lv_tabview_get_tab_act(msg_tabview) == 4 && cont_stats_global) {
+            populate_stats(cont_stats_global);
+            STORAGE_Utils::clearStatsDirty();
+        }
+    }
+}
+
+// =============================================================================
+// Physical Keyboard Handler
+// =============================================================================
+
+static char getSymbolChar(char key) {
+    switch (key) {
+    case '1': return '!';
+    case '2': return '@';
+    case '3': return '#';
+    case '4': return '$';
+    case '5': return '%';
+    case '6': return '^';
+    case '7': return '&';
+    case '8': return '*';
+    case '9': return '(';
+    case '0': return ')';
+    case 'q': return '#';
+    case 'w': return '1';
+    case 'e': return '2';
+    case 'r': return '3';
+    case 't': return '(';
+    case 'y': return ')';
+    case 'u': return '_';
+    case 'i': return '-';
+    case 'o': return '+';
+    case 'p': return '@';
+    case 'a': return '*';
+    case 's': return '4';
+    case 'd': return '5';
+    case 'f': return '6';
+    case 'g': return '/';
+    case 'h': return ':';
+    case 'j': return ';';
+    case 'k': return '\'';
+    case 'l': return '"';
+    case 'z': return '7';
+    case 'x': return '8';
+    case 'c': return '9';
+    case 'v': return '?';
+    case 'b': return '!';
+    case 'n': return ',';
+    case 'm': return '.';
+    default: return key;
+    }
+}
+
+void handleComposeKeyboard(char key) {
+    // 1. Reset inactivity timer and wake up screen
+    lastActivityTime = millis();
+    if (screenDimmed) {
+        screenDimmed = false;
+        displaySetBrightness(screenBrightness);
+        // Continue to process key immediately
+    }
+
+    // 2. Identify target (Compose Message OR Contact Edit)
+    lv_obj_t* target_input = nullptr;
+    bool is_compose_mode = false;
+    bool is_contact_mode = false;
+
+    // Case A: Compose Message mode
+    if (compose_screen_active && current_focused_input) {
+        target_input = current_focused_input;
+        is_compose_mode = true;
+    }
+    // Case B: Contact Edit mode (Check if screen is displayed)
+    else if (screen_contact_edit && lv_screen_active() == screen_contact_edit) {
+        // Safety: if pointer is null, force first field
+        if (!contact_current_input) contact_current_input = contact_callsign_input;
+
+        target_input = contact_current_input;
+        is_contact_mode = true;
+    }
+
+    // If no text field is active, exit
+    if (!target_input) return;
+
+    uint32_t now = millis();
+
+    // --- Handle modifier keys (Shift/Symbol) ---
+    if (key == KEY_SHIFT) {
+        if (now - lastShiftTime < DOUBLE_TAP_MS) {
+            capsLockActive = !capsLockActive;
+            symbolLockActive = false;
+            UIPopups::showCapsLockPopup(capsLockActive);
+            ESP_LOGD(TAG, "Caps Lock %s", capsLockActive ? "ON" : "OFF");
+        }
+        lastShiftTime = now;
+        return;
+    }
+
+    if (key == KEY_SYMBOL) {
+        if (now - lastSymbolTime < DOUBLE_TAP_MS) {
+            symbolLockActive = !symbolLockActive;
+            capsLockActive = false;
+            ESP_LOGD(TAG, "Symbol Lock %s", symbolLockActive ? "ON" : "OFF");
+        }
+        lastSymbolTime = now;
+        return;
+    }
+
+    // --- Handle Backspace ---
+    if (key == '\b' || key == 0x08) {
+        lv_textarea_delete_char(target_input);
+        return;
+    }
+
+    // --- Handle Navigation (Enter / Tab) ---
+    if (key == '\n' || key == '\r' || key == '\t') {
+        
+        if (is_compose_mode) {
+            // Navigation Compose (To <-> Msg)
+            if (current_focused_input == compose_to_input) {
+                lv_obj_clear_state(compose_to_input, LV_STATE_FOCUSED);
+                lv_obj_add_state(compose_msg_input, LV_STATE_FOCUSED);
+                current_focused_input = compose_msg_input;
+            } else if (key == '\t') { // Shift+Tab simulated by simple Tab to go back
+                lv_obj_clear_state(compose_msg_input, LV_STATE_FOCUSED);
+                lv_obj_add_state(compose_to_input, LV_STATE_FOCUSED);
+                current_focused_input = compose_to_input;
+            }
+        }
+        else if (is_contact_mode) {
+            // Navigation Contact (Callsign -> Name -> Note -> Callsign)
+            if (contact_current_input == contact_callsign_input) {
+                lv_obj_clear_state(contact_callsign_input, LV_STATE_FOCUSED);
+                lv_obj_add_state(contact_name_input, LV_STATE_FOCUSED);
+                contact_current_input = contact_name_input;
+            } else if (contact_current_input == contact_name_input) {
+                lv_obj_clear_state(contact_name_input, LV_STATE_FOCUSED);
+                lv_obj_add_state(contact_comment_input, LV_STATE_FOCUSED);
+                contact_current_input = contact_comment_input;
+            } else if (contact_current_input == contact_comment_input) {
+                // On last field, Enter or Tab loops to beginning
+                lv_obj_clear_state(contact_comment_input, LV_STATE_FOCUSED);
+                lv_obj_add_state(contact_callsign_input, LV_STATE_FOCUSED);
+                contact_current_input = contact_callsign_input;
+            }
+
+            // Update virtual keyboard if present
+            if (contact_edit_keyboard) {
+                lv_keyboard_set_textarea(contact_edit_keyboard, contact_current_input);
+            }
+        }
+        return;
+    }
+
+    // --- Character input ---
+    char output = key;
+    if (symbolLockActive && key >= 'a' && key <= 'z') {
+        output = getSymbolChar(key);
+    } else if (capsLockActive && key >= 'a' && key <= 'z') {
+        output = key - 32; // Convert to uppercase
+    }
+
+    // IMPORTANT: Write to target_input (which can be Compose OR Contact)
+    char str[2] = {output, '\0'};
+    lv_textarea_add_text(target_input, str);
+}
+} // namespace UIMessaging
+
+#endif // USE_LVGL_UI

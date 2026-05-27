@@ -1,0 +1,104 @@
+/* LVGL UI Common Definitions
+ * Shared constants and screen accessors for UI modules
+ */
+
+#ifndef UI_COMMON_H
+#define UI_COMMON_H
+
+#ifdef USE_LVGL_UI
+
+#include <lvgl.h>
+
+// =============================================================================
+// Version Info
+// =============================================================================
+
+#define UI_VERSION "2.11.0"
+#define UI_VERSION_DATE "2026-04-06"
+
+// =============================================================================
+// Display Constants
+// =============================================================================
+
+#if defined(CROWPANEL_ADVANCE_35)
+#define UI_SCREEN_WIDTH 480
+#define UI_SCREEN_HEIGHT 320
+#elif defined(WAVESHARE_S3_TOUCH_LCD_7)
+#define UI_SCREEN_WIDTH 800
+#define UI_SCREEN_HEIGHT 480
+#elif defined(LINUX_SIM) || !defined(ARDUINO)
+#define UI_SCREEN_WIDTH 1024
+#define UI_SCREEN_HEIGHT 600
+#else
+#define UI_SCREEN_WIDTH 320
+#define UI_SCREEN_HEIGHT 240
+#endif
+
+// =============================================================================
+// Screen Transition Helper
+// =============================================================================
+// Waveshare 7" RGB has insufficient PSRAM bandwidth for animated transitions
+// (each frame requires a full 800x480 re-blit at ~150 ms). The slide animations
+// look choppy and reveal partial-render artefacts. On this board we switch
+// instantly. Other boards (T-Deck Plus SPI, Crowpanel) keep the slide anims.
+
+#if defined(WAVESHARE_S3_TOUCH_LCD_7) || defined(LINUX_SIM)
+#define UI_SCR_LOAD_ANIM(target, dir, time, delay, auto_del) \
+    do { (void)(dir); (void)(time); (void)(delay); (void)(auto_del); lv_screen_load(target); } while (0)
+#else
+#define UI_SCR_LOAD_ANIM(target, dir, time, delay, auto_del) \
+    lv_scr_load_anim((target), (dir), (time), (delay), (auto_del))
+#endif
+
+// =============================================================================
+// Color Constants (APRS-inspired palette)
+// =============================================================================
+
+namespace UIColors {
+    constexpr uint32_t BG_DARK      = 0x1a1a2e;
+    constexpr uint32_t BG_DARKER    = 0x0f0f23;
+    constexpr uint32_t BG_HEADER    = 0x16213e;
+    constexpr uint32_t TEXT_WHITE   = 0xffffff;
+    constexpr uint32_t TEXT_GRAY    = 0x888888;
+    constexpr uint32_t TEXT_CYAN    = 0x759a9e;
+    constexpr uint32_t TEXT_ORANGE  = 0xffa500;
+    constexpr uint32_t TEXT_RED     = 0xff6b6b;
+    constexpr uint32_t TEXT_GREEN   = 0x006600;
+    constexpr uint32_t TEXT_BLUE    = 0x0066cc;
+    constexpr uint32_t TEXT_PURPLE  = 0xc792ea;
+    constexpr uint32_t TEXT_YELLOW  = 0xffcc00;
+    constexpr uint32_t BTN_RED      = 0xcc0000;
+    constexpr uint32_t BTN_BLUE     = 0x0066cc;
+    constexpr uint32_t BTN_GREEN    = 0x009933;
+    constexpr uint32_t BTN_PURPLE   = 0xc792ea;
+}
+
+// =============================================================================
+// Screen Accessors (implemented in lvgl_ui.cpp)
+// =============================================================================
+
+namespace UIScreens {
+    // Get main dashboard screen (for popup visibility checks)
+    // extern : une seule instance partagée par tous les .cpp (définie dans ui_dashboard.cpp)
+    extern lv_obj_t *_mainScreen;
+    inline void setMainScreen(lv_obj_t *s) { _mainScreen = s; }
+    inline lv_obj_t* getMainScreen() { return _mainScreen; }
+
+    // Get messages screen
+    inline lv_obj_t* getMsgScreen() { return nullptr; }
+
+    // Get messages tabview
+    inline lv_obj_t* getMsgTabview() { return nullptr; }
+
+    // Get contacts list
+    inline lv_obj_t* getContactsList() { return nullptr; }
+
+    // Check if UI is initialized
+    inline bool isInitialized() { return true; }
+
+    // Populate contacts list (needed by add contact popup)
+    inline void populateContactsList() {}
+}
+
+#endif // USE_LVGL_UI
+#endif // UI_COMMON_H
