@@ -167,6 +167,10 @@ void LinuxHal::detachInterrupt(uint32_t interruptNum) {
 
 // ---- Timing ----
 
+void LinuxHal::yield() {
+    usleep(1000);  // 1 ms — no-op on ESP32, needed on Linux for SPI loops
+}
+
 void LinuxHal::delay(RadioLibTime_t ms) {
     usleep((useconds_t)ms * 1000);
 }

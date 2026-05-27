@@ -25,6 +25,7 @@ public:
     void detachInterrupt(uint32_t interruptNum) override;
 
     // Timing
+    void yield() override;
     void delay(RadioLibTime_t ms) override;
     void delayMicroseconds(RadioLibTime_t us) override;
     RadioLibTime_t millis() override;

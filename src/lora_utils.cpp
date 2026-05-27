@@ -161,7 +161,6 @@ namespace LoRa_Utils {
 
     void sendNewPacket(const String& newPacket) {
         if (!loraInitOk) return;
-        _radio->standby();
         ESP_LOGI(TAG, "TX → %s", newPacket.c_str());
         std::string pkt = "\x3c\xff\x01";
         pkt += newPacket.c_str();
