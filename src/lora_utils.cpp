@@ -161,8 +161,8 @@ namespace LoRa_Utils {
 
     void sendNewPacket(const String& newPacket) {
         if (!loraInitOk) return;
+        _radio->standby();
         ESP_LOGI(TAG, "TX → %s", newPacket.c_str());
-        // Prepend LoRa APRS preamble 0x3c 0xff 0x01
         std::string pkt = "\x3c\xff\x01";
         pkt += newPacket.c_str();
         int state = _radio->transmit((uint8_t*)pkt.data(), pkt.size());
