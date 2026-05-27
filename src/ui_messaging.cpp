@@ -1331,8 +1331,7 @@ static void btn_send_msg_clicked(lv_event_t *e) {
     const char *msg = lv_textarea_get_text(compose_msg_input);
 
     if (strlen(to) > 0 && strlen(msg) > 0) {
-        ESP_LOGI(TAG, "Sending message to %s: %s", to, msg);
-        MSG_Utils::saveToConversation(String(to), String(msg), true);
+        MSG_Utils::addToOutputBuffer(1, String(to), String(msg));
 
         // Show confirmation popup
         UIPopups::showTxPacket(msg);
