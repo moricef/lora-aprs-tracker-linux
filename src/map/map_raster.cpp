@@ -368,7 +368,7 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_bg_color(lbl, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(lbl, LV_OPA_50, 0);
+    lv_obj_set_style_bg_opa(lbl, LV_OPA_20, 0);
     lv_obj_set_style_pad_hor(lbl, 2, 0);
     lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, 0);
 
@@ -524,10 +524,41 @@ static void zoomCb(lv_event_t *e) {
     reloadTiles();
 }
 
+static bool fullscreenMap = false;
+static lv_obj_t *tbarMap = nullptr;
+static lv_obj_t *ibarMap = nullptr;
+
+static void toggleMapFullscreen() {
+    fullscreenMap = !fullscreenMap;
+    if (fullscreenMap) {
+        lv_obj_add_flag(tbarMap, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ibarMap, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_size(mapCont, CONT_W, 600);
+        lv_obj_set_pos(mapCont, 0, 0);
+    } else {
+        lv_obj_clear_flag(tbarMap, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(ibarMap, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_size(mapCont, CONT_W, MAP_H);
+        lv_obj_set_pos(mapCont, 0, 50);
+    }
+    // Reposition tiles and markers
+    for (int dy = 0; dy < GRID; dy++)
+        for (int dx = 0; dx < GRID; dx++)
+            lv_obj_set_pos(tileImg[dy][dx],
+                (CONT_W - SPRITE_SIZE) / 2 + dx * TILE_SIZE + dragAccumX,
+                (fullscreenMap ? (600 - SPRITE_SIZE) / 2 : (MAP_H - SPRITE_SIZE) / 2) + dy * TILE_SIZE + dragAccumY);
+    updateMarkerPositions();
+}
+
 static void mapTouchCB(lv_event_t *e) {
     lv_event_code_t code = lv_event_get_code(e);
     lv_indev_t *indev = lv_indev_get_act(); if (!indev) return;
     lv_point_t p; lv_indev_get_point(indev, &p);
+
+    if (code == LV_EVENT_DOUBLE_CLICKED) {
+        toggleMapFullscreen();
+        return;
+    }
 
     if (code == LV_EVENT_PRESSED) {
         // Ne pas reset dragAccumX/Y : on conserve le résidu sub-tuile du pan précédent
@@ -576,10 +607,50 @@ static void mapTouchCB(lv_event_t *e) {
 // ============================================================
 lv_obj_t *create(lv_obj_t *) {
     discoverRegion(); discoverZooms(); discoverDefaultPosition();
+
+    lv_obj_t *scr = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x1a1a2e), 0);
+    lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
+
+    // Title bar (always created)
+    lv_obj_t *tbar = lv_obj_create(scr);
+    tbarMap = tbar;
+    lv_obj_set_size(tbar, CONT_W, 50); lv_obj_set_pos(tbar, 0, 0);
+    lv_obj_set_style_bg_color(tbar, lv_color_hex(0x009933), 0);
+    lv_obj_set_style_border_width(tbar, 0, 0); lv_obj_set_style_radius(tbar, 0, 0);
+    lv_obj_t *btnBack = lv_btn_create(tbar);
+    lv_obj_set_size(btnBack, 80, 35);
+    lv_obj_set_style_bg_color(btnBack, lv_color_hex(0x16213e), 0);
+    lv_obj_align(btnBack, LV_ALIGN_LEFT_MID, 10, 0);
+    lv_obj_add_event_cb(btnBack, backCb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *bl = lv_label_create(btnBack); lv_label_set_text(bl, "< BACK"); lv_obj_center(bl);
+    titleLabel = lv_label_create(tbar);
+    lv_label_set_text(titleLabel, "MAP");
+    lv_obj_set_style_text_color(titleLabel, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_20, 0);
+    lv_obj_center(titleLabel);
+
+    // Info bar (always created)
+    lv_obj_t *ibar = lv_obj_create(scr);
+    ibarMap = ibar;
+    lv_obj_set_size(ibar, CONT_W, 30); lv_obj_set_pos(ibar, 0, 570);
+    lv_obj_set_style_bg_color(ibar, lv_color_hex(0x16213e), 0);
+    lv_obj_set_style_border_width(ibar, 0, 0); lv_obj_set_style_radius(ibar, 0, 0);
+    lv_obj_set_style_pad_all(ibar, 4, 0);
+    infoLabel = lv_label_create(ibar);
+    char ib[128]; snprintf(ib, sizeof(ib), "Lat:%.4f  Lon:%.4f  Stn:%d", centerLat, centerLon, mapStationsCount);
+    lv_label_set_text(infoLabel, ib);
+    lv_obj_set_style_text_color(infoLabel, lv_color_hex(0xaaaaaa), 0);
+    lv_obj_set_style_text_font(infoLabel, &lv_font_montserrat_14, 0);
+    lv_obj_center(infoLabel);
+
     if (!mapRegion[0]) {
-        lv_obj_t *l = lv_label_create(lv_screen_active());
-        lv_label_set_text(l, "Tuiles map introuvables");
-        lv_obj_center(l); return l;
+        lv_obj_t *l = lv_label_create(scr);
+        lv_label_set_text(l, "Tuiles map introuvables\n\nCopier les tuiles dans\n/data/LoRa_Tracker/Maps/<region>/");
+        lv_obj_set_style_text_color(l, lv_color_hex(0xff6b6b), 0);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_center(l);
+        return scr;
     }
 
     // Reset pan state
@@ -589,35 +660,14 @@ lv_obj_t *create(lv_obj_t *) {
 
     MapMath::latLonToTile(centerLat, centerLon, zoom, &centerTX, &centerTY);
 
-    lv_obj_t *scr = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x1a1a2e), 0);
-    lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
-
-    // ---- Barre titre ----
-    lv_obj_t *tbar = lv_obj_create(scr);
-    lv_obj_set_size(tbar, CONT_W, 50); lv_obj_set_pos(tbar, 0, 0);
-    lv_obj_set_style_bg_color(tbar, lv_color_hex(0x009933), 0);
-    lv_obj_set_style_border_width(tbar, 0, 0); lv_obj_set_style_radius(tbar, 0, 0);
-
-    lv_obj_t *btnBack = lv_btn_create(tbar);
-    lv_obj_set_size(btnBack, 80, 35);
-    lv_obj_set_style_bg_color(btnBack, lv_color_hex(0x16213e), 0);
-    lv_obj_align(btnBack, LV_ALIGN_LEFT_MID, 10, 0);
-    lv_obj_add_event_cb(btnBack, backCb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *bl = lv_label_create(btnBack); lv_label_set_text(bl, "< BACK"); lv_obj_center(bl);
-
-    titleLabel = lv_label_create(tbar);
+    // Title bar: update zoom label
     char z[16]; snprintf(z, sizeof(z), "MAP (Z%d)", zoom); lv_label_set_text(titleLabel, z);
-    lv_obj_set_style_text_color(titleLabel, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_20, 0);
-    lv_obj_align(titleLabel, LV_ALIGN_CENTER, -40, 0);
-
+    // Add zoom buttons
     lv_obj_t *zp = lv_btn_create(tbar); lv_obj_set_size(zp, 36, 36);
     lv_obj_align(zp, LV_ALIGN_RIGHT_MID, -50, 0);
     lv_obj_set_style_bg_color(zp, lv_color_hex(0x16213e), 0);
     lv_obj_add_event_cb(zp, zoomCb, LV_EVENT_CLICKED, (void*)1);
     lv_obj_t *zlp = lv_label_create(zp); lv_label_set_text(zlp, "+"); lv_obj_center(zlp);
-
     lv_obj_t *zm = lv_btn_create(tbar); lv_obj_set_size(zm, 36, 36);
     lv_obj_align(zm, LV_ALIGN_RIGHT_MID, -5, 0);
     lv_obj_set_style_bg_color(zm, lv_color_hex(0x16213e), 0);
@@ -632,6 +682,7 @@ lv_obj_t *create(lv_obj_t *) {
     lv_obj_set_scrollbar_mode(mapCont, LV_SCROLLBAR_MODE_OFF);
     lv_obj_clear_flag(mapCont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(mapCont, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_DOUBLE_CLICKED, NULL);
     lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_PRESSED,  NULL);
     lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_RELEASED, NULL);
@@ -645,19 +696,6 @@ lv_obj_t *create(lv_obj_t *) {
                 (CONT_W - SPRITE_SIZE) / 2 + dx * TILE_SIZE,
                 (MAP_H  - SPRITE_SIZE) / 2 + dy * TILE_SIZE);
         }
-
-    // ---- Barre infos ----
-    lv_obj_t *ibar = lv_obj_create(scr);
-    lv_obj_set_size(ibar, CONT_W, 30); lv_obj_set_pos(ibar, 0, 570);
-    lv_obj_set_style_bg_color(ibar, lv_color_hex(0x16213e), 0);
-    lv_obj_set_style_border_width(ibar, 0, 0); lv_obj_set_style_radius(ibar, 0, 0);
-    lv_obj_set_style_pad_all(ibar, 4, 0);
-    infoLabel = lv_label_create(ibar);
-    char ib[128]; snprintf(ib, sizeof(ib), "Lat:%.4f  Lon:%.4f  Stn:%d", centerLat, centerLon, mapStationsCount);
-    lv_label_set_text(infoLabel, ib);
-    lv_obj_set_style_text_color(infoLabel, lv_color_hex(0xaaaaaa), 0);
-    lv_obj_set_style_text_font(infoLabel, &lv_font_montserrat_14, 0);
-    lv_obj_center(infoLabel);
 
     mapActive = true;
     reloadTiles();   // charge tuiles + crée les marqueurs stations

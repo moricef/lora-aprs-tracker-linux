@@ -35,6 +35,7 @@
 #include "ui_settings.h"
 #include "ui_popups.h"
 #include "map_state.h"
+#include "map/map_raster.h"
 #include <sys/stat.h>
 #endif
 
@@ -212,6 +213,7 @@ static void setup() {
 #ifdef USE_LVGL_UI
     fprintf(stderr, "[UI] lv_init...\n"); fflush(stderr);
     lv_init();
+    lv_group_set_default(lv_group_create());
     lv_display_t *disp = lv_linux_drm_create();
     if (!disp) {
         ESP_LOGE(TAG, "drm_create failed — /dev/dri/card0 inaccessible?");
@@ -228,6 +230,7 @@ static void setup() {
         lv_indev_t *touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, touchPath);
         if (touch) {
             lv_indev_set_display(touch, disp);
+            lv_indev_set_group(touch, lv_group_get_default());
             lv_evdev_set_calibration(touch, 0, 0, 1023, 599);
         }
         UIDashboard::createDashboard();
@@ -365,6 +368,9 @@ static void loop() {
 
     STATION_Utils::checkListenedStationsByTimeAndDelete();
     STATION_Utils::cleanOldMapStations();
+#ifdef USE_LVGL_UI
+    MapRaster::refreshStations();
+#endif
 
     // ── GPS / SmartBeacon ────────────────────────────────────────────────────
     lastTx = millis() - lastTxTime;

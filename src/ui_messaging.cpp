@@ -204,9 +204,8 @@ static void delete_confirm_msgbox_timer_cb(lv_timer_t *timer) {
         ESP_LOGD(TAG, "Msgbox deleted");
     }
     confirm_msgbox_to_delete = nullptr;
-
-    lv_obj_invalidate(lv_layer_top());
-    lv_refr_now(NULL);
+    // Reset input group to avoid focus stuck on deleted popup
+    lv_group_focus_next(lv_group_get_default());
 
     if (need_aprs_list_refresh) {
         if (list_aprs_global) {
@@ -222,30 +221,32 @@ static void delete_confirm_msgbox_timer_cb(lv_timer_t *timer) {
     lv_timer_del(timer);
 }
 
-static void confirm_close_only() {
-    if (!confirm_msgbox) return;
-    confirm_msgbox_to_delete = confirm_msgbox;
-    confirm_msgbox = nullptr;
-    pending_delete_msg_index = -1;
-    lv_timer_create(delete_confirm_msgbox_timer_cb, 10, NULL);
-}
-
-static void confirm_yes_cb(lv_event_t *) {
-    ESP_LOGI(TAG, "confirm Yes: pending_index=%d type=%d",
-             pending_delete_msg_index, current_msg_type);
-    need_aprs_list_refresh = false;
+static void do_confirm_delete() {
     if (pending_delete_msg_index == -1) {
         MSG_Utils::deleteFile(current_msg_type);
     } else {
         MSG_Utils::deleteMessageByIndex(current_msg_type, pending_delete_msg_index);
     }
     need_aprs_list_refresh = true;
-    confirm_close_only();
+}
+
+static void confirm_yes_cb(lv_event_t *) {
+    do_confirm_delete();
+    if (confirm_msgbox) { lv_msgbox_close(confirm_msgbox); confirm_msgbox = nullptr; }
+    pending_delete_msg_index = -1;
+    lv_timer_create([](lv_timer_t *t) {
+        if (need_aprs_list_refresh) {
+            if (list_aprs_global) populate_msg_list(list_aprs_global, 0);
+            if (list_wlnk_global) populate_msg_list(list_wlnk_global, 1);
+            need_aprs_list_refresh = false;
+        }
+        lv_timer_del(t);
+    }, 200, nullptr);
 }
 
 static void confirm_no_cb(lv_event_t *) {
-    ESP_LOGI(TAG, "confirm No → close");
-    confirm_close_only();
+    if (confirm_msgbox) { lv_msgbox_close(confirm_msgbox); confirm_msgbox = nullptr; }
+    pending_delete_msg_index = -1;
 }
 
 static void show_delete_confirmation(const char *message, int msg_index) {
@@ -406,9 +407,7 @@ static void delete_msgbox_timer_cb(lv_timer_t *timer) {
         lv_obj_del(msgbox_to_delete);
     }
     msgbox_to_delete = nullptr;
-
-    lv_obj_invalidate(lv_layer_top());
-    lv_refr_now(NULL);
+    lv_group_focus_next(lv_group_get_default());
 
     if (need_conversation_refresh) {
         refresh_conversation_messages();
@@ -418,26 +417,30 @@ static void delete_msgbox_timer_cb(lv_timer_t *timer) {
     lv_timer_del(timer);
 }
 
-static void conv_close_only() {
-    if (!conversation_confirm_msgbox) return;
-    msgbox_to_delete = conversation_confirm_msgbox;
-    conversation_confirm_msgbox = nullptr;
-    pending_conversation_msg_delete = -1;
-    lv_timer_create(delete_msgbox_timer_cb, 10, NULL);
-}
-
 static void conv_yes_cb(lv_event_t *) {
-    ESP_LOGI(TAG, "conv confirm Yes: index=%d", pending_conversation_msg_delete);
-    need_conversation_refresh = false;
     MSG_Utils::deleteMessageFromConversation(current_conversation_callsign,
                                              pending_conversation_msg_delete);
     need_conversation_refresh = true;
-    conv_close_only();
+    if (conversation_confirm_msgbox) {
+        lv_msgbox_close(conversation_confirm_msgbox);
+        conversation_confirm_msgbox = nullptr;
+    }
+    pending_conversation_msg_delete = -1;
+    lv_timer_create([](lv_timer_t *t) {
+        if (need_conversation_refresh) {
+            refresh_conversation_messages();
+            need_conversation_refresh = false;
+        }
+        lv_timer_del(t);
+    }, 200, nullptr);
 }
 
 static void conv_no_cb(lv_event_t *) {
-    ESP_LOGI(TAG, "conv confirm No → close");
-    conv_close_only();
+    if (conversation_confirm_msgbox) {
+        lv_msgbox_close(conversation_confirm_msgbox);
+        conversation_confirm_msgbox = nullptr;
+    }
+    pending_conversation_msg_delete = -1;
 }
 
 static void show_conversation_delete_confirmation(int msg_index) {
