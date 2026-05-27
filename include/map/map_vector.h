@@ -13,5 +13,11 @@ namespace MapVector {
     // Retourne true si la tile a été trouvée et rendue, false si tile vide/absente.
     bool renderTile(lv_obj_t *canvas, int z, int x, int y, int canvasSize);
 
+    bool isOpen();
+    int  minZoom();
+    int  maxZoom();
+    void startWorker();
+    void requestTile(int z, int x, int y);
+    void stopWorker();
     void close();
 }
