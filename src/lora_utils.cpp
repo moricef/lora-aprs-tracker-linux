@@ -162,8 +162,7 @@ namespace LoRa_Utils {
     void sendNewPacket(const String& newPacket) {
         if (!loraInitOk) return;
         ESP_LOGI(TAG, "TX → %s", newPacket.c_str());
-        std::string pkt = "\x3c\xff\x01";
-        pkt += newPacket.c_str();
+        std::string pkt = "\x3c\xff\x01" + std::string(newPacket.c_str());
         int state = _radio->transmit((uint8_t*)pkt.data(), pkt.size());
         transmitFlag = true;
         if (state == RADIOLIB_ERR_NONE) {
@@ -172,7 +171,6 @@ namespace LoRa_Utils {
         } else {
             ESP_LOGE(TAG, "TX failed: %d", state);
         }
-        // Re-arm RX
         _radio->startReceive(RADIOLIB_SX126X_RX_TIMEOUT_NONE);
         transmitFlag = false;
     }

@@ -229,34 +229,12 @@ static void btn_map_clicked(lv_event_t *e) {
 
     UIPopups::closeAll();
 
-#ifdef LINUX_SIM
     if (MapState::screen_map) {
         lv_obj_del(MapState::screen_map);
         MapState::screen_map = nullptr;
     }
     MapState::screen_map = MapRaster::create(NULL);
-    // Pas de swipe gesture pour retourner : conflit avec le pan rapide de la map.
-    // Le bouton BACK suffit.
     lv_screen_load(MapState::screen_map);
-#else
-    // Show loading popup
-    UIPopups::showMapLoading();
-
-    // Recreate map screen each time to update positions
-    if (MapState::screen_map) {
-        ESP_LOGD(TAG, "Deleting old screen_map");
-        lv_obj_del(MapState::screen_map);
-        MapState::screen_map = nullptr;
-    }
-    ESP_LOGD(TAG, "Creating new map screen");
-    UIMapManager::create_map_screen();
-    ESP_LOGD(TAG, "Map screen created, loading animation");
-
-    // Hide loading popup now that map is ready
-    UIPopups::hideMapLoading();
-
-    UI_SCR_LOAD_ANIM(MapState::screen_map, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
-#endif
     ESP_LOGD(TAG, "btn_map_clicked DONE");
 }
 
