@@ -956,7 +956,7 @@ static void show_contact_edit_screen(const Contact *contact) {
 
         // --- Virtual Keyboard ---
         contact_edit_keyboard = lv_keyboard_create(screen_contact_edit);
-        lv_obj_set_size(contact_edit_keyboard, SCREEN_WIDTH, 100);
+        lv_obj_set_size(contact_edit_keyboard, SCREEN_WIDTH, 200);
         lv_obj_align(contact_edit_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_add_flag(contact_edit_keyboard, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_event_cb(contact_edit_keyboard, contact_edit_keyboard_event, LV_EVENT_ALL, NULL);
@@ -1431,7 +1431,7 @@ void createComposeScreen() {
 
     // Virtual Keyboard (hidden by default)
     compose_keyboard = lv_keyboard_create(screen_compose);
-    lv_obj_set_size(compose_keyboard, SCREEN_WIDTH, 90);
+    lv_obj_set_size(compose_keyboard, SCREEN_WIDTH, 200);
     lv_obj_align(compose_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_keyboard_set_textarea(compose_keyboard, compose_to_input);
     lv_obj_add_event_cb(compose_keyboard, compose_keyboard_event, LV_EVENT_ALL, NULL);
