@@ -28,6 +28,7 @@ SRCS += src/arduino_compat.cpp src/linux_hal.cpp src/lora_utils.cpp
 SRCS += src/gps_utils.cpp src/configuration.cpp src/smartbeacon_utils.cpp
 SRCS += src/station_utils.cpp src/storage_utils.cpp src/msg_utils.cpp
 SRCS += src/aprs_is_utils.cpp src/webconf_httpd.cpp src/notification_utils.cpp
+SRCS += src/gpx_writer.cpp
 SRCS += lib/APRSPacketLib/src/APRSPacketLib.cpp lib/gps_math/gps_math.cpp
 SRCS += $(RADIO)/Hal.cpp $(RADIO)/Module.cpp
 SRCS += $(RADIO)/modules/SX126x/SX126x.cpp
