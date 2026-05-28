@@ -336,25 +336,6 @@ static void show_station_popup(int stationIdx) {
 
 static void deleteMarkers(); // forward decl
 
-static void station_click_cb(lv_event_t *e) {
-  int idx = (int)(intptr_t)lv_event_get_user_data(e);
-  show_station_popup(idx);
-}
-
-// Long press: open compose screen pre-filled with station callsign
-static void station_longpress_cb(lv_event_t *e) {
-  int idx = (int)(intptr_t)lv_event_get_user_data(e);
-  if (idx < 0)
-    return; // own station: no self-messaging
-  MapStation *st = STATION_Utils::getMapStation(idx);
-  if (!st || !st->valid)
-    return;
-  closeStationPopup();
-  mapActive = false;
-  deleteMarkers();
-  UIMessaging::openComposeWithCallsign(st->callsign);
-}
-
 // ============================================================
 // APRS icons — loaded from split PNG files (sd_card)
 // ============================================================
@@ -421,7 +402,7 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
   lv_obj_set_style_border_width(m, 0, 0);
   lv_obj_set_style_pad_all(m, 0, 0);
   lv_obj_clear_flag(m, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_flag(m, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(m, LV_OBJ_FLAG_CLICKABLE);
 
   // APRS icon or fallback disc
   char iconPath[320];
@@ -466,17 +447,7 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
   lv_obj_set_style_pad_hor(lbl, 2, 0);
   lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, 0);
 
-  // Make all children clickable so the indev finds them and events bubble to m
-  uint32_t childCnt = lv_obj_get_child_cnt(m);
-  for (uint32_t i = 0; i < childCnt; i++) {
-    lv_obj_t *child = lv_obj_get_child(m, i);
-    lv_obj_add_flag(child, LV_OBJ_FLAG_CLICKABLE);
-  }
-
-  lv_obj_add_event_cb(m, station_click_cb, LV_EVENT_CLICKED,
-                      (void *)(intptr_t)stationIdx);
-  lv_obj_add_event_cb(m, station_longpress_cb, LV_EVENT_LONG_PRESSED,
-                      (void *)(intptr_t)stationIdx);
+  lv_obj_update_layout(m);
   lv_obj_move_foreground(m);
   return m;
 }
@@ -559,6 +530,7 @@ static void updateMarkerPositions() {
     int cx, cy;
     latLonToContPos(lat, lon, &cx, &cy);
     lv_obj_set_pos(markers[i].obj, cx - MARKER_W / 2, cy - ICON_SIZE / 2);
+    lv_obj_update_layout(markers[i].obj);
   }
 }
 
@@ -833,6 +805,7 @@ void setPosition(double lat, double lon) {
       int cx, cy;
       latLonToContPos(lat, lon, &cx, &cy);
       lv_obj_set_pos(markers[i].obj, cx - MARKER_W / 2, cy - ICON_SIZE / 2);
+      lv_obj_update_layout(markers[i].obj);
       return;
     }
   }
@@ -978,11 +951,6 @@ static void mapTouchCB(lv_event_t *e) {
   if (code == LV_EVENT_PRESSED) {
     pressPt = p;
     pressMs = millis();
-    // Use lv_indev_get_obj_act() — lv_event_get_target() always returns
-    // mapCont in its own callback (it's the receiver, not the hit-test result).
-    lv_obj_t *hit = lv_indev_search_obj(mapCont, &p);
-    bool onMarker = (hit && hit != mapCont);
-    if (onMarker) { closeStationPopup(); return; }
     dragLast = p;
     dragLastMs = millis();
     panActive = true;
@@ -1062,7 +1030,6 @@ static void mapTouchCB(lv_event_t *e) {
     panActive = false;
 
     if (wasPan) {
-      // Real pan — update info label
       if (infoLabel) {
         char buf[128];
         snprintf(buf, sizeof(buf), "Lat:%.4f  Lon:%.4f  Stn:%d", centerLat, centerLon, mapStationsCount);
@@ -1081,19 +1048,15 @@ static void mapTouchCB(lv_event_t *e) {
       if (pressPt.x < a.x1 || pressPt.x > a.x2 ||
           pressPt.y < a.y1 || pressPt.y > a.y2) continue;
       if (held > 400) {
-        // Long press → compose
         int idx = markers[i].stationIdx;
         if (idx >= 0) {
           MapStation *st = STATION_Utils::getMapStation(idx);
           if (st && st->valid) {
             closeStationPopup();
-            mapActive = false;
-            deleteMarkers();
             UIMessaging::openComposeWithCallsign(st->callsign);
           }
         }
       } else {
-        // Short tap → info popup
         show_station_popup(markers[i].stationIdx);
       }
       return;
