@@ -338,14 +338,12 @@ static void deleteMarkers(); // forward decl
 
 static void station_click_cb(lv_event_t *e) {
   int idx = (int)(intptr_t)lv_event_get_user_data(e);
-  fprintf(stderr, "[MAP] CLICK idx=%d\n", idx); fflush(stderr);
   show_station_popup(idx);
 }
 
 // Long press: open compose screen pre-filled with station callsign
 static void station_longpress_cb(lv_event_t *e) {
   int idx = (int)(intptr_t)lv_event_get_user_data(e);
-  fprintf(stderr, "[MAP] LONG_PRESS idx=%d\n", idx); fflush(stderr);
   if (idx < 0)
     return; // own station: no self-messaging
   MapStation *st = STATION_Utils::getMapStation(idx);
@@ -468,20 +466,25 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
   lv_obj_set_style_pad_hor(lbl, 2, 0);
   lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, 0);
 
+  // Make all children clickable so the indev finds them and events bubble to m
+  uint32_t childCnt = lv_obj_get_child_cnt(m);
+  for (uint32_t i = 0; i < childCnt; i++) {
+    lv_obj_t *child = lv_obj_get_child(m, i);
+    lv_obj_add_flag(child, LV_OBJ_FLAG_CLICKABLE);
+  }
+
   lv_obj_add_event_cb(m, station_click_cb, LV_EVENT_CLICKED,
                       (void *)(intptr_t)stationIdx);
   lv_obj_add_event_cb(m, station_longpress_cb, LV_EVENT_LONG_PRESSED,
                       (void *)(intptr_t)stationIdx);
+  lv_obj_move_foreground(m);
   return m;
 }
 
 static void createMarkers() {
-  if (!mapCont || !mapActive) {
-    fprintf(stderr, "[MAP] createMarkers SKIP mapCont=%p mapActive=%d\n", (void*)mapCont, mapActive);
+  if (!mapCont || !mapActive)
     return;
-  }
   deleteMarkers();
-  fprintf(stderr, "[MAP] createMarkers mapStationsCount=%d gpsLat=%.4f gpsLon=%.4f\n", mapStationsCount, gpsLat, gpsLon);
 
   // Propre station
   if (gpsLat != 0.0 || gpsLon != 0.0) {
@@ -534,8 +537,6 @@ static void createMarkers() {
     if (m)
       markers[markerCount++] = {m, i};
   }
-  fprintf(stderr, "[MAP] createMarkers DONE count=%d\n", markerCount);
-  fflush(stderr);
 }
 
 // Update marker positions without recreating them (pan)
@@ -850,8 +851,6 @@ void zoomIn() {
 }
 
 void refreshStations() {
-  fprintf(stderr, "[MAP] refreshStations mapActive=%d mapCont=%p\n", mapActive, (void*)mapCont);
-  fflush(stderr);
   if (mapActive && mapCont)
     createMarkers();
 }
@@ -977,7 +976,7 @@ static void mapTouchCB(lv_event_t *e) {
     // If touch lands on a marker, let it handle the click/long-press
     lv_obj_t *target = (lv_obj_t *)lv_event_get_target(e);
     bool onMarker = (target != mapCont);
-    fprintf(stderr, "[MAP] PRESSED onMarker=%d pos(%d,%d) markers=%d\n", onMarker, p.x, p.y, markerCount);
+    fprintf(stderr, "[MAP] PRESSED onMarker=%d markers=%d\n", onMarker, markerCount);
     fflush(stderr);
     if (onMarker) { closeStationPopup(); return; }
     dragLast = p;
@@ -1054,8 +1053,6 @@ static void mapTouchCB(lv_event_t *e) {
       reloadTiles();
     }
   } else if (code == LV_EVENT_RELEASED && panActive) {
-    fprintf(stderr, "[MAP] RELEASED accum(%d,%d) vel(%.1f,%.1f) markers=%d\n", dragAccumX, dragAccumY, velX, velY, markerCount);
-    fflush(stderr);
     panActive = false;
     if (infoLabel) {
       char buf[128];
