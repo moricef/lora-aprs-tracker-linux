@@ -25,10 +25,121 @@
 #include "vtzero/vector_tile.hpp"
 #include "vtzero/geometry.hpp"
 
+extern const lv_font_t lv_font_montserrat_12;
+extern const lv_font_t lv_font_montserrat_14;
+
 namespace MapVector {
 
 #define EXTENT    4096
 #define TILE_SIZE 256
+
+// ---- Glyph rendering from LVGL fonts (worker-thread safe) ------------------
+static int textWidth(const char *text, const lv_font_t *font) {
+    int w = 0;
+    while (*text) {
+        lv_font_glyph_dsc_t g;
+        if (lv_font_get_glyph_dsc(font, &g, (uint8_t)*text, (uint8_t)*(text+1)))
+            w += g.adv_w;
+        text++;
+    }
+    return w;
+}
+
+static void drawTextLabel(uint8_t *buf, int bufW, int bufH,
+                          int x, int y, const char *text,
+                          const lv_font_t *font, uint8_t r, uint8_t g, uint8_t b) {
+    lv_draw_buf_t tmpDrawBuf{};
+    int penX = x;
+    while (*text) {
+        uint8_t c = (uint8_t)*text;
+        uint8_t cn = (uint8_t)*(text + 1);
+        lv_font_glyph_dsc_t gd;
+        if (!lv_font_get_glyph_dsc(font, &gd, c, cn)) { text++; continue; }
+        const uint8_t *src = (const uint8_t *)lv_font_get_glyph_bitmap(&gd, &tmpDrawBuf);
+        if (!src) { text++; penX += gd.adv_w; continue; }
+        int gx = penX + gd.ofs_x;
+        int gy = y + gd.ofs_y;
+        int stride = gd.stride ? (int)gd.stride : (int)gd.box_w;
+        for (int row = 0; row < (int)gd.box_h; row++) {
+            for (int col = 0; col < (int)gd.box_w; col++) {
+                int px = gx + col, py = gy + row;
+                if (px < 0 || px >= bufW || py < 0 || py >= bufH) continue;
+                uint8_t alpha = 0;
+                switch (gd.format) {
+                case LV_FONT_GLYPH_FORMAT_A8:
+                    alpha = src[row * stride + col]; break;
+                case LV_FONT_GLYPH_FORMAT_A4: {
+                    uint8_t v = src[row * stride + col / 2];
+                    alpha = (col & 1) ? (v & 0x0F) << 4 : (v & 0xF0);
+                    break;
+                }
+                case LV_FONT_GLYPH_FORMAT_A2: {
+                    uint8_t v = src[row * stride + col / 4];
+                    alpha = ((v >> (6 - (col & 3) * 2)) & 0x03) * 0x55;
+                    break;
+                }
+                case LV_FONT_GLYPH_FORMAT_A1:
+                    if ((src[row * stride + col / 8] >> (7 - (col & 7))) & 1)
+                        alpha = 0xFF;
+                    break;
+                default: continue;
+                }
+                if (alpha == 0) continue;
+                uint8_t *p = buf + (py * bufW + px) * 4;
+                p[0] = ((int)b * alpha + (int)p[0] * (255 - alpha)) / 255;
+                p[1] = ((int)g * alpha + (int)p[1] * (255 - alpha)) / 255;
+                p[2] = ((int)r * alpha + (int)p[2] * (255 - alpha)) / 255;
+            }
+        }
+        penX += gd.adv_w;
+        text++;
+    }
+}
+
+// ---- Label placement (collision avoidance) ---------------------------------
+struct LabelCandidate {
+    int x, y, w, h, priority;
+    const char *text;
+    uint8_t r, g, b;
+    const lv_font_t *font;
+};
+
+static std::vector<LabelCandidate> s_labels;
+
+static void addLabel(int px, int py, const char *text, int priority,
+                     const lv_font_t *font, uint8_t r, uint8_t g, uint8_t b) {
+    if (!text || !text[0]) return;
+    int tw = textWidth(text, font);
+    if (tw <= 0 || tw > TILE_SIZE - 4) return;
+    int fh = font->line_height > 0 ? font->line_height : font->base_line;
+    s_labels.push_back({px - tw/2, py - fh/2, tw, fh, priority, text, r, g, b, font});
+}
+
+static void placeLabels(uint8_t *buf, int sz) {
+    struct Placed { int x, y, w, h; };
+    std::vector<Placed> placed;
+    std::sort(s_labels.begin(), s_labels.end(),
+              [](const LabelCandidate &a, const LabelCandidate &b) {
+                  return a.priority < b.priority;
+              });
+    for (auto &l : s_labels) {
+        int lx = l.x, ly = l.y;
+        if (lx < 1) lx = 1;
+        if (ly < 1) ly = 1;
+        if (lx + l.w > sz - 1) lx = sz - 1 - l.w;
+        if (ly + l.h > sz - 1) ly = sz - 1 - l.h;
+        bool overlap = false;
+        for (auto &p : placed) {
+            if (lx + l.w + 2 <= p.x || p.x + p.w + 2 <= lx ||
+                ly + l.h + 2 <= p.y || p.y + p.h + 2 <= ly) continue;
+            overlap = true; break;
+        }
+        if (overlap) continue;
+        drawTextLabel(buf, sz, sz, lx, ly + l.h, l.text, l.font, l.r, l.g, l.b);
+        placed.push_back({lx, ly, l.w, l.h});
+    }
+    s_labels.clear();
+}
 
 static int    s_fd       = -1;
 static void  *s_mapped   = nullptr;
@@ -258,7 +369,7 @@ struct PolyCollector {
 static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
     int w = sz, h = sz;
 
-    // Fond beige
+    // Beige background
     for (int i = 0; i < w * h; i++) {
         uint8_t *p = buf + i * 4;
         p[0] = 0xD6; p[1] = 0xEA; p[2] = 0xF0; p[3] = 0xFF;
@@ -298,6 +409,101 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
             if (feat.geometry_type() == vtzero::GeomType::LINESTRING)
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
     }
+
+    // ---- Pass 3: collecter les labels (place, waterway, water) ----------------
+    vtzero::vector_tile t3{mvt};
+    while (auto lay = t3.next_layer()) {
+        std::string name = layerName(lay);
+        bool isPlace = (name == "place");
+        bool isWater = (name == "water");
+        bool isWaterway = (name == "waterway");
+        if (!isPlace && !isWater && !isWaterway) continue;
+
+        while (auto feat = lay.next_feature()) {
+            // Read feature name
+            const char *labelText = nullptr;
+            while (auto prop = feat.next_property()) {
+                if (prop.key() == "name" && prop.value().type() == vtzero::property_value_type::string_value) {
+                    labelText = prop.value().string_value().data();
+                    break;
+                }
+            }
+            if (!labelText) continue;
+
+            auto geom = feat.geometry_type();
+            if (geom == vtzero::GeomType::POLYGON || geom == vtzero::GeomType::POINT) {
+                // Centroid from first ring bounding box
+                struct LabelPos {
+                    int minX = 0, minY = 0, maxX = 0, maxY = 0;
+                    int ptCount = 0;
+                    void ring_begin(uint32_t) { minX = minY = 99999; maxX = maxY = -99999; ptCount = 0; }
+                    void ring_point(vtzero::point p) {
+                        int px = toPx(p.x, tileSz), py = toPx(p.y, tileSz);
+                        if (px < minX) minX = px; if (px > maxX) maxX = px;
+                        if (py < minY) minY = py; if (py > maxY) maxY = py;
+                        ptCount++;
+                    }
+                    void ring_end(vtzero::ring_type) {}
+                    void points_begin(uint32_t) {} void points_point(vtzero::point) {} void points_end() {}
+                    void linestring_begin(uint32_t) {} void linestring_point(vtzero::point) {} void linestring_end() {}
+                    int tileSz;
+                } lp;
+                lp.tileSz = sz;
+                if (geom == vtzero::GeomType::POLYGON)
+                    vtzero::decode_polygon_geometry(feat.geometry(), lp);
+                else
+                    vtzero::decode_point_geometry(feat.geometry(), lp);
+
+                if (lp.ptCount > 0) {
+                    int cx = (lp.minX + lp.maxX) / 2;
+                    int cy = (lp.minY + lp.maxY) / 2;
+                    if (cx > 4 && cx < sz - 4 && cy > 4 && cy < sz - 4) {
+                        if (isPlace) {
+                            // Priority by place type
+                            int prio = 50; // default
+                            feat.reset_property();
+                            while (auto prop = feat.next_property()) {
+                                if (prop.key() != "class") continue;
+                                auto v = std::string(prop.value().string_value());
+                                if (v == "city") prio = 10;
+                                else if (v == "town") prio = 20;
+                                else if (v == "village") prio = 30;
+                                else if (v == "suburb" || v == "hamlet") prio = 40;
+                                break;
+                            }
+                            addLabel(cx, cy, labelText, prio,
+                                     &lv_font_montserrat_14, 0x33, 0x22, 0x21);
+                        } else if (isWater) {
+                            addLabel(cx, cy, labelText, 70,
+                                     &lv_font_montserrat_12, 0x4A, 0x7A, 0xB0);
+                        }
+                    }
+                }
+            } else if (geom == vtzero::GeomType::LINESTRING && isWaterway) {
+                // Linestring midpoint
+                struct LineMid {
+                    int tileSz;
+                    std::vector<int> px, py;
+                    void linestring_begin(uint32_t) { px.clear(); py.clear(); }
+                    void linestring_point(vtzero::point p) { px.push_back(toPx(p.x, tileSz)); py.push_back(toPx(p.y, tileSz)); }
+                    void linestring_end() {}
+                    void points_begin(uint32_t) {} void points_point(vtzero::point) {} void points_end() {}
+                    void ring_begin(uint32_t) {} void ring_point(vtzero::point) {} void ring_end(vtzero::ring_type) {}
+                } lm;
+                lm.tileSz = sz;
+                vtzero::decode_linestring_geometry(feat.geometry(), lm);
+                if (lm.px.size() >= 2) {
+                    int mid = (int)lm.px.size() / 2;
+                    int cx = lm.px[mid], cy = lm.py[mid];
+                    if (cx > 4 && cx < sz - 4 && cy > 4 && cy < sz - 4)
+                        addLabel(cx, cy, labelText, 60,
+                                 &lv_font_montserrat_12, 0x4A, 0x7A, 0xB0);
+                }
+            }
+        }
+    }
+
+    placeLabels(buf, sz);
 }
 
 // ---- renderTile public (canvas version, with cache) ------------------------

@@ -1,14 +1,16 @@
 /* Raster tile map — ESP32 create_map_screen() + region discovery ported to
- * Linux Stations APRS : icônes positionnées sur les tuiles, clic → popup info
+ * Linux APRS Stations: icons positioned on tiles, tap → info popup
  */
 #include "map_raster.h"
 #include "configuration.h"
 #include "gps_math.h"
 #include "map_coordinate_math.h"
 #include "map_vector.h"
+#include "gps_utils.h"
 #include "station_utils.h"
 #include "ui_dashboard.h"
 #include "ui_messaging.h"
+#include "gpx_writer.h"
 #include <climits>
 #include <cstdio>
 #include <cstring>
@@ -22,10 +24,10 @@ extern uint8_t myBeaconsIndex;
 namespace MapRaster {
 
 #define TILE_SIZE 256
-#define GRID 5 // 5×5 : couvre 1024×520 avec marge pour préchargement
+#define GRID 5 // 5x5: covers map area with margin for preloading
 #define SPRITE_SIZE (GRID * TILE_SIZE) // 1280
 #define CONT_W 1024
-#define MAP_H (600 - 50 - 30) // 520  (sous titlebar, au-dessus infobar)
+#define MAP_H (600 - 45 - 30) // 530  (below 45px titlebar, above 30px infobar)
 
 // ---- Tile state ----
 static lv_obj_t *tileImg[GRID][GRID];
@@ -36,15 +38,26 @@ static int zoom = 7, centerTX = 0, centerTY = 0;
 static int zoomMin = 6, zoomMax = 8;
 static bool mapActive = false;
 
-// Pan state
+// Pan state + inertia
 static lv_point_t dragLast;
 static int dragAccumX = 0, dragAccumY = 0;
 static bool panActive = false;
+static bool mapFollowGps = true;  // firmware default: follow GPS on map open
+static float velX = 0.0f, velY = 0.0f;
+static uint32_t dragLastMs = 0;
+static lv_timer_t *mapTimer = nullptr;
+
+// Own trace ring buffer (same as firmware TracePoint)
+#define OWN_TRACE_MAX 200
+static TracePoint ownTrace[OWN_TRACE_MAX];
+static int ownTraceCount = 0;
+static int ownTraceHead = 0;
 
 // LVGL objects
 static lv_obj_t *titleLabel = nullptr;
 static lv_obj_t *infoLabel = nullptr;
 static lv_obj_t *mapCont = nullptr;
+static lv_obj_t *btnRecenter = nullptr;
 
 // ---- Station markers ----
 #define MAX_MARKERS (MAP_STATIONS_MAX + 1) // 15 stations + own
@@ -59,7 +72,7 @@ static int markerCount = 0;
 static lv_obj_t *stationPopup = nullptr;
 
 // ============================================================
-// Region / zoom discovery (même logique que l'ESP32 map_tiles)
+// Region / zoom discovery (same logic as ESP32 map_tiles)
 // ============================================================
 static const char *mapsRoot() {
   static char root[256];
@@ -205,7 +218,7 @@ static bool tileExists(int tx, int ty, int z) {
 }
 
 // ============================================================
-// Conversion sprite → coordonnées container (pour placement markers)
+// Sprite to container coordinate conversion (for marker placement)
 // ============================================================
 static inline int spriteToContX(int spriteX) {
   return spriteX + (CONT_W - SPRITE_SIZE) / 2 + dragAccumX;
@@ -220,7 +233,7 @@ static bool latLonToContPos(float lat, float lon, int *cx, int *cy) {
                          centerTY, &px, &py);
   *cx = spriteToContX(px);
   *cy = spriteToContY(py);
-  // visible si dans le sprite (±1 tuile de marge)
+  // visible if within sprite (±1 tile margin)
   return (px >= -TILE_SIZE && px < SPRITE_SIZE + TILE_SIZE &&
           py >= -TILE_SIZE && py < SPRITE_SIZE + TILE_SIZE);
 }
@@ -244,7 +257,7 @@ static void show_station_popup(int stationIdx) {
   char body[400];
 
   if (stationIdx < 0) {
-    // Propre station
+    // Own station
     const char *cs = (!Config.beacons.empty())
                          ? Config.beacons[myBeaconsIndex].callsign.c_str()
                          : "NOCALL";
@@ -328,11 +341,11 @@ static void station_click_cb(lv_event_t *e) {
   show_station_popup(idx);
 }
 
-// Long press : ouvre l'écran compose pré-rempli avec le callsign de la station
+// Long press: open compose screen pre-filled with station callsign
 static void station_longpress_cb(lv_event_t *e) {
   int idx = (int)(intptr_t)lv_event_get_user_data(e);
   if (idx < 0)
-    return; // own station : pas de message à soi-même
+    return; // own station: no self-messaging
   MapStation *st = STATION_Utils::getMapStation(idx);
   if (!st || !st->valid)
     return;
@@ -343,7 +356,7 @@ static void station_longpress_cb(lv_event_t *e) {
 }
 
 // ============================================================
-// Icônes APRS — chargement depuis les PNG découpés (sd_card)
+// APRS icons — loaded from split PNG files (sd_card)
 // ============================================================
 static const char *symbolsRoot() {
   static char root[256];
@@ -379,7 +392,7 @@ static bool getSymbolPath(char table, char symbol, char *path, size_t pathsz) {
 // Gestion des marqueurs stations (LVGL objects dans mapCont)
 // ============================================================
 
-// Dimensions du conteneur marqueur  (icône 24×24 + callsign 14px en-dessous)
+// Marker container dimensions (24x24 icon + 14px callsign below)
 #define MARKER_W 80
 #define MARKER_H 40
 #define ICON_SIZE 24
@@ -393,11 +406,9 @@ static void deleteMarkers() {
   markerCount = 0;
 }
 
-// Crée un conteneur marqueur centré sur (cx, cy) avec l'icône APRS et le
-// callsign table/sym : table APRS ('/' ou '\\') et symbole (char) — fallback
-// disque coloré si PNG absent overlayChar : caractère alphanumérique à dessiner
-// sur l'icône (alternate table avec overlay),
-//               ou 0 si pas d'overlay
+// Create a marker container centred on (cx, cy) with APRS icon and callsign.
+// table/sym: APRS table ('/' or '\\') and symbol (char) — fallback coloured
+// disc if PNG missing. overlayChar: alphanumeric to draw on icon, or 0 if none.
 static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
                                  char table, char sym, char overlayChar,
                                  lv_color_t fallbackColor, int cx, int cy,
@@ -412,7 +423,7 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
   lv_obj_clear_flag(m, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(m, LV_OBJ_FLAG_CLICKABLE);
 
-  // Icône APRS ou disque fallback
+  // APRS icon or fallback disc
   char iconPath[320];
   if (sym != '\0' && getSymbolPath(table, sym, iconPath, sizeof(iconPath))) {
     lv_obj_t *img = lv_image_create(m);
@@ -420,7 +431,7 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
     lv_obj_align(img, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_size(img, ICON_SIZE, ICON_SIZE);
 
-    // Overlay character (digi 'D', iGate 'I', etc.) directement sur l'icône,
+    // Overlay character (digi 'D', iGate 'I', etc.) directly on icon
     // sans fond
     if (overlayChar != 0 && overlayChar != '/' && overlayChar != '\\') {
       char ovTxt[2] = {overlayChar, 0};
@@ -433,7 +444,7 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
       lv_obj_align(ovLbl, LV_ALIGN_TOP_MID, 0, 4);
     }
   } else {
-    // Fallback : disque coloré 16×16
+    // Fallback: colored disc 16x16
     lv_obj_t *dot = lv_obj_create(m);
     lv_obj_set_size(dot, 16, 16);
     lv_obj_set_style_bg_color(dot, fallbackColor, 0);
@@ -443,7 +454,7 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
     lv_obj_align(dot, LV_ALIGN_TOP_MID, 0, 4);
   }
 
-  // Callsign avec fond semi-transparent pour lisibilité
+  // Callsign with semi-transparent background for readability
   lv_obj_t *lbl = lv_label_create(m);
   lv_label_set_text(lbl, callsign);
   lv_label_set_long_mode(lbl, LV_LABEL_LONG_CLIP);
@@ -491,7 +502,7 @@ static void createMarkers() {
     }
   }
 
-  // Stations reçues
+  // Received stations
   STATION_Utils::cleanOldMapStations();
   for (int i = 0; i < MAP_STATIONS_MAX && markerCount < MAX_MARKERS; i++) {
     MapStation *st = STATION_Utils::getMapStation(i);
@@ -509,7 +520,7 @@ static void createMarkers() {
     char sym = (st->symbol.length() > 0) ? st->symbol[0] : '>';
     char ovChar = (ov0 != '/' && ov0 != '\\') ? ov0 : 0;
 
-    // Couleur fallback selon ancienneté
+    // Fallback colour based on age
     uint32_t elapsed = millis() - st->lastTime;
     lv_color_t fc = (elapsed < 10 * 60 * 1000) ? lv_color_hex(0xff6600)
                                                : lv_color_hex(0x888888);
@@ -521,7 +532,7 @@ static void createMarkers() {
   }
 }
 
-// Met à jour les positions des marqueurs sans les recréer (pan)
+// Update marker positions without recreating them (pan)
 static void updateMarkerPositions() {
   for (int i = 0; i < markerCount; i++) {
     if (!markers[i].obj || !lv_obj_is_valid(markers[i].obj))
@@ -551,6 +562,190 @@ static void updateMarkerPositions() {
 static lv_obj_t *vecCanvas[GRID][GRID];
 static int vecLastZ[GRID][GRID], vecLastTX[GRID][GRID], vecLastTY[GRID][GRID];
 static uint8_t *vecBuf[GRID][GRID];
+
+// Trace canvas overlay for station movement lines
+static lv_obj_t *traceCanvas = nullptr;
+static uint8_t *traceBuf = nullptr;
+#define TRACE_CANVAS_W SPRITE_SIZE
+#define TRACE_CANVAS_H 600
+
+static inline void traceSetPx(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
+    if (x < 0 || x >= TRACE_CANVAS_W || y < 0 || y >= TRACE_CANVAS_H) return;
+    uint8_t *p = traceBuf + (y * TRACE_CANVAS_W + x) * 4;
+    p[0] = b; p[1] = g; p[2] = r; p[3] = 0xFF;
+}
+
+static void traceDrawLine(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b) {
+    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    while (true) {
+        traceSetPx(x0, y0, r, g, b);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+static void drawTraces() {
+    if (!traceBuf) return;
+    // Clear buffer (transparent)
+    memset(traceBuf, 0, TRACE_CANVAS_W * TRACE_CANVAS_H * 4);
+
+    uint32_t now = millis();
+    for (int s = 0; s < MAP_STATIONS_MAX; s++) {
+        MapStation *st = STATION_Utils::getMapStation(s);
+        if (!st || !st->valid || st->traceCount < 2) continue;
+
+        int prevSX = INT_MIN, prevSY = INT_MIN;
+        bool firstPt = true;
+        for (int i = 0; i < st->traceCount; i++) {
+            int idx = (st->traceHead - st->traceCount + i + TRACE_MAX_POINTS) % TRACE_MAX_POINTS;
+            uint32_t age = now - st->trace[idx].time;
+            if (age > 3600000) continue; // TTL 1h
+            int sx, sy;
+            MapMath::latLonToPixel(st->trace[idx].lat, st->trace[idx].lon,
+                                   centerLat, centerLon, zoom, true,
+                                   centerTX, centerTY, &sx, &sy);
+            if (!firstPt)
+                traceDrawLine(prevSX, prevSY, sx, sy, 0x00, 0x55, 0xFF);
+            prevSX = sx; prevSY = sy;
+            firstPt = false;
+        }
+        // Line to current position
+        int cx, cy;
+        MapMath::latLonToPixel(st->latitude, st->longitude,
+                               centerLat, centerLon, zoom, true,
+                               centerTX, centerTY, &cx, &cy);
+        if (!firstPt)
+            traceDrawLine(prevSX, prevSY, cx, cy, 0x00, 0x55, 0xFF);
+    }
+    if (traceCanvas && lv_obj_is_valid(traceCanvas))
+        lv_obj_invalidate(traceCanvas);
+}
+
+// Own trace rendering — purple, same as firmware (0x9933FF)
+static void drawOwnTrace() {
+    if (!traceBuf || ownTraceCount < 2) return;
+    uint32_t now = millis();
+    int prevSX = INT_MIN, prevSY = INT_MIN;
+    bool firstPt = true;
+    // Pixel skip threshold (same as firmware)
+    int minDist2 = 0;
+    if (zoom <= 10)      minDist2 = 144;
+    else if (zoom <= 12) minDist2 = 36;
+    else if (zoom <= 14) minDist2 = 9;
+
+    for (int i = 0; i < ownTraceCount; i++) {
+        int idx = (ownTraceHead - ownTraceCount + i + OWN_TRACE_MAX) % OWN_TRACE_MAX;
+        if (now - ownTrace[idx].time > 3600000) continue; // 1h TTL
+        int sx, sy;
+        MapMath::latLonToPixel(ownTrace[idx].lat, ownTrace[idx].lon,
+                               centerLat, centerLon, zoom, true,
+                               centerTX, centerTY, &sx, &sy);
+        if (!firstPt) {
+            int dx = sx - prevSX, dy = sy - prevSY;
+            if (minDist2 == 0 || dx*dx + dy*dy >= minDist2)
+                traceDrawLine(prevSX, prevSY, sx, sy, 0x99, 0x33, 0xFF);
+        }
+        prevSX = sx; prevSY = sy;
+        firstPt = false;
+    }
+    // Line to current GPS position
+    if (gpsLat != 0.0 || gpsLon != 0.0) {
+        int cx, cy;
+        MapMath::latLonToPixel((float)gpsLat, (float)gpsLon,
+                               centerLat, centerLon, zoom, true,
+                               centerTX, centerTY, &cx, &cy);
+        if (!firstPt)
+            traceDrawLine(prevSX, prevSY, cx, cy, 0x99, 0x33, 0xFF);
+    }
+    if (traceCanvas && lv_obj_is_valid(traceCanvas))
+        lv_obj_invalidate(traceCanvas);
+}
+
+// Record own GPS position in ring buffer (threshold ~10m)
+static void recordOwnTrace() {
+    if (gpsLat == 0.0 && gpsLon == 0.0) return;
+    if (ownTraceCount > 0) {
+        int lastIdx = (ownTraceHead - 1 + OWN_TRACE_MAX) % OWN_TRACE_MAX;
+        float dlat = (float)(gpsLat - ownTrace[lastIdx].lat);
+        float dlon = (float)(gpsLon - ownTrace[lastIdx].lon);
+        if (dlat*dlat + dlon*dlon < 0.000001f) return; // ~10m threshold
+    }
+    ownTrace[ownTraceHead] = {(float)gpsLat, (float)gpsLon, millis()};
+    ownTraceHead = (ownTraceHead + 1) % OWN_TRACE_MAX;
+    if (ownTraceCount < OWN_TRACE_MAX) ownTraceCount++;
+}
+
+static void reloadTiles();  // fwd
+static void reposTraceCanvas(); // fwd
+static void updateMarkerPositions(); // fwd
+static void repositionAll();  // fwd, defined after fullscreenMap
+
+// 50ms timer — inertia, GPS follow, periodic station refresh (firmware: map_refresh_timer_cb)
+static void mapTimerCb(lv_timer_t *) {
+    if (!mapActive || !mapCont) return;
+
+    // Inertia — apply momentum when finger is off screen
+    if (!panActive && (velX != 0.0f || velY != 0.0f)) {
+        static uint32_t lastInertiaMs = 0;
+        uint32_t now = millis();
+        uint32_t dt = (lastInertiaMs > 0) ? (now - lastInertiaMs) : 0;
+        lastInertiaMs = now;
+        if (dt > 0 && dt < 100) {
+            float friction = 0.85f;
+            int dx = (int)(velX * (float)dt);
+            int dy = (int)(velY * (float)dt);
+            dragAccumX += dx;
+            dragAccumY += dy;
+
+            static int lastCTx = 0, lastCTy = 0;
+            while (dragAccumX >= TILE_SIZE) { dragAccumX -= TILE_SIZE; centerTX--; }
+            while (dragAccumX <= -TILE_SIZE) { dragAccumX += TILE_SIZE; centerTX++; }
+            while (dragAccumY >= TILE_SIZE) { dragAccumY -= TILE_SIZE; centerTY--; }
+            while (dragAccumY <= -TILE_SIZE) { dragAccumY += TILE_SIZE; centerTY++; }
+            repositionAll();
+
+            if (centerTX != lastCTx || centerTY != lastCTy) {
+                lastCTx = centerTX; lastCTy = centerTY;
+                MapMath::tileToLatLon(centerTX, centerTY, zoom, (float *)&centerLat, (float *)&centerLon);
+                reloadTiles();
+            }
+
+            velX *= friction;
+            velY *= friction;
+            if (fabsf(velX) < 0.01f) velX = 0.0f;
+            if (fabsf(velY) < 0.01f) velY = 0.0f;
+        }
+    }
+
+    // GPS follow — recenter if following and GPS moved
+    static int lastCenterTxGPS = 0, lastCenterTyGPS = 0;
+    if (mapFollowGps && (gpsLat != 0.0 || gpsLon != 0.0)) {
+        int gpsTX, gpsTY;
+        MapMath::latLonToTile((float)gpsLat, (float)gpsLon, zoom, &gpsTX, &gpsTY);
+        if (gpsTX != lastCenterTxGPS || gpsTY != lastCenterTyGPS) {
+            centerTX = lastCenterTxGPS = gpsTX;
+            centerTY = lastCenterTyGPS = gpsTY;
+            centerLat = gpsLat; centerLon = gpsLon;
+            dragAccumX = dragAccumY = 0;
+            velX = velY = 0.0f;
+            reloadTiles();
+        }
+    }
+
+    // Periodic station refresh (~10s)
+    static uint16_t tickCounter = 0;
+    if (++tickCounter >= 200) {
+        tickCounter = 0;
+        STATION_Utils::cleanOldMapStations();
+        if (!panActive) createMarkers();
+    }
+}
+
+static void reposTraceCanvas(); // fwd
 
 static void reloadTiles() {
   for (int dy = 0; dy < GRID; dy++) {
@@ -608,6 +803,9 @@ static void reloadTiles() {
              mapStationsCount);
     lv_label_set_text(infoLabel, ib);
   }
+  drawTraces();
+  drawOwnTrace();
+  reposTraceCanvas();
   createMarkers();
   setPosition(gpsLat, gpsLon);
 }
@@ -618,9 +816,10 @@ static void reloadTiles() {
 void setPosition(double lat, double lon) {
   gpsLat = lat;
   gpsLon = lon;
+  recordOwnTrace();
   if (!mapActive || !mapCont)
     return;
-  // Mise à jour du marqueur own si existant
+  // Update own marker if it exists
   for (int i = 0; i < markerCount; i++) {
     if (markers[i].stationIdx == -1 && markers[i].obj &&
         lv_obj_is_valid(markers[i].obj)) {
@@ -630,7 +829,7 @@ void setPosition(double lat, double lon) {
       return;
     }
   }
-  // Pas encore de marqueur own → on recrée les marqueurs
+  // No own marker yet — recreate all markers
   createMarkers();
 }
 
@@ -665,7 +864,12 @@ void zoomOut() {
 static void backCb(lv_event_t *) {
   closeStationPopup();
   mapActive = false;
+  if (mapTimer) { lv_timer_del(mapTimer); mapTimer = nullptr; }
   deleteMarkers();
+  // Free trace canvas
+  if (traceCanvas && lv_obj_is_valid(traceCanvas)) lv_obj_del(traceCanvas);
+  traceCanvas = nullptr;
+  if (traceBuf) { lv_free(traceBuf); traceBuf = nullptr; }
   // Free vector canvases
   for (int dy = 0; dy < GRID; dy++)
     for (int dx = 0; dx < GRID; dx++) {
@@ -696,6 +900,30 @@ static void zoomCb(lv_event_t *e) {
 }
 
 static bool fullscreenMap = false;
+
+static void reposTraceCanvas() {
+    if (!traceCanvas || !lv_obj_is_valid(traceCanvas)) return;
+    int mapH = fullscreenMap ? 600 : MAP_H;
+    lv_obj_set_pos(traceCanvas,
+                   (CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
+                   (mapH - SPRITE_SIZE) / 2 + dragAccumY);
+    lv_obj_set_size(traceCanvas, TRACE_CANVAS_W, mapH);
+}
+
+// Reposition tile grid + trace canvas + markers without reloading tiles
+static void repositionAll() {
+    int mapH = fullscreenMap ? 600 : MAP_H;
+    for (int dy2 = 0; dy2 < GRID; dy2++)
+        for (int dx2 = 0; dx2 < GRID; dx2++) {
+            int tx = (CONT_W - SPRITE_SIZE) / 2 + dx2 * TILE_SIZE + dragAccumX;
+            int ty = (mapH - SPRITE_SIZE) / 2 + dy2 * TILE_SIZE + dragAccumY;
+            lv_obj_set_pos(tileImg[dy2][dx2], tx, ty);
+            if (vecCanvas[dy2][dx2]) lv_obj_set_pos(vecCanvas[dy2][dx2], tx, ty);
+        }
+    reposTraceCanvas();
+    updateMarkerPositions();
+}
+
 static lv_obj_t *tbarMap = nullptr;
 static lv_obj_t *ibarMap = nullptr;
 
@@ -710,7 +938,7 @@ static void toggleMapFullscreen() {
     lv_obj_clear_flag(tbarMap, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(ibarMap, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_size(mapCont, CONT_W, MAP_H);
-    lv_obj_set_pos(mapCont, 0, 50);
+    lv_obj_set_pos(mapCont, 0, 45);
   }
   // Reposition tiles and markers
   for (int dy = 0; dy < GRID; dy++)
@@ -720,6 +948,7 @@ static void toggleMapFullscreen() {
                      (fullscreenMap ? (600 - SPRITE_SIZE) / 2
                                     : (MAP_H - SPRITE_SIZE) / 2) +
                          dy * TILE_SIZE + dragAccumY);
+  reposTraceCanvas();
   updateMarkerPositions();
 }
 
@@ -737,18 +966,39 @@ static void mapTouchCB(lv_event_t *e) {
   }
 
   if (code == LV_EVENT_PRESSED) {
-    // Ne pas reset dragAccumX/Y : on conserve le résidu sub-tuile du pan
-    // précédent sinon les tuiles sautent visuellement au premier PRESSING.
+    // If touch lands on a marker, let it handle the click/long-press
+    lv_obj_t *target = (lv_obj_t *)lv_event_get_target(e);
+    if (target != mapCont) { closeStationPopup(); return; }
     dragLast = p;
+    dragLastMs = millis();
     panActive = true;
+    velX = velY = 0.0f;
     closeStationPopup();
   } else if (code == LV_EVENT_PRESSING && panActive) {
     int dx = p.x - dragLast.x, dy = p.y - dragLast.y;
+    uint32_t now = millis();
+    uint32_t dt = now - dragLastMs;
     dragLast = p;
+    dragLastMs = now;
     dragAccumX += dx;
     dragAccumY += dy;
 
-    // Décalage de tuile central
+    // Disable GPS follow on drag (firmware behaviour)
+    if ((dx != 0 || dy != 0) && mapFollowGps) {
+      mapFollowGps = false;
+      if (btnRecenter) lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), 0);
+    }
+
+    // Track velocity for inertia — same sign convention as dragAccum (+dx = move right)
+    if (dt > 0) {
+      float weight = 0.7f;
+      float instVelX = (float)dx / (float)dt;
+      float instVelY = (float)dy / (float)dt;
+      velX = velX * (1.0f - weight) + instVelX * weight;
+      velY = velY * (1.0f - weight) + instVelY * weight;
+    }
+
+    // Central tile offset
     static int lctx = 0, lcty = 0;
     if (dragAccumX >= TILE_SIZE) {
       dragAccumX -= TILE_SIZE;
@@ -767,7 +1017,7 @@ static void mapTouchCB(lv_event_t *e) {
       centerTY++;
     }
 
-    // Repositionner les tuiles
+    // Reposition tiles
     for (int dy2 = 0; dy2 < GRID; dy2++)
       for (int dx2 = 0; dx2 < GRID; dx2++) {
         lv_obj_set_pos(
@@ -783,6 +1033,7 @@ static void mapTouchCB(lv_event_t *e) {
       }
 
     updateMarkerPositions();
+    reposTraceCanvas();
 
     if (centerTX != lctx || centerTY != lcty) {
       lctx = centerTX;
@@ -803,7 +1054,7 @@ static void mapTouchCB(lv_event_t *e) {
 }
 
 // ============================================================
-// Création de l'écran map
+// Create map screen
 // ============================================================
 lv_obj_t *create(lv_obj_t *) {
   discoverRegion();
@@ -814,27 +1065,96 @@ lv_obj_t *create(lv_obj_t *) {
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x1a1a2e), 0);
   lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
 
-  // Title bar (always created)
+  // Title bar (green, same as firmware)
   lv_obj_t *tbar = lv_obj_create(scr);
   tbarMap = tbar;
-  lv_obj_set_size(tbar, CONT_W, 50);
+  lv_obj_set_size(tbar, CONT_W, 45);
   lv_obj_set_pos(tbar, 0, 0);
   lv_obj_set_style_bg_color(tbar, lv_color_hex(0x009933), 0);
   lv_obj_set_style_border_width(tbar, 0, 0);
   lv_obj_set_style_radius(tbar, 0, 0);
+  lv_obj_set_style_pad_all(tbar, 5, 0);
+
+  // Back button (wider than icon buttons, same as firmware)
   lv_obj_t *btnBack = lv_btn_create(tbar);
-  lv_obj_set_size(btnBack, 80, 35);
+  lv_obj_set_size(btnBack, 100, 32);
   lv_obj_set_style_bg_color(btnBack, lv_color_hex(0x16213e), 0);
-  lv_obj_align(btnBack, LV_ALIGN_LEFT_MID, 10, 0);
+  lv_obj_align(btnBack, LV_ALIGN_LEFT_MID, 5, 0);
   lv_obj_add_event_cb(btnBack, backCb, LV_EVENT_CLICKED, NULL);
   lv_obj_t *bl = lv_label_create(btnBack);
   lv_label_set_text(bl, "< BACK");
   lv_obj_center(bl);
+
+  // GPS recenter + follow toggle (firmware: blue when following, orange when not)
+  btnRecenter = lv_btn_create(tbar);
+  lv_obj_set_size(btnRecenter, 50, 32);
+  lv_obj_align(btnRecenter, LV_ALIGN_RIGHT_MID, -195, 0);
+  lv_obj_set_style_bg_color(btnRecenter, mapFollowGps ? lv_color_hex(0x16213e) : lv_color_hex(0xff6600), 0);
+  lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), LV_STATE_PRESSED);
+  lv_obj_add_event_cb(btnRecenter, [](lv_event_t *) {
+    mapFollowGps = true;
+    lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0x16213e), 0);
+    if (gpsLat != 0.0 || gpsLon != 0.0) {
+      MapMath::latLonToTile((float)gpsLat, (float)gpsLon, zoom, &centerTX, &centerTY);
+      centerLat = gpsLat; centerLon = gpsLon;
+      dragAccumX = dragAccumY = 0;
+      velX = velY = 0.0f;
+      reloadTiles();
+    }
+  }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *lblRec = lv_label_create(btnRecenter);
+  lv_label_set_text(lblRec, LV_SYMBOL_GPS);
+  lv_obj_center(lblRec);
+
+  // Zoom +  (firmware: LV_EVENT_RELEASED, orange on press)
+  lv_obj_t *zp = lv_btn_create(tbar);
+  lv_obj_set_size(zp, 50, 32);
+  lv_obj_align(zp, LV_ALIGN_RIGHT_MID, -140, 0);
+  lv_obj_set_style_bg_color(zp, lv_color_hex(0x16213e), 0);
+  lv_obj_set_style_bg_color(zp, lv_color_hex(0xff6600), LV_STATE_PRESSED);
+  lv_obj_add_event_cb(zp, zoomCb, LV_EVENT_RELEASED, (void *)1);
+  lv_obj_t *zlp = lv_label_create(zp);
+  lv_label_set_text(zlp, "+");
+  lv_obj_center(zlp);
+
+  // Zoom -  (firmware: LV_EVENT_RELEASED, orange on press)
+  lv_obj_t *zm = lv_btn_create(tbar);
+  lv_obj_set_size(zm, 50, 32);
+  lv_obj_align(zm, LV_ALIGN_RIGHT_MID, -85, 0);
+  lv_obj_set_style_bg_color(zm, lv_color_hex(0x16213e), 0);
+  lv_obj_set_style_bg_color(zm, lv_color_hex(0xff6600), LV_STATE_PRESSED);
+  lv_obj_add_event_cb(zm, zoomCb, LV_EVENT_RELEASED, (void *)-1);
+  lv_obj_t *zlm = lv_label_create(zm);
+  lv_label_set_text(zlm, "-");
+  lv_obj_center(zlm);
+
+  // GPX record toggle (rightmost, orange when recording — same as firmware)
+  static lv_obj_t *btnGPX = nullptr;
+  btnGPX = lv_btn_create(tbar);
+  lv_obj_set_size(btnGPX, 50, 32);
+  lv_obj_align(btnGPX, LV_ALIGN_RIGHT_MID, -30, 0);
+  lv_obj_set_style_bg_color(btnGPX, GPXWriter::isRecording() ? lv_color_hex(0xff6600) : lv_color_hex(0x16213e), 0);
+  lv_obj_add_event_cb(btnGPX, [](lv_event_t *) {
+    if (GPXWriter::isRecording()) {
+      GPXWriter::stopRecording();
+      lv_obj_set_style_bg_color(btnGPX, lv_color_hex(0x16213e), 0);
+    } else {
+      bool ok = GPXWriter::startRecording(gpsFix.year, gpsFix.month, gpsFix.date,
+                                          gpsFix.hours, gpsFix.minutes);
+      if (ok)
+        lv_obj_set_style_bg_color(btnGPX, lv_color_hex(0xff6600), 0);
+    }
+  }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *lblGPX = lv_label_create(btnGPX);
+  lv_label_set_text(lblGPX, "GPX");
+  lv_obj_center(lblGPX);
+
+  // Title "MAP (Zxx)" — center offset -30, same style as firmware
   titleLabel = lv_label_create(tbar);
   lv_label_set_text(titleLabel, "MAP");
   lv_obj_set_style_text_color(titleLabel, lv_color_hex(0xffffff), 0);
-  lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_20, 0);
-  lv_obj_center(titleLabel);
+  lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_18, 0);
+  lv_obj_align(titleLabel, LV_ALIGN_CENTER, -30, 0);
 
   // Info bar (always created)
   lv_obj_t *ibar = lv_obj_create(scr);
@@ -844,14 +1164,14 @@ lv_obj_t *create(lv_obj_t *) {
   lv_obj_set_style_bg_color(ibar, lv_color_hex(0x16213e), 0);
   lv_obj_set_style_border_width(ibar, 0, 0);
   lv_obj_set_style_radius(ibar, 0, 0);
-  lv_obj_set_style_pad_all(ibar, 4, 0);
+  lv_obj_set_style_pad_all(ibar, 2, 0);
   infoLabel = lv_label_create(ibar);
   char ib[128];
   snprintf(ib, sizeof(ib), "Lat:%.4f  Lon:%.4f  Stn:%d", centerLat, centerLon,
            mapStationsCount);
   lv_label_set_text(infoLabel, ib);
   lv_obj_set_style_text_color(infoLabel, lv_color_hex(0xaaaaaa), 0);
-  lv_obj_set_style_text_font(infoLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(infoLabel, &lv_font_montserrat_16, 0);
   lv_obj_center(infoLabel);
 
   if (!mapRegion[0]) {
@@ -876,28 +1196,11 @@ lv_obj_t *create(lv_obj_t *) {
   char z[16];
   snprintf(z, sizeof(z), "MAP (Z%d)", zoom);
   lv_label_set_text(titleLabel, z);
-  // Add zoom buttons
-  lv_obj_t *zp = lv_btn_create(tbar);
-  lv_obj_set_size(zp, 36, 36);
-  lv_obj_align(zp, LV_ALIGN_RIGHT_MID, -50, 0);
-  lv_obj_set_style_bg_color(zp, lv_color_hex(0x16213e), 0);
-  lv_obj_add_event_cb(zp, zoomCb, LV_EVENT_CLICKED, (void *)1);
-  lv_obj_t *zlp = lv_label_create(zp);
-  lv_label_set_text(zlp, "+");
-  lv_obj_center(zlp);
-  lv_obj_t *zm = lv_btn_create(tbar);
-  lv_obj_set_size(zm, 36, 36);
-  lv_obj_align(zm, LV_ALIGN_RIGHT_MID, -5, 0);
-  lv_obj_set_style_bg_color(zm, lv_color_hex(0x16213e), 0);
-  lv_obj_add_event_cb(zm, zoomCb, LV_EVENT_CLICKED, (void *)-1);
-  lv_obj_t *zlm = lv_label_create(zm);
-  lv_label_set_text(zlm, "-");
-  lv_obj_center(zlm);
 
   // ---- Conteneur map ----
   mapCont = lv_obj_create(scr);
   lv_obj_set_size(mapCont, CONT_W, MAP_H);
-  lv_obj_set_pos(mapCont, 0, 50);
+  lv_obj_set_pos(mapCont, 0, 45);
   lv_obj_set_style_bg_color(mapCont, lv_color_hex(0x2F4F4F), 0);
   lv_obj_set_style_border_width(mapCont, 0, 0);
   lv_obj_set_scrollbar_mode(mapCont, LV_SCROLLBAR_MODE_OFF);
@@ -918,8 +1221,19 @@ lv_obj_t *create(lv_obj_t *) {
                      (MAP_H - SPRITE_SIZE) / 2 + dy * TILE_SIZE);
     }
 
+  // Trace canvas overlay for station movement lines
+  traceBuf = (uint8_t *)lv_malloc(LV_CANVAS_BUF_SIZE(TRACE_CANVAS_W, TRACE_CANVAS_H, 32, LV_DRAW_BUF_STRIDE_ALIGN));
+  traceCanvas = lv_canvas_create(mapCont);
+  lv_canvas_set_buffer(traceCanvas, traceBuf, TRACE_CANVAS_W, TRACE_CANVAS_H, LV_COLOR_FORMAT_ARGB8888);
+  lv_obj_set_pos(traceCanvas, (CONT_W - SPRITE_SIZE) / 2, (MAP_H - SPRITE_SIZE) / 2);
+  lv_obj_set_size(traceCanvas, TRACE_CANVAS_W, MAP_H);
+  lv_obj_clear_flag(traceCanvas, LV_OBJ_FLAG_CLICKABLE);
+
   mapActive = true;
-  reloadTiles(); // charge tuiles + crée les marqueurs stations
+  reloadTiles(); // load tiles + create station markers
+
+  // Start 50ms periodic timer (inertia, GPS follow, station refresh)
+  if (!mapTimer) mapTimer = lv_timer_create(mapTimerCb, 50, NULL);
 
   return scr;
 }
