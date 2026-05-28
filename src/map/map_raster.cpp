@@ -398,6 +398,8 @@ static bool getSymbolPath(char table, char symbol, char *path, size_t pathsz) {
 #define ICON_SIZE 24
 
 static void deleteMarkers() {
+  fprintf(stderr, "[MAP] deleteMarkers count=%d\n", markerCount);
+  fflush(stderr);
   for (int i = 0; i < markerCount; i++) {
     if (markers[i].obj && lv_obj_is_valid(markers[i].obj))
       lv_obj_del(markers[i].obj);
@@ -417,6 +419,9 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
   lv_obj_t *m = lv_obj_create(parent);
   lv_obj_set_size(m, MARKER_W, MARKER_H);
   lv_obj_set_pos(m, cx - MARKER_W / 2, cy - ICON_SIZE / 2);
+  fprintf(stderr, "[MAP] createMarkerObj cx=%d cy=%d pos=(%d,%d) size=(%d,%d)\n",
+          cx, cy, cx - MARKER_W/2, cy - ICON_SIZE/2, MARKER_W, MARKER_H);
+  fflush(stderr);
   lv_obj_set_style_bg_opa(m, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(m, 0, 0);
   lv_obj_set_style_pad_all(m, 0, 0);
@@ -978,9 +983,12 @@ static void mapTouchCB(lv_event_t *e) {
   if (code == LV_EVENT_PRESSED) {
     pressPt = p;
     pressMs = millis();
-    lv_obj_t *target = (lv_obj_t *)lv_event_get_target(e);
-    bool onMarker = (target != mapCont);
-    fprintf(stderr, "[MAP] PRESSED onMarker=%d markers=%d\n", onMarker, markerCount);
+    // Use lv_indev_get_obj_act() — lv_event_get_target() always returns
+    // mapCont in its own callback (it's the receiver, not the hit-test result).
+    lv_obj_t *hit = lv_indev_search_obj(mapCont, &p);
+    bool onMarker = (hit && hit != mapCont);
+    fprintf(stderr, "[MAP] PRESSED hit=%p mapCont=%p onMarker=%d markers=%d\n",
+            (void*)hit, (void*)mapCont, onMarker, markerCount);
     fflush(stderr);
     if (onMarker) { closeStationPopup(); return; }
     dragLast = p;
@@ -1260,6 +1268,8 @@ lv_obj_t *create(lv_obj_t *) {
   lv_obj_set_style_border_width(mapCont, 0, 0);
   lv_obj_set_scrollbar_mode(mapCont, LV_SCROLLBAR_MODE_OFF);
   lv_obj_clear_flag(mapCont, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(mapCont, LV_OBJ_FLAG_PRESS_LOCK);
+  lv_obj_remove_flag(mapCont, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_flag(mapCont, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_DOUBLE_CLICKED, NULL);
   lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_PRESSED, NULL);
