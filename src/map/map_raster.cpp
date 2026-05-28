@@ -962,10 +962,13 @@ static void toggleMapFullscreen() {
 static void mapTouchCB(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
   lv_indev_t *indev = lv_indev_get_act();
-  if (!indev)
-    return;
+  if (!indev) return;
   lv_point_t p;
   lv_indev_get_point(indev, &p);
+
+  // Track press start for manual hit-test on release
+  static lv_point_t pressPt;
+  static uint32_t  pressMs;
 
   if (code == LV_EVENT_DOUBLE_CLICKED) {
     toggleMapFullscreen();
@@ -973,7 +976,8 @@ static void mapTouchCB(lv_event_t *e) {
   }
 
   if (code == LV_EVENT_PRESSED) {
-    // If touch lands on a marker, let it handle the click/long-press
+    pressPt = p;
+    pressMs = millis();
     lv_obj_t *target = (lv_obj_t *)lv_event_get_target(e);
     bool onMarker = (target != mapCont);
     fprintf(stderr, "[MAP] PRESSED onMarker=%d markers=%d\n", onMarker, markerCount);
@@ -1052,13 +1056,54 @@ static void mapTouchCB(lv_event_t *e) {
                             (float *)&centerLon);
       reloadTiles();
     }
-  } else if (code == LV_EVENT_RELEASED && panActive) {
+  } else if (code == LV_EVENT_RELEASED) {
+    int dx = p.x - pressPt.x, dy = p.y - pressPt.y;
+    bool wasPan = panActive && (abs(dx) > 10 || abs(dy) > 10);
     panActive = false;
-    if (infoLabel) {
-      char buf[128];
-      snprintf(buf, sizeof(buf), "Lat:%.4f  Lon:%.4f  Stn:%d", centerLat,
-               centerLon, mapStationsCount);
-      lv_label_set_text(infoLabel, buf);
+
+    if (wasPan) {
+      // Real pan — update info label
+      if (infoLabel) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Lat:%.4f  Lon:%.4f  Stn:%d", centerLat, centerLon, mapStationsCount);
+        lv_label_set_text(infoLabel, buf);
+      }
+      return;
+    }
+
+    // No significant drag — check manual hit-test on markers
+    uint32_t held = millis() - pressMs;
+    fprintf(stderr, "[MAP] TAP held=%ums pos(%d,%d) markers=%d\n", held, pressPt.x, pressPt.y, markerCount);
+    fflush(stderr);
+
+    for (int i = 0; i < markerCount; i++) {
+      if (!markers[i].obj || !lv_obj_is_valid(markers[i].obj)) continue;
+      lv_area_t a;
+      lv_obj_get_coords(markers[i].obj, &a);
+      fprintf(stderr, "[MAP]   marker[%d] area=(%d,%d)-(%d,%d) idx=%d\n",
+              i, a.x1, a.y1, a.x2, a.y2, markers[i].stationIdx);
+      fflush(stderr);
+      if (pressPt.x < a.x1 || pressPt.x > a.x2 ||
+          pressPt.y < a.y1 || pressPt.y > a.y2) continue;
+      fprintf(stderr, "[MAP] HIT marker idx=%d held=%ums\n", markers[i].stationIdx, held);
+      fflush(stderr);
+      if (held > 400) {
+        // Long press → compose
+        int idx = markers[i].stationIdx;
+        if (idx >= 0) {
+          MapStation *st = STATION_Utils::getMapStation(idx);
+          if (st && st->valid) {
+            closeStationPopup();
+            mapActive = false;
+            deleteMarkers();
+            UIMessaging::openComposeWithCallsign(st->callsign);
+          }
+        }
+      } else {
+        // Short tap → info popup
+        show_station_popup(markers[i].stationIdx);
+      }
+      return;
     }
   }
 }
