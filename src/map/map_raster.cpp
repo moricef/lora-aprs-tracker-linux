@@ -398,8 +398,6 @@ static bool getSymbolPath(char table, char symbol, char *path, size_t pathsz) {
 #define ICON_SIZE 24
 
 static void deleteMarkers() {
-  fprintf(stderr, "[MAP] deleteMarkers count=%d\n", markerCount);
-  fflush(stderr);
   for (int i = 0; i < markerCount; i++) {
     if (markers[i].obj && lv_obj_is_valid(markers[i].obj))
       lv_obj_del(markers[i].obj);
@@ -419,9 +417,6 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
   lv_obj_t *m = lv_obj_create(parent);
   lv_obj_set_size(m, MARKER_W, MARKER_H);
   lv_obj_set_pos(m, cx - MARKER_W / 2, cy - ICON_SIZE / 2);
-  fprintf(stderr, "[MAP] createMarkerObj cx=%d cy=%d pos=(%d,%d) size=(%d,%d)\n",
-          cx, cy, cx - MARKER_W/2, cy - ICON_SIZE/2, MARKER_W, MARKER_H);
-  fflush(stderr);
   lv_obj_set_style_bg_opa(m, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(m, 0, 0);
   lv_obj_set_style_pad_all(m, 0, 0);
@@ -987,9 +982,6 @@ static void mapTouchCB(lv_event_t *e) {
     // mapCont in its own callback (it's the receiver, not the hit-test result).
     lv_obj_t *hit = lv_indev_search_obj(mapCont, &p);
     bool onMarker = (hit && hit != mapCont);
-    fprintf(stderr, "[MAP] PRESSED hit=%p mapCont=%p onMarker=%d markers=%d\n",
-            (void*)hit, (void*)mapCont, onMarker, markerCount);
-    fflush(stderr);
     if (onMarker) { closeStationPopup(); return; }
     dragLast = p;
     dragLastMs = millis();
@@ -1081,20 +1073,13 @@ static void mapTouchCB(lv_event_t *e) {
 
     // No significant drag — check manual hit-test on markers
     uint32_t held = millis() - pressMs;
-    fprintf(stderr, "[MAP] TAP held=%ums pos(%d,%d) markers=%d\n", held, pressPt.x, pressPt.y, markerCount);
-    fflush(stderr);
 
     for (int i = 0; i < markerCount; i++) {
       if (!markers[i].obj || !lv_obj_is_valid(markers[i].obj)) continue;
       lv_area_t a;
       lv_obj_get_coords(markers[i].obj, &a);
-      fprintf(stderr, "[MAP]   marker[%d] area=(%d,%d)-(%d,%d) idx=%d\n",
-              i, a.x1, a.y1, a.x2, a.y2, markers[i].stationIdx);
-      fflush(stderr);
       if (pressPt.x < a.x1 || pressPt.x > a.x2 ||
           pressPt.y < a.y1 || pressPt.y > a.y2) continue;
-      fprintf(stderr, "[MAP] HIT marker idx=%d held=%ums\n", markers[i].stationIdx, held);
-      fflush(stderr);
       if (held > 400) {
         // Long press → compose
         int idx = markers[i].stationIdx;
