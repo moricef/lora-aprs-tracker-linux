@@ -254,7 +254,6 @@ static void setup() {
         lv_indev_t *touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, touchPath);
         if (touch) {
             lv_indev_set_display(touch, disp);
-            lv_indev_set_group(touch, lv_group_get_default());
             lv_evdev_set_calibration(touch, 0, 0, 1023, 599);
         }
         UIDashboard::createDashboard();

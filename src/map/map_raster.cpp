@@ -413,7 +413,7 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
                                  char table, char sym, char overlayChar,
                                  lv_color_t fallbackColor, int cx, int cy,
                                  int stationIdx) {
-  // Conteneur transparent et cliquable
+  // Transparent clickable container
   lv_obj_t *m = lv_obj_create(parent);
   lv_obj_set_size(m, MARKER_W, MARKER_H);
   lv_obj_set_pos(m, cx - MARKER_W / 2, cy - ICON_SIZE / 2);
@@ -432,7 +432,6 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
     lv_obj_set_size(img, ICON_SIZE, ICON_SIZE);
 
     // Overlay character (digi 'D', iGate 'I', etc.) directly on icon
-    // sans fond
     if (overlayChar != 0 && overlayChar != '/' && overlayChar != '\\') {
       char ovTxt[2] = {overlayChar, 0};
       lv_obj_t *ovLbl = lv_label_create(m);
@@ -444,7 +443,7 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
       lv_obj_align(ovLbl, LV_ALIGN_TOP_MID, 0, 4);
     }
   } else {
-    // Fallback: colored disc 16x16
+    // Fallback: coloured disc 16x16
     lv_obj_t *dot = lv_obj_create(m);
     lv_obj_set_size(dot, 16, 16);
     lv_obj_set_style_bg_color(dot, fallbackColor, 0);
