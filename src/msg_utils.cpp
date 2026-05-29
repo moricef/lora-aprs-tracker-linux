@@ -13,6 +13,9 @@
 #include "station_utils.h"
 #include "gps_utils.h"
 #include "linux_stubs.h"
+#ifdef USE_LVGL_UI
+#include "ui_popups.h"
+#endif
 
 extern Beacon*        currentBeacon;
 extern Configuration  Config;
@@ -326,7 +329,7 @@ namespace MSG_Utils {
         }
 
         // Handle APRS messages addressed to us
-        if (aprs.type == 5 && !aprs.addressee.isEmpty()) {
+        if (aprs.type == 1 && !aprs.addressee.isEmpty()) {
             String myCall = currentBeacon->callsign;
             myCall.trim();
             String addr = aprs.addressee;
@@ -366,6 +369,9 @@ namespace MSG_Utils {
                 saveNewMessage(0, aprs.sender, message);
                 NOTIFICATION_Utils::messageBeep();
                 printf("MSG:%s:%s\n", aprs.sender.c_str(), message.c_str()); fflush(stdout);
+#ifdef USE_LVGL_UI
+                UIPopups::showRxPacket("De: " + std::string(aprs.sender.c_str()) + "\n" + std::string(message.c_str()));
+#endif
             }
         }
     }
