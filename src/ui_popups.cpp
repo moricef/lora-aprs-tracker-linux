@@ -1,6 +1,7 @@
 #include "ui_popups.h"
 #include "lvgl/lvgl.h"
 #include "ui_common.h"
+#include "map_state.h"
 
 namespace UIPopups {
 
@@ -52,6 +53,8 @@ static void hide_tx(lv_timer_t *) {
 }
 
 void showTxPacket(const std::string &packet) {
+    // Pas de popup TX sur l'écran carte
+    if (MapState::screen_map && lv_screen_active() == MapState::screen_map) return;
     hide_bcn(nullptr);
     if (tx_box && lv_obj_is_valid(tx_box)) { lv_obj_del(tx_box); tx_box = nullptr; }
     if (tx_timer) { lv_timer_del(tx_timer); tx_timer = nullptr; }
