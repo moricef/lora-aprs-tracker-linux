@@ -11,6 +11,9 @@
 #include "gpx_writer.h"
 #include "smartbeacon_utils.h"
 #include "linux_stubs.h"
+#ifndef ARDUINO
+#include "ui_popups.h"
+#endif
 
 static const char* TAG = "Station";
 
@@ -281,6 +284,9 @@ namespace STATION_Utils {
 
         ESP_LOGI(TAG, "TX: %s", packet.c_str());
         printf("TX:%s\n", packet.c_str()); fflush(stdout);
+#ifndef ARDUINO
+        UIPopups::showTxPacket(packet.c_str());
+#endif
         LoRa_Utils::sendNewPacket(packet);
 
         if (APRS_IS_Utils::isConnected()) APRS_IS_Utils::upload(packet);

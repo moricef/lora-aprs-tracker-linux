@@ -19,6 +19,10 @@ static const char *TAG = "Dashboard";
 #include <Arduino.h>
 
 LV_FONT_DECLARE(lv_font_mono_16);
+LV_FONT_DECLARE(lv_font_mono_18);
+LV_FONT_DECLARE(lv_font_mono_20);
+LV_FONT_DECLARE(lv_font_mono_22);
+LV_FONT_DECLARE(lv_font_mono_24);
 #include <WiFi.h>
 #include "esp_heap_caps.h"
 #include <lvgl.h>
@@ -35,6 +39,10 @@ namespace UIScreens { lv_obj_t *_mainScreen = nullptr; }
 #include <TimeLib.h>
 #include <algorithm>
 #include <vector>
+#ifndef ARDUINO
+#include <sys/stat.h>
+#include <cstring>
+#endif
 
 // External configuration and state
 extern Configuration Config;
@@ -81,11 +89,11 @@ extern const uint8_t *symbolsAPRS[];
 #define BTN_H         44
 #define CONTENT_TOP   50
 #elif defined(LINUX_SIM) || !defined(ARDUINO)
-#define STATUS_BAR_H  50
-#define BTN_BAR_H     70
-#define BTN_W        200
-#define BTN_H         50
-#define CONTENT_TOP   55
+#define STATUS_BAR_H  60
+#define BTN_BAR_H     80
+#define BTN_W        220
+#define BTN_H         60
+#define CONTENT_TOP   65
 #elif defined(CROWPANEL_ADVANCE_35)
 #define STATUS_BAR_H  35
 #define BTN_BAR_H     45
@@ -110,7 +118,9 @@ static lv_obj_t *label_lora = nullptr;
 static lv_obj_t *label_time = nullptr;
 static lv_obj_t *label_utc = nullptr;
 static lv_obj_t *aprs_symbol_canvas = nullptr;
+#ifdef ARDUINO
 static lv_color_t *aprs_symbol_buf = nullptr;
+#endif
 
 // Last RX stations
 static lv_obj_t *label_last_rx = nullptr;
@@ -137,6 +147,33 @@ static void dashboard_gesture_cb(lv_event_t *e) {
     }
 }
 
+#ifndef ARDUINO
+static const char *aprsSymbolsRoot() {
+    static char root[256];
+    if (root[0]) return root;
+    const char *candidates[] = {
+        "/home/fab2/Developpement/LoRa_APRS/aprs-symbols/sd_card/LoRa_Tracker/Symbols",
+        "/media/fab2/TILES/LoRa_Tracker/Symbols",
+        "/data/LoRa_Tracker/Symbols", NULL };
+    for (int i = 0; candidates[i]; i++) {
+        struct stat st;
+        if (stat(candidates[i], &st) == 0) {
+            strncpy(root, candidates[i], sizeof(root) - 1);
+            return root;
+        }
+    }
+    return NULL;
+}
+
+static bool aprsSymbolPath(char table, char sym, char *path, size_t pathsz) {
+    const char *root = aprsSymbolsRoot();
+    if (!root) return false;
+    const char *tableName = (table == '/') ? "primary" : "alternate";
+    snprintf(path, pathsz, "A:%s/%s/%02X.png", root, tableName, (uint8_t)sym);
+    return true;
+}
+#endif
+
 void init() {
     // Initialize dashboard module (nothing to do yet)
 }
@@ -146,47 +183,42 @@ lv_obj_t* getMainScreen() {
 }
 
 void drawAPRSSymbol(const char *symbolStr) {
-    if (!aprs_symbol_canvas || !aprs_symbol_buf)
-        return;
+    if (!aprs_symbol_canvas || !symbolStr) return;
 
-    // Extract symbol character from full format (e.g., "/>" or "\>" or ">")
-    // Symbol is always second char in 2-char format, first char in 1-char format
+#ifndef ARDUINO
+    char table = (strlen(symbolStr) >= 2) ? symbolStr[0] : '/';
+    char sym   = (strlen(symbolStr) >= 2) ? symbolStr[1]
+               : (strlen(symbolStr) == 1) ? symbolStr[0] : 0;
+    if (!sym) return;
+    char path[320];
+    if (aprsSymbolPath(table, sym, path, sizeof(path)))
+        lv_image_set_src(aprs_symbol_canvas, path);
+#else
+    if (!aprs_symbol_buf) return;
+
     char symbolChar[2] = {0, 0};
-    if (symbolStr && strlen(symbolStr) >= 2) {
-        symbolChar[0] = symbolStr[1]; // Second character is the symbol
-    } else if (symbolStr && strlen(symbolStr) >= 1) {
-        symbolChar[0] = symbolStr[0];
-    }
+    if (strlen(symbolStr) >= 2)      symbolChar[0] = symbolStr[1];
+    else if (strlen(symbolStr) == 1) symbolChar[0] = symbolStr[0];
 
-    // Find symbol index
     int symbolIndex = -1;
     for (int i = 0; i < symbolArraySize; i++) {
-        if (strcmp(symbolChar, symbolArray[i]) == 0) {
-            symbolIndex = i;
-            break;
-        }
+        if (strcmp(symbolChar, symbolArray[i]) == 0) { symbolIndex = i; break; }
     }
 
-    // Clear canvas with dark background
     lv_canvas_fill_bg(aprs_symbol_canvas, lv_color_hex(0x16213e), LV_OPA_COVER);
-
-    if (symbolIndex < 0)
-        return; // Symbol not found
+    if (symbolIndex < 0) return;
 
     const uint8_t *bitMap = symbolsAPRS[symbolIndex];
     lv_color_t white = lv_color_hex(0xffffff);
-
-    // Draw bitmap 1:1
     for (int y = 0; y < SYMBOL_HEIGHT; y++) {
         for (int x = 0; x < SYMBOL_WIDTH; x++) {
             int byteIndex = (y * ((SYMBOL_WIDTH + 7) / 8)) + (x / 8);
-            int bitIndex = 7 - (x % 8);
-            if (bitMap[byteIndex] & (1 << bitIndex)) {
+            if (bitMap[byteIndex] & (1 << (7 - (x % 8))))
                 lv_canvas_set_px(aprs_symbol_canvas, x, y, white, LV_OPA_COVER);
-            }
         }
     }
     lv_obj_invalidate(aprs_symbol_canvas);
+#endif
 }
 
 // Button event callbacks
@@ -266,15 +298,23 @@ void createDashboard() {
     label_callsign = lv_label_create(status_bar);
     lv_label_set_text(label_callsign, "NOCALL");
     lv_obj_set_style_text_color(label_callsign, lv_color_hex(0xffffff), 0);
-#if defined(WAVESHARE_S3_TOUCH_LCD_7)
-    lv_obj_set_style_text_font(label_callsign, &lv_font_montserrat_18, 0);
-#elif defined(LINUX_SIM)
-    lv_obj_set_style_text_font(label_callsign, &lv_font_montserrat_20, 0);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
+    lv_obj_set_style_text_font(label_callsign, &lv_font_montserrat_24, 0);
 #else
     lv_obj_set_style_text_font(label_callsign, &lv_font_montserrat_14, 0);
 #endif
 
-    // APRS symbol canvas (center)
+    // APRS symbol icon
+#ifndef ARDUINO
+    aprs_symbol_canvas = lv_image_create(status_bar);
+    lv_obj_set_size(aprs_symbol_canvas, 32, 32);
+    lv_obj_clear_flag(aprs_symbol_canvas, LV_OBJ_FLAG_CLICKABLE);
+    if (!Config.beacons.empty()) {
+        Beacon *b = &Config.beacons[myBeaconsIndex];
+        String fullSymbol = b->overlay + b->symbol;
+        drawAPRSSymbol(fullSymbol.c_str());
+    }
+#else
     aprs_symbol_buf = (lv_color_t *)lv_malloc(
         APRS_CANVAS_WIDTH * APRS_CANVAS_HEIGHT * sizeof(lv_color_t));
     if (aprs_symbol_buf) {
@@ -282,24 +322,33 @@ void createDashboard() {
         lv_canvas_set_buffer(aprs_symbol_canvas, aprs_symbol_buf, APRS_CANVAS_WIDTH,
                              APRS_CANVAS_HEIGHT, LV_COLOR_FORMAT_NATIVE);
         lv_obj_set_size(aprs_symbol_canvas, APRS_CANVAS_WIDTH, APRS_CANVAS_HEIGHT);
-        // Draw initial symbol from current beacon
-        Beacon *currentBeacon = &Config.beacons[myBeaconsIndex];
-        String fullSymbol = currentBeacon->overlay + currentBeacon->symbol;
-        // drawAPRSSymbol skipped: symbolsAPRS[] bitmap data not ported to Linux
-        (void)fullSymbol;
+        if (!Config.beacons.empty()) {
+            Beacon *b = &Config.beacons[myBeaconsIndex];
+            String fullSymbol = b->overlay + b->symbol;
+            drawAPRSSymbol(fullSymbol.c_str());
+        }
     }
+#endif
 
     // UTC time (GPS reference)
     label_utc = lv_label_create(status_bar);
     lv_label_set_text(label_utc, "UTC --:--:--");
     lv_obj_set_style_text_color(label_utc, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(label_utc, &lv_font_montserrat_16, 0);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
+    lv_obj_set_style_text_font(label_utc, &lv_font_mono_20, 0);
+#else
+    lv_obj_set_style_text_font(label_utc, &lv_font_mono_16, 0);
+#endif
 
     // Local time
     label_time = lv_label_create(status_bar);
     lv_label_set_text(label_time, "--/-- --:--");
     lv_obj_set_style_text_color(label_time, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(label_time, &lv_font_montserrat_14, 0);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
+    lv_obj_set_style_text_font(label_time, &lv_font_mono_20, 0);
+#else
+    lv_obj_set_style_text_font(label_time, &lv_font_mono_16, 0);
+#endif
 
     // GPS Strict 3D icon (hidden by default, shown when active)
     icon_gps_strict = lv_label_create(status_bar);
@@ -327,7 +376,11 @@ void createDashboard() {
     label_battery_pct = lv_label_create(status_bar);
     lv_label_set_text(label_battery_pct, "--%");
     lv_obj_set_style_text_color(label_battery_pct, lv_color_hex(0xffffff), 0);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
+    lv_obj_set_style_text_font(label_battery_pct, &lv_font_montserrat_16, 0);
+#else
     lv_obj_set_style_text_font(label_battery_pct, &lv_font_montserrat_12, 0);
+#endif
 
     // Main content area
     lv_obj_t *content = lv_obj_create(screen_main);
@@ -343,8 +396,8 @@ void createDashboard() {
     lv_label_set_text(label_gps, "GPS: -- sat  Loc: --------\nLat: --.----  Lon: "
                                  "--.----\nAlt: ---- m  Spd: --- km/h");
     lv_obj_set_style_text_color(label_gps, lv_color_hex(0x759a9e), 0);
-#if defined(LINUX_SIM)
-    lv_obj_set_style_text_font(label_gps, &lv_font_montserrat_18, 0);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
+    lv_obj_set_style_text_font(label_gps, &lv_font_montserrat_22, 0);
 #else
     lv_obj_set_style_text_font(label_gps, &lv_font_montserrat_16, 0);
 #endif
@@ -358,34 +411,30 @@ void createDashboard() {
     snprintf(lora_init, sizeof(lora_init), "LoRa: %.3f MHz  %d bps", freq, rate);
     lv_label_set_text(label_lora, lora_init);
     lv_obj_set_style_text_color(label_lora, lv_color_hex(0xff6b6b), 0);
-#if defined(LINUX_SIM)
-    lv_obj_set_style_text_font(label_lora, &lv_font_montserrat_18, 0);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
+    lv_obj_set_style_text_font(label_lora, &lv_font_montserrat_22, 0);
 #else
     lv_obj_set_style_text_font(label_lora, &lv_font_montserrat_16, 0);
 #endif
-#if defined(WAVESHARE_S3_TOUCH_LCD_7)
-    lv_obj_set_pos(label_lora, 0, 70);
-#elif defined(LINUX_SIM)
-    lv_obj_set_pos(label_lora, 0, 90);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
+    lv_obj_set_pos(label_lora, 0, 105);
 #else
     lv_obj_set_pos(label_lora, 0, 55);
 #endif
 
-    // Last RX stations (4 max)
+    // Last RX stations
     label_last_rx = lv_label_create(content);
     lv_label_set_recolor(label_last_rx, true);
     lv_label_set_long_mode(label_last_rx, LV_LABEL_LONG_CLIP);
     lv_label_set_text(label_last_rx, "Last RX:\n---");
     lv_obj_set_style_text_color(label_last_rx, lv_color_hex(0xffcc00), 0);
-#if defined(LINUX_SIM)
-    lv_obj_set_style_text_font(label_last_rx, &lv_font_mono_16, 0);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
+    lv_obj_set_style_text_font(label_last_rx, &lv_font_mono_18, 0);
 #else
     lv_obj_set_style_text_font(label_last_rx, &lv_font_mono_16, 0);
 #endif
-#if defined(WAVESHARE_S3_TOUCH_LCD_7)
-    lv_obj_set_pos(label_last_rx, 0, 95);
-#elif defined(LINUX_SIM)
-    lv_obj_set_pos(label_last_rx, 0, 120);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
+    lv_obj_set_pos(label_last_rx, 0, 145);
 #else
     lv_obj_set_pos(label_last_rx, 0, 80);
 #endif
@@ -411,7 +460,7 @@ void createDashboard() {
     lv_obj_set_style_bg_color(btn_beacon, lv_color_hex(0xcc0000), 0);
     lv_obj_add_event_cb(btn_beacon, btn_beacon_clicked, LV_EVENT_CLICKED, NULL);
     lv_obj_t *lbl_beacon = lv_label_create(btn_beacon);
-    lv_label_set_text(lbl_beacon, "BCN");
+    lv_label_set_text(lbl_beacon, "BEACON");
     lv_obj_center(lbl_beacon);
     lv_obj_set_style_text_color(lbl_beacon, lv_color_hex(0xffffff), 0);
 
@@ -421,7 +470,7 @@ void createDashboard() {
     lv_obj_set_style_bg_color(btn_msg, lv_color_hex(0x0066cc), 0);
     lv_obj_add_event_cb(btn_msg, btn_msg_clicked, LV_EVENT_CLICKED, NULL);
     lv_obj_t *lbl_msg = lv_label_create(btn_msg);
-    lv_label_set_text(lbl_msg, "MSG");
+    lv_label_set_text(lbl_msg, "MESSAGES");
     lv_obj_center(lbl_msg);
     lv_obj_set_style_text_color(lbl_msg, lv_color_hex(0xffffff), 0);
 
@@ -441,7 +490,7 @@ void createDashboard() {
     lv_obj_set_style_bg_color(btn_settings, lv_color_hex(0xc792ea), 0);
     lv_obj_add_event_cb(btn_settings, btn_setup_clicked, LV_EVENT_CLICKED, NULL);
     lv_obj_t *lbl_settings = lv_label_create(btn_settings);
-    lv_label_set_text(lbl_settings, "SET");
+    lv_label_set_text(lbl_settings, "SETTINGS");
     lv_obj_center(lbl_settings);
     lv_obj_set_style_text_color(lbl_settings, lv_color_hex(0x000000), 0);
 
@@ -540,7 +589,7 @@ void updateLastRx() {
     String text = "Last RX:";
     char line[128];
 
-    for (size_t i = 0; i < entries.size() && i < 4; i++) {
+    for (size_t i = 0; i < entries.size() && i < 8; i++) {
         const DashboardRxEntry &e = entries[i];
 
         // No timestamp - details available in MSG > Frames
