@@ -33,6 +33,7 @@ namespace UIMessaging {
     void refreshContactsList();
     void refreshFramesList();
     void refreshStatsIfActive();  // Called from main loop to update stats tab
+    void refreshConversationIfActive();  // Called from main loop to update open conversation
 
     // Physical keyboard handler for compose screen
     void handleComposeKeyboard(char key);

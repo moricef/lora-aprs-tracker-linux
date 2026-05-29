@@ -59,6 +59,7 @@ static std::vector<Contact> _contacts;
 static bool _contactsLoaded = false;
 static bool _framesDirty = false;
 static bool _statsDirty  = false;
+static bool _messagesDirty = false;
 static uint32_t _lastStatsSave = 0;
 
 using json = nlohmann::json;
@@ -411,4 +412,7 @@ namespace STORAGE_Utils {
     void clearFramesDirty(){ _framesDirty = false; }
     bool isStatsDirty()    { return _statsDirty; }
     void clearStatsDirty() { _statsDirty = false; }
+    bool isMessagesDirty()   { return _messagesDirty; }
+    void clearMessagesDirty(){ _messagesDirty = false; }
+    void markMessagesDirty() { _messagesDirty = true; }
 }
