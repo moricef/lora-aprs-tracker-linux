@@ -105,6 +105,7 @@ namespace MSG_Utils {
         String line = String(ts) + "," + dir + "," + message;
         File wf = STORAGE_Utils::openFile(filename, "a");
         if (wf) { wf.println(line); wf.close(); }
+        STORAGE_Utils::markMessagesDirty();
         ESP_LOGI(TAG, "Saved %s message to %s", dir.c_str(), filename.c_str());
     }
 

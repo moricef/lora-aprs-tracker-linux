@@ -508,7 +508,7 @@ static void refresh_conversation_messages() {
             char ts_buf[18] = "";
             {
                 time_t ts = (time_t)atol(msgPtr);
-                if (ts > 1000000000) {
+                if (ts > 0) {
                     struct tm *tm_info = localtime(&ts);
                     if (tm_info)
                         strftime(ts_buf, sizeof(ts_buf), "%m-%d-%y %H:%M", tm_info);
@@ -529,6 +529,9 @@ static void refresh_conversation_messages() {
             lv_obj_set_style_pad_all(bubble, 8, 0);
             lv_obj_set_style_radius(bubble, 10, 0);
             lv_obj_set_style_border_width(bubble, 0, 0);
+            lv_obj_set_flex_flow(bubble, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_style_pad_row(bubble, 4, 0);
+            lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_add_flag(bubble, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_add_event_cb(bubble, conversation_msg_clicked, LV_EVENT_CLICKED,
@@ -555,7 +558,8 @@ static void refresh_conversation_messages() {
                 lv_label_set_text(ts_label, ts_buf);
                 lv_obj_set_width(ts_label, lv_pct(100));
                 lv_obj_set_style_text_font(ts_label, &lv_font_montserrat_12, 0);
-                lv_obj_set_style_text_color(ts_label, lv_color_hex(0xaaaaaa), 0);
+                lv_obj_set_style_text_color(ts_label, lv_color_hex(0xcccccc), 0);
+                lv_obj_set_style_text_align(ts_label, LV_TEXT_ALIGN_RIGHT, 0);
             }
         }
     }
@@ -654,7 +658,7 @@ static void create_conversation_screen(const String &callsign) {
             char ts_buf[18] = "";
             {
                 time_t ts = (time_t)atol(msgPtr);
-                if (ts > 1000000000) {
+                if (ts > 0) {
                     struct tm *tm_info = localtime(&ts);
                     if (tm_info)
                         strftime(ts_buf, sizeof(ts_buf), "%m-%d-%y %H:%M", tm_info);
@@ -675,6 +679,9 @@ static void create_conversation_screen(const String &callsign) {
             lv_obj_set_style_pad_all(bubble, 8, 0);
             lv_obj_set_style_radius(bubble, 10, 0);
             lv_obj_set_style_border_width(bubble, 0, 0);
+            lv_obj_set_flex_flow(bubble, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_style_pad_row(bubble, 4, 0);
+            lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_add_flag(bubble, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_add_event_cb(bubble, conversation_msg_clicked, LV_EVENT_CLICKED,
@@ -701,7 +708,8 @@ static void create_conversation_screen(const String &callsign) {
                 lv_label_set_text(ts_label, ts_buf);
                 lv_obj_set_width(ts_label, lv_pct(100));
                 lv_obj_set_style_text_font(ts_label, &lv_font_montserrat_12, 0);
-                lv_obj_set_style_text_color(ts_label, lv_color_hex(0xaaaaaa), 0);
+                lv_obj_set_style_text_color(ts_label, lv_color_hex(0xcccccc), 0);
+                lv_obj_set_style_text_align(ts_label, LV_TEXT_ALIGN_RIGHT, 0);
             }
         }
     }
@@ -1754,6 +1762,16 @@ void refreshFramesList() {
             lv_obj_scroll_to_y(list_frames_global, 0, LV_ANIM_ON);
             STORAGE_Utils::clearFramesDirty();
         }
+    }
+}
+
+void refreshConversationIfActive() {
+    // Only refresh if a message was saved AND the conversation screen is active
+    if (!STORAGE_Utils::isMessagesDirty()) return;
+
+    if (screen_conversation && lv_screen_active() == screen_conversation && conversation_list) {
+        refresh_conversation_messages();
+        STORAGE_Utils::clearMessagesDirty();
     }
 }
 

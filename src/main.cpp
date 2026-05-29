@@ -444,6 +444,7 @@ static void loop() {
     STATION_Utils::cleanOldMapStations();
 #ifdef USE_LVGL_UI
     MapRaster::refreshStations();
+    UIMessaging::refreshConversationIfActive();
 #endif
 
     // ── GPS / SmartBeacon ────────────────────────────────────────────────────
