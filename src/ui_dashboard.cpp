@@ -389,17 +389,19 @@ void createDashboard() {
     lv_obj_set_style_bg_color(content, lv_color_hex(0x0f0f23), 0);
     lv_obj_set_style_border_color(content, lv_color_hex(0x16213e), 0);
     lv_obj_set_style_radius(content, 8, 0);
-    lv_obj_set_style_pad_all(content, 10, 0);
+    lv_obj_set_style_pad_all(content, 14, 0);
+    lv_obj_set_style_pad_row(content, 8, 0);
 
-    // GPS info
+    // GNSS info
     label_gps = lv_label_create(content);
-    lv_label_set_text(label_gps, "GPS: -- sat  Loc: --------\nLat: --.----  Lon: "
-                                 "--.----\nAlt: ---- m  Spd: --- km/h");
+    lv_label_set_text(label_gps, "GNSS: -- sat  Loc: --------\n"
+                                 "Lat:      --.----   Lon:   --.----\n"
+                                 "Alt:    ---- m      Spd:    --- km/h");
     lv_obj_set_style_text_color(label_gps, lv_color_hex(0x759a9e), 0);
 #if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
-    lv_obj_set_style_text_font(label_gps, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_font(label_gps, &lv_font_mono_20, 0);
 #else
-    lv_obj_set_style_text_font(label_gps, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(label_gps, &lv_font_mono_16, 0);
 #endif
     lv_obj_set_pos(label_gps, 0, 0);
 
@@ -519,10 +521,18 @@ void updateGPS(double lat, double lng, double alt, double speed, int sats, doubl
             hdopState = "+"; // Good precision
         }
 
-        snprintf(buf, sizeof(buf),
-                 "GPS: %d%s sat  Loc: %s\nLat: %.4f  Lon: %.4f\nAlt: %.0f m  "
-                 "Spd: %.0f km/h",
-                 sats, hdopState, locator, lat, lng, alt, speed);
+        char c1[32], c2[32];
+        snprintf(c1, sizeof(c1), "GNSS: %d%s sat", sats, hdopState);
+        snprintf(c2, sizeof(c2), "Loc: %s", locator);
+        snprintf(buf, sizeof(buf), "%-20s%s\n", c1, c2);
+
+        snprintf(c1, sizeof(c1), "Lat:  %.4f", lat);
+        snprintf(c2, sizeof(c2), "Lon: %.4f", lng);
+        snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), "%-20s%s\n", c1, c2);
+
+        snprintf(c1, sizeof(c1), "Alt:  %.0f m", alt);
+        snprintf(c2, sizeof(c2), "Spd: %.0f km/h", speed);
+        snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), "%-20s%s", c1, c2);
         lv_label_set_text(label_gps, buf);
     }
 }
