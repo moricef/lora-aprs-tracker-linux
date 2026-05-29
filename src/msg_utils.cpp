@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 #include <sys/stat.h>
+#include <ctime>
 #include "storage_utils.h"
 #include "configuration.h"
 #include "lora_utils.h"
@@ -96,7 +97,7 @@ namespace MSG_Utils {
             }
         }
 
-        uint32_t ts = millis() / 1000;
+        uint32_t ts = (uint32_t)time(nullptr);
         String dir = outgoing ? "OUT" : "IN";
         String line = String(ts) + "," + dir + "," + message;
         File wf = STORAGE_Utils::openFile(filename, "a");

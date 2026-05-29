@@ -504,6 +504,17 @@ static void refresh_conversation_messages() {
             bool isOutgoing = (strncmp(comma1 + 1, "OUT", 3) == 0);
             const char* content = comma2 + 1;
 
+            // Format timestamp as MM-DD-YY HH:MM
+            char ts_buf[18] = "";
+            {
+                time_t ts = (time_t)atol(msgPtr);
+                if (ts > 1000000000) {
+                    struct tm *tm_info = localtime(&ts);
+                    if (tm_info)
+                        strftime(ts_buf, sizeof(ts_buf), "%m-%d-%y %H:%M", tm_info);
+                }
+            }
+
             lv_obj_t *bubble_container = lv_obj_create(conversation_list);
             lv_obj_set_width(bubble_container, lv_pct(100));
             lv_obj_set_height(bubble_container, LV_SIZE_CONTENT);
@@ -534,10 +545,18 @@ static void refresh_conversation_messages() {
             }
 
             lv_obj_t *msg_label = lv_label_create(bubble);
-            lv_label_set_text(msg_label, content);  // Direct pointer, no String copy
+            lv_label_set_text(msg_label, content);
             lv_label_set_long_mode(msg_label, LV_LABEL_LONG_WRAP);
             lv_obj_set_width(msg_label, lv_pct(100));
             lv_obj_set_style_text_color(msg_label, lv_color_hex(0xffffff), 0);
+
+            if (ts_buf[0]) {
+                lv_obj_t *ts_label = lv_label_create(bubble);
+                lv_label_set_text(ts_label, ts_buf);
+                lv_obj_set_width(ts_label, lv_pct(100));
+                lv_obj_set_style_text_font(ts_label, &lv_font_montserrat_12, 0);
+                lv_obj_set_style_text_color(ts_label, lv_color_hex(0xaaaaaa), 0);
+            }
         }
     }
 
@@ -631,6 +650,17 @@ static void create_conversation_screen(const String &callsign) {
             bool isOutgoing = (strncmp(comma1 + 1, "OUT", 3) == 0);
             const char* content = comma2 + 1;
 
+            // Format timestamp as MM-DD-YY HH:MM
+            char ts_buf[18] = "";
+            {
+                time_t ts = (time_t)atol(msgPtr);
+                if (ts > 1000000000) {
+                    struct tm *tm_info = localtime(&ts);
+                    if (tm_info)
+                        strftime(ts_buf, sizeof(ts_buf), "%m-%d-%y %H:%M", tm_info);
+                }
+            }
+
             lv_obj_t *bubble_container = lv_obj_create(conversation_list);
             lv_obj_set_width(bubble_container, lv_pct(100));
             lv_obj_set_height(bubble_container, LV_SIZE_CONTENT);
@@ -661,10 +691,18 @@ static void create_conversation_screen(const String &callsign) {
             }
 
             lv_obj_t *msg_label = lv_label_create(bubble);
-            lv_label_set_text(msg_label, content);  // Direct pointer, no String copy
+            lv_label_set_text(msg_label, content);
             lv_label_set_long_mode(msg_label, LV_LABEL_LONG_WRAP);
             lv_obj_set_width(msg_label, lv_pct(100));
             lv_obj_set_style_text_color(msg_label, lv_color_hex(0xffffff), 0);
+
+            if (ts_buf[0]) {
+                lv_obj_t *ts_label = lv_label_create(bubble);
+                lv_label_set_text(ts_label, ts_buf);
+                lv_obj_set_width(ts_label, lv_pct(100));
+                lv_obj_set_style_text_font(ts_label, &lv_font_montserrat_12, 0);
+                lv_obj_set_style_text_color(ts_label, lv_color_hex(0xaaaaaa), 0);
+            }
         }
     }
 

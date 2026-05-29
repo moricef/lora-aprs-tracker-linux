@@ -16,6 +16,7 @@
 #include <vector>
 #include <algorithm>
 #include <map>
+#include <set>
 #include <deque>
 #include <mutex>
 #include <thread>
@@ -233,7 +234,7 @@ static void workerLoop() {
         if (!tmp) continue;
         renderTileBuf(tmp, sz, req.z, req.x, req.y);
 
-        // Check if any pixel was actually drawn (not just background)
+        // Check if any pixel was actually drawn (bg = F0EAD6 in ARGB8888 LE = B,G,R)
         bool hasData = false;
         for (int i = 0; i < sz * sz; i++) {
             uint8_t *p = tmp + i * 4;
@@ -365,11 +366,188 @@ struct PolyCollector {
     void linestring_begin(uint32_t) {} void linestring_point(vtzero::point) {} void linestring_end() {}
 };
 
-// ---- renderTileBuf (core — renders to any ARGB8888 buffer) ----------------
+// ---- Style tables (from Tile-Generator-Pack features.json) -------------------
+struct StyleRule { const char *key; int minZoom; uint8_t r, g, b; };
+#define STYLE_LEN(a) (int)(sizeof(a)/sizeof(a[0]))
+
+static bool matchStyle(const StyleRule *t, int n, const std::string &cls, int zoom,
+                       uint8_t &r, uint8_t &g, uint8_t &b) {
+    if (cls.empty()) return false;
+    for (int i = 0; i < n; i++) {
+        if (zoom < t[i].minZoom) continue;
+        if (cls == t[i].key) { r = t[i].r; g = t[i].g; b = t[i].b; return true; }
+    }
+    return false;
+}
+
+// Style tables aligned with tilemaker process.lua output classes
+// landcover classes: wood, grass, farmland, wetland, sand, rock, ice
+static const StyleRule kLandcover[] = {
+    {"wood",      8, 0xAD,0xD1,0x9E},
+    {"grass",     9, 0xCE,0xEC,0xB1},
+    {"farmland",  9, 0xEE,0xF0,0xD6},
+    {"wetland",   9, 0xAC,0xD2,0xBF},
+    {"sand",     10, 0xF5,0xE9,0xC6},
+    {"rock",      8, 0xEE,0xE6,0xDD},
+    {"ice",      10, 0xDE,0xED,0xED},
+};
+// landuse classes from landuseKeys in process.lua
+static const StyleRule kLanduse[] = {
+    {"residential",  8, 0xE1,0xE0,0xE0},
+    {"commercial",  10, 0xF2,0xDA,0xD9},
+    {"industrial",  10, 0xEB,0xDB,0xE8},
+    {"retail",      10, 0xFF,0xD6,0xD1},
+    {"military",    10, 0xF5,0xBF,0xBF},
+    {"cemetery",    11, 0xAA,0xCB,0xAF},
+    {"railway",     11, 0xEB,0xDB,0xE8},
+    {"stadium",     11, 0xD6,0xFF,0xDA},
+    {"pitch",       13, 0xA9,0xE0,0xCB},
+    {"playground",  12, 0xD6,0xFF,0xDA},
+    {"school",      13, 0xFF,0xFF,0xE5},
+    {"university",  12, 0xFF,0xFF,0xE5},
+    {"college",     12, 0xFF,0xFF,0xE5},
+    {"kindergarten",13, 0xFF,0xFF,0xE5},
+    {"hospital",    12, 0xFF,0xFF,0xE5},
+    {"theme_park",  12, 0xD6,0xFF,0xDA},
+    {"zoo",         12, 0xD6,0xFF,0xDA},
+};
+// park layer: only national_park and nature_reserve (process.lua)
+static const StyleRule kPark[] = {
+    {"national_park",  8, 0xF2,0xEF,0xE9},
+    {"nature_reserve", 9, 0xF2,0xEF,0xE9},
+};
+static const StyleRule kAeroway[] = {
+    {"aerodrome", 10, 0xE7,0xE6,0xDE}, {"apron",   12, 0xE7,0xE6,0xDE},
+    {"runway",    12, 0xB2,0xB5,0xD1}, {"taxiway", 12, 0xB2,0xB5,0xD1},
+    {"helipad",   11, 0xE7,0xE6,0xDE}, {"hangar",  12, 0xD9,0xD0,0xC9},
+};
+static const StyleRule kWater[] = {
+    {"water",     8, 0xAA,0xD2,0xDF}, {"bay",        8, 0xAA,0xD2,0xDF},
+    {"river",     8, 0xAA,0xD2,0xDF}, {"canal",     10, 0xAA,0xD2,0xDF},
+    {"lake",      8, 0xAA,0xD2,0xDF}, {"reservoir",  8, 0xAA,0xD2,0xDF},
+    {"pond",     12, 0xAA,0xD2,0xDF}, {"basin",     11, 0xAA,0xD2,0xDF},
+    {"dock",     12, 0xAA,0xD2,0xDF}, {"riverbank",  8, 0xAA,0xD2,0xDF},
+};
+
+// Road classification — colour + min zoom + line width multiplier
+struct RoadStyle { const char *cls; int minZ; uint8_t r,g,b; float wMul; };
+static const RoadStyle kRoads[] = {
+    {"motorway",      6, 0xE8,0x92,0xA2, 3.0f},
+    {"trunk",         6, 0xF9,0xB2,0x9C, 2.5f},
+    {"primary",       7, 0xFC,0xD6,0xA4, 2.0f},
+    {"secondary",     9, 0xF7,0xFA,0xBF, 1.5f},
+    {"tertiary",     12, 0xFF,0xFF,0xFF, 1.2f},
+    {"unclassified", 13, 0xFF,0xFF,0xFF, 1.0f},
+    {"residential",  13, 0xFF,0xFF,0xFF, 1.0f},
+    {"living_street",13, 0xED,0xED,0xED, 1.0f},
+    {"pedestrian",   13, 0xDD,0xDD,0xE8, 1.0f},
+    {"motorway_link",10, 0xE8,0x92,0xA2, 2.0f},
+    {"trunk_link",   10, 0xF9,0xB2,0x9C, 1.8f},
+    {"primary_link", 11, 0xFC,0xD6,0xA4, 1.5f},
+    {"secondary_link",12,0xF7,0xFA,0xBF, 1.2f},
+    {"tertiary_link",12, 0xFF,0xFF,0xFF, 1.0f},
+    {"service",      15, 0xFF,0xFF,0xFF, 0.8f},
+    {"track",        14, 0x99,0x66,0x00, 0.7f},
+    {"construction", 13, 0xAA,0xAA,0xAA, 1.0f},
+    {"path",         14, 0x88,0x88,0x88, 0.5f},
+    {"footway",      14, 0x88,0x88,0x88, 0.5f},
+    {"cycleway",     14, 0x88,0x88,0x88, 0.5f},
+    {"steps",        14, 0x88,0x88,0x88, 0.5f},
+    {"bridleway",    14, 0x88,0x88,0x88, 0.5f},
+};
+static const RoadStyle *findRoad(const std::string &cls) {
+    if (cls.empty()) return nullptr;
+    for (auto &r : kRoads) if (cls == r.cls) return &r;
+    return nullptr;
+}
+
+// Waterway classification
+static const StyleRule kWaterway[] = {
+    {"river",  10, 0xAA,0xD2,0xDF}, {"canal", 10, 0xAA,0xD2,0xDF},
+    {"stream", 13, 0xAA,0xD2,0xDF}, {"ditch", 13, 0xAA,0xD2,0xDF},
+    {"drain",  13, 0xAA,0xD2,0xDF}, {"dam",   12, 0xAD,0xAD,0xAD},
+    {"weir",   12, 0xAA,0xAA,0xAA},
+};
+static const StyleRule kRailway[] = {
+    {"rail",        10, 0x88,0x88,0x88}, {"tram",        12, 0x88,0x88,0x88},
+    {"abandoned",   12, 0x77,0x77,0x77}, {"disused",     12, 0x88,0x88,0x88},
+    {"funicular",   11, 0x88,0x88,0x88}, {"subway",      12, 0x88,0x88,0x88},
+    {"light_rail",  12, 0x88,0x88,0x88}, {"narrow_gauge",11, 0x88,0x88,0x88},
+};
+// admin_level thresholds for boundary rendering (integer attribute)
+struct AdminStyle { int level; int minZ; uint8_t r,g,b; int width; };
+static const AdminStyle kAdmin[] = {
+    {2, 6, 0x8D,0x61,0x8B, 2},
+    {4, 7, 0x8D,0x61,0x8B, 1},
+    {6, 9, 0x8D,0x61,0x8B, 1},
+};
+
+// Place label styling: class → {minZoom, priority, font, r, g, b}
+struct PlaceStyle { const char *cls; int minZ; int prio; const lv_font_t *font; uint8_t r,g,b; };
+static const PlaceStyle kPlaces[] = {
+    {"city",    5,  10, &lv_font_montserrat_14, 0x33,0x22,0x21},
+    {"town",    8,  20, &lv_font_montserrat_14, 0x33,0x22,0x21},
+    {"village", 10, 30, &lv_font_montserrat_12, 0x44,0x33,0x32},
+    {"hamlet",  12, 40, &lv_font_montserrat_12, 0x55,0x44,0x43},
+    {"suburb",  11, 45, &lv_font_montserrat_12, 0x55,0x44,0x43},
+    {"state",   4,  50, &lv_font_montserrat_14, 0x55,0x44,0x43},
+    {"country", 2,   5, &lv_font_montserrat_14, 0x33,0x22,0x21},
+};
+
+// ---- Path drawing with width ------------------------------------------------
+static void drawWideLine(uint8_t *buf, int w, int h, int x0, int y0, int x1, int y1,
+                         int width, uint8_t r, uint8_t g, uint8_t b) {
+    if (width <= 1) { drawLine(buf,w,h,x0,y0,x1,y1,r,g,b); return; }
+    int dx = abs(x1-x0), sx = x0<x1 ? 1 : -1;
+    int dy = -abs(y1-y0), sy = y0<y1 ? 1 : -1;
+    int err = dx+dy, rad = width/2;
+    while (true) {
+        for (int dy2 = -rad; dy2 <= rad; dy2++)
+            for (int dx2 = -rad; dx2 <= rad; dx2++)
+                if (dx2*dx2 + dy2*dy2 <= rad*rad)
+                    { int px=x0+dx2, py=y0+dy2; if(px>=0&&px<w&&py>=0&&py<h)setPx(buf,w*4,px,py,r,g,b); }
+        if (x0==x1 && y0==y1) break;
+        int e2=2*err; if (e2>=dy) { err+=dy; x0+=sx; } if (e2<=dx) { err+=dx; y0+=sy; }
+    }
+}
+
+// ---- Line collector with per-feature class lookup ----------------------------
+struct StyledLineCollector {
+    std::vector<int> px, py;
+    int sz, w, h, width;
+    uint8_t *buf;
+    uint8_t r, g, b;
+    int zoom;
+    const char *propName;   // "class" for most layers
+    const StyleRule *table; int tableLen;
+    const RoadStyle *roadTable;
+    void setTable(const StyleRule *t, int n) { table = t; tableLen = n; roadTable = nullptr; }
+    void setRoads() { table = nullptr; tableLen = 0; roadTable = kRoads; }
+    void linestring_begin(uint32_t) { px.clear(); py.clear(); }
+    void linestring_point(vtzero::point p) { px.push_back(toPx(p.x,sz)); py.push_back(toPx(p.y,sz)); }
+    void linestring_end() {
+        for (size_t i = 1; i < px.size(); i++)
+            drawWideLine(buf,w,h,px[i-1],py[i-1],px[i],py[i],width,r,g,b);
+    }
+    void points_begin(uint32_t) {} void points_point(vtzero::point) {} void points_end() {}
+    void ring_begin(uint32_t) {}   void ring_point(vtzero::point)   {} void ring_end(vtzero::ring_type) {}
+    void applyClass(const std::string &cls) {
+        if (roadTable) {
+            auto *rd = findRoad(cls);
+            if (rd && zoom >= rd->minZ) { r=rd->r; g=rd->g; b=rd->b; width = (int)(rd->wMul*1.2f); }
+            else { r=g=b=0; }
+        } else if (table) {
+            if (!matchStyle(table, tableLen, cls, zoom, r, g, b)) r=g=b=0;
+            width = 1;
+        }
+    }
+};
+
+// ---- renderTileBuf ----------------------------------------------------------
 static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
     int w = sz, h = sz;
 
-    // Beige background
+    // Background
     for (int i = 0; i < w * h; i++) {
         uint8_t *p = buf + i * 4;
         p[0] = 0xD6; p[1] = 0xEA; p[2] = 0xF0; p[3] = 0xFF;
@@ -377,127 +555,276 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
 
     auto [off, len] = pmtiles::get_tile(gunzip, (const char*)s_mapped, z, x, y);
     if (len == 0) return;
-
     std::string raw((const char*)s_mapped + off, len);
     std::string mvt = (s_header.tile_compression == pmtiles::COMPRESSION_GZIP)
                       ? gunzip(raw, 0) : raw;
     if (mvt.empty()) return;
 
     auto layerName = [](vtzero::layer &l) { return std::string(l.name()); };
+    auto readClass = [](vtzero::feature &f) -> std::string {
+        while (auto p = f.next_property()) {
+            if (p.key() == "class" && p.value().type() == vtzero::property_value_type::string_value) {
+                auto v = p.value().string_value();
+                return std::string(v.data(), v.size());
+            }
+        }
+        return {};
+    };
 
-    vtzero::vector_tile t1{mvt};
-    while (auto lay = t1.next_layer()) {
-        std::string name = layerName(lay);
-        PolyCollector pc; pc.sz = sz; pc.buf = buf; pc.w = w; pc.h = h;
-        if      (name == "landcover") { pc.r = 0xCD; pc.g = 0xE0; pc.b = 0xB3; }
-        else if (name == "landuse")   { pc.r = 0xE8; pc.g = 0xD8; pc.b = 0xC0; }
-        else if (name == "water")     { pc.r = 0x6E; pc.g = 0xA8; pc.b = 0xE0; }
-        else continue;
-        while (auto feat = lay.next_feature())
-            if (feat.geometry_type() == vtzero::GeomType::POLYGON)
+    // Debug: dump unique class values per layer (once per tile)
+    static int dbgTileCount = 0;
+    if (dbgTileCount < 5) {
+        dbgTileCount++;
+        std::map<std::string, std::set<std::string>> seen;
+        vtzero::vector_tile td{mvt};
+        while (auto lay = td.next_layer()) {
+            std::string lname = layerName(lay);
+            while (auto feat = lay.next_feature()) {
+                std::string c = readClass(feat);
+                if (!c.empty()) seen[lname].insert(c);
+            }
+        }
+        for (auto &kv : seen) {
+            std::string vals;
+            for (auto &v : kv.second) { if (!vals.empty()) vals += ","; vals += v; }
+            fprintf(stderr, "[VECT] z=%d %s: [%s]\n", z, kv.first.c_str(), vals.c_str());
+        }
+    }
+
+    // Pass 1: landcover / landuse / water / park / aeroway / building polygons
+    struct PolyCtx { uint8_t *buf; int w,h,sz,zoom; const char *layer; };
+    auto renderPolyLayer = [&](const char *layerName, const StyleRule *tbl, int n) {
+        vtzero::vector_tile t{mvt};
+        while (auto lay = t.next_layer()) {
+            if (layerName != std::string(lay.name())) continue;
+            while (auto feat = lay.next_feature()) {
+                if (feat.geometry_type() != vtzero::GeomType::POLYGON) continue;
+                std::string cls = readClass(feat);
+                if (cls.empty()) continue;
+                uint8_t r,g,b;
+                if (!matchStyle(tbl, n, cls, z, r, g, b)) continue;
+                PolyCollector pc; pc.sz=sz; pc.buf=buf; pc.w=w; pc.h=h; pc.r=r; pc.g=g; pc.b=b;
                 vtzero::decode_polygon_geometry(feat.geometry(), pc);
+            }
+        }
+    };
+    // Render order optimised for tracker readability:
+    // farmland/grass background → urban areas visible → forests on top
+    static const StyleRule kLandcoverBg[] = {
+        {"farmland", 9, 0xEE,0xF0,0xD6},
+        {"grass",    9, 0xCE,0xEC,0xB1},
+        {"sand",    10, 0xF5,0xE9,0xC6},
+        {"rock",     8, 0xEE,0xE6,0xDD},
+        {"ice",     10, 0xDE,0xED,0xED},
+    };
+    static const StyleRule kLandcoverFg[] = {
+        {"wood",    8, 0xAD,0xD1,0x9E},
+        {"wetland", 9, 0xAC,0xD2,0xBF},
+    };
+    renderPolyLayer("park",      kPark,         STYLE_LEN(kPark));       // national_park, nature_reserve
+    renderPolyLayer("landcover", kLandcoverBg,  STYLE_LEN(kLandcoverBg)); // farmland/grass background
+    renderPolyLayer("landuse",   kLanduse,      STYLE_LEN(kLanduse));     // urban areas on top of farmland
+    renderPolyLayer("aeroway",   kAeroway,      STYLE_LEN(kAeroway));
+    renderPolyLayer("landcover", kLandcoverFg,  STYLE_LEN(kLandcoverFg)); // forest/wetland on top
+    if (z >= 13) {
+        vtzero::vector_tile t{mvt};
+        while (auto lay = t.next_layer()) {
+            if (std::string(lay.name()) != "building") continue;
+            PolyCollector pc; pc.sz=sz; pc.buf=buf; pc.w=w; pc.h=h; pc.r=0xD9; pc.g=0xD0; pc.b=0xC9;
+            while (auto feat = lay.next_feature())
+                if (feat.geometry_type() == vtzero::GeomType::POLYGON)
+                    vtzero::decode_polygon_geometry(feat.geometry(), pc);
+        }
     }
+    renderPolyLayer("water",     kWater,     STYLE_LEN(kWater));     // p8: last polygon layer
 
-    vtzero::vector_tile t2{mvt};
-    while (auto lay = t2.next_layer()) {
-        std::string name = layerName(lay);
-        LineCollector lc; lc.sz = sz; lc.buf = buf; lc.w = w; lc.h = h;
-        if      (name == "waterway")       { lc.r = 0x4A; lc.g = 0x7A; lc.b = 0xB0; }
-        else if (name == "transportation") { lc.r = 0x40; lc.g = 0x40; lc.b = 0x40; }
-        else continue;
-        while (auto feat = lay.next_feature())
-            if (feat.geometry_type() == vtzero::GeomType::LINESTRING)
+    // Pass 2: boundary lines — admin_level is an integer attribute, not "class"
+    {
+        vtzero::vector_tile tb{mvt};
+        while (auto lay = tb.next_layer()) {
+            if (std::string(lay.name()) != "boundary") continue;
+            while (auto feat = lay.next_feature()) {
+                if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
+                int admin_level = 0;
+                while (auto prop = feat.next_property()) {
+                    if (prop.key() == "admin_level") {
+                        if (prop.value().type() == vtzero::property_value_type::sint_value)
+                            admin_level = (int)prop.value().sint_value();
+                        else if (prop.value().type() == vtzero::property_value_type::uint_value)
+                            admin_level = (int)prop.value().uint_value();
+                        break;
+                    }
+                }
+                if (admin_level <= 0) continue;
+                const AdminStyle *as = nullptr;
+                for (auto &a : kAdmin) if (a.level == admin_level && z >= a.minZ) { as = &a; break; }
+                if (!as) continue;
+                StyledLineCollector lc; lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h;
+                lc.r=as->r; lc.g=as->g; lc.b=as->b; lc.width=as->width;
+                lc.zoom=z; lc.table=nullptr; lc.tableLen=0; lc.roadTable=nullptr;
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
+            }
+        }
     }
 
-    // ---- Pass 3: collecter les labels (place, waterway, water) ----------------
+    // Pass 3: waterway lines
+    {
+        StyledLineCollector lc;
+        lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z; lc.width=1;
+        lc.setTable(kWaterway, STYLE_LEN(kWaterway));
+        vtzero::vector_tile t{mvt};
+        while (auto lay = t.next_layer()) {
+            if (std::string(lay.name()) != "waterway") continue;
+            while (auto feat = lay.next_feature()) {
+                if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
+                std::string cls = readClass(feat);
+                if (cls.empty()) continue;
+                lc.r=lc.g=lc.b=0; lc.applyClass(cls);
+                if (lc.r==0 && lc.g==0 && lc.b==0) continue;
+                vtzero::decode_linestring_geometry(feat.geometry(), lc);
+            }
+        }
+    }
+
+    // Pass 4: railway lines
+    {
+        StyledLineCollector lc;
+        lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z; lc.width=1;
+        lc.setTable(kRailway, STYLE_LEN(kRailway));
+        vtzero::vector_tile t{mvt};
+        while (auto lay = t.next_layer()) {
+            if (std::string(lay.name()) != "transportation") continue;
+            while (auto feat = lay.next_feature()) {
+                if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
+                std::string cls = readClass(feat);
+                if (cls.empty()) continue;
+                lc.r=lc.g=lc.b=0; lc.applyClass(cls);
+                if (lc.r==0 && lc.g==0 && lc.b==0) continue;
+                vtzero::decode_linestring_geometry(feat.geometry(), lc);
+            }
+        }
+    }
+
+    // Pass 5: roads
+    {
+        StyledLineCollector lc;
+        lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z; lc.width=1;
+        lc.setRoads();
+        // Outline pass (darker, wider)
+        vtzero::vector_tile t1{mvt};
+        while (auto lay = t1.next_layer()) {
+            if (std::string(lay.name()) != "transportation") continue;
+            while (auto feat = lay.next_feature()) {
+                if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
+                std::string cls = readClass(feat);
+                if (cls.empty()) continue;
+                auto *rd = findRoad(cls);
+                if (!rd || z < rd->minZ) continue;
+                // Only draw outline for major roads or at high zoom
+                if (z < 12 && rd->wMul < 2.0f) continue;
+                float zf = std::max(0.3f, (float)(z - 6) / 9.0f);
+                lc.r=0x30; lc.g=0x30; lc.b=0x30;
+                lc.width = std::max(2, (int)(rd->wMul * 1.4f * zf + 1.5f));
+                vtzero::decode_linestring_geometry(feat.geometry(), lc);
+            }
+        }
+        // Fill pass (road colour, thinner)
+        vtzero::vector_tile t2{mvt};
+        while (auto lay = t2.next_layer()) {
+            if (std::string(lay.name()) != "transportation") continue;
+            while (auto feat = lay.next_feature()) {
+                if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
+                std::string cls = readClass(feat);
+                if (cls.empty()) continue;
+                auto *rd = findRoad(cls);
+                if (!rd || z < rd->minZ) continue;
+                float zf = std::max(0.3f, (float)(z - 6) / 9.0f);
+                lc.r=rd->r; lc.g=rd->g; lc.b=rd->b;
+                lc.width = std::max(1, (int)(rd->wMul * 1.2f * zf));
+                if (lc.width < 1) lc.width = 1;
+                vtzero::decode_linestring_geometry(feat.geometry(), lc);
+            }
+        }
+    }
+
+    // Pass 6: labels
     vtzero::vector_tile t3{mvt};
     while (auto lay = t3.next_layer()) {
         std::string name = layerName(lay);
         bool isPlace = (name == "place");
         bool isWater = (name == "water");
         bool isWaterway = (name == "waterway");
-        if (!isPlace && !isWater && !isWaterway) continue;
-
+        bool isTransport = (name == "transportation_name" || name == "transportation");
+        if (!isPlace && !isWater && !isWaterway && !isTransport) continue;
         while (auto feat = lay.next_feature()) {
-            // Read feature name
-            const char *labelText = nullptr;
+            std::string labelText;
+            std::string cls;
             while (auto prop = feat.next_property()) {
-                if (prop.key() == "name" && prop.value().type() == vtzero::property_value_type::string_value) {
-                    labelText = prop.value().string_value().data();
-                    break;
+                auto vt = prop.value();
+                if (prop.key() == "name" && vt.type() == vtzero::property_value_type::string_value) {
+                    auto v = vt.string_value(); labelText.assign(v.data(), v.size());
+                }
+                if (prop.key() == "class" && vt.type() == vtzero::property_value_type::string_value) {
+                    auto v = vt.string_value(); cls.assign(v.data(), v.size());
                 }
             }
-            if (!labelText) continue;
-
+            if (labelText.empty()) continue;
             auto geom = feat.geometry_type();
-            if (geom == vtzero::GeomType::POLYGON || geom == vtzero::GeomType::POINT) {
-                // Centroid from first ring bounding box
+            if ((isPlace || isWater) && (geom == vtzero::GeomType::POLYGON || geom == vtzero::GeomType::POINT)) {
                 struct LabelPos {
-                    int minX = 0, minY = 0, maxX = 0, maxY = 0;
-                    int ptCount = 0;
-                    void ring_begin(uint32_t) { minX = minY = 99999; maxX = maxY = -99999; ptCount = 0; }
-                    void ring_point(vtzero::point p) {
-                        int px = toPx(p.x, tileSz), py = toPx(p.y, tileSz);
-                        if (px < minX) minX = px; if (px > maxX) maxX = px;
-                        if (py < minY) minY = py; if (py > maxY) maxY = py;
-                        ptCount++;
-                    }
-                    void ring_end(vtzero::ring_type) {}
-                    void points_begin(uint32_t) {} void points_point(vtzero::point) {} void points_end() {}
-                    void linestring_begin(uint32_t) {} void linestring_point(vtzero::point) {} void linestring_end() {}
-                    int tileSz;
-                } lp;
-                lp.tileSz = sz;
-                if (geom == vtzero::GeomType::POLYGON)
-                    vtzero::decode_polygon_geometry(feat.geometry(), lp);
-                else
-                    vtzero::decode_point_geometry(feat.geometry(), lp);
-
-                if (lp.ptCount > 0) {
-                    int cx = (lp.minX + lp.maxX) / 2;
-                    int cy = (lp.minY + lp.maxY) / 2;
-                    if (cx > 4 && cx < sz - 4 && cy > 4 && cy < sz - 4) {
+                    int minX=99999,minY=99999,maxX=-99999,maxY=-99999,ptCount=0,tileSz=0;
+                    void ring_begin(uint32_t){minX=minY=99999;maxX=maxY=-99999;ptCount=0;}
+                    void ring_point(vtzero::point p){int px=toPx(p.x,tileSz),py=toPx(p.y,tileSz);
+                        if(px<minX)minX=px;if(px>maxX)maxX=px;if(py<minY)minY=py;if(py>maxY)maxY=py;ptCount++;}
+                    void ring_end(vtzero::ring_type){}
+                    void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
+                    void linestring_begin(uint32_t){}void linestring_point(vtzero::point){}void linestring_end(){}
+                } lp; lp.tileSz=sz;
+                if (geom == vtzero::GeomType::POLYGON) vtzero::decode_polygon_geometry(feat.geometry(),lp);
+                else vtzero::decode_point_geometry(feat.geometry(),lp);
+                if (lp.ptCount>0) {
+                    int cx=(lp.minX+lp.maxX)/2, cy=(lp.minY+lp.maxY)/2;
+                    if (cx>4&&cx<sz-4&&cy>4&&cy<sz-4) {
                         if (isPlace) {
-                            // Priority by place type
-                            int prio = 50; // default
-                            feat.reset_property();
-                            while (auto prop = feat.next_property()) {
-                                if (prop.key() != "class") continue;
-                                auto v = std::string(prop.value().string_value());
-                                if (v == "city") prio = 10;
-                                else if (v == "town") prio = 20;
-                                else if (v == "village") prio = 30;
-                                else if (v == "suburb" || v == "hamlet") prio = 40;
-                                break;
-                            }
-                            addLabel(cx, cy, labelText, prio,
-                                     &lv_font_montserrat_14, 0x33, 0x22, 0x21);
-                        } else if (isWater) {
-                            addLabel(cx, cy, labelText, 70,
-                                     &lv_font_montserrat_12, 0x4A, 0x7A, 0xB0);
+                            const PlaceStyle *ps_match = nullptr;
+                            if (!cls.empty()) for (auto &ps : kPlaces)
+                                if (cls==ps.cls && z>=ps.minZ) { ps_match=&ps; break; }
+                            if (!ps_match) continue;
+                            addLabel(cx,cy,labelText.c_str(),ps_match->prio,ps_match->font,ps_match->r,ps_match->g,ps_match->b);
+                        } else {
+                            addLabel(cx,cy,labelText.c_str(),70,&lv_font_montserrat_12,0x4A,0x7A,0xB0);
                         }
                     }
                 }
-            } else if (geom == vtzero::GeomType::LINESTRING && isWaterway) {
-                // Linestring midpoint
+            } else if (isWaterway && geom == vtzero::GeomType::LINESTRING) {
                 struct LineMid {
-                    int tileSz;
-                    std::vector<int> px, py;
-                    void linestring_begin(uint32_t) { px.clear(); py.clear(); }
-                    void linestring_point(vtzero::point p) { px.push_back(toPx(p.x, tileSz)); py.push_back(toPx(p.y, tileSz)); }
-                    void linestring_end() {}
-                    void points_begin(uint32_t) {} void points_point(vtzero::point) {} void points_end() {}
-                    void ring_begin(uint32_t) {} void ring_point(vtzero::point) {} void ring_end(vtzero::ring_type) {}
-                } lm;
-                lm.tileSz = sz;
-                vtzero::decode_linestring_geometry(feat.geometry(), lm);
-                if (lm.px.size() >= 2) {
-                    int mid = (int)lm.px.size() / 2;
-                    int cx = lm.px[mid], cy = lm.py[mid];
-                    if (cx > 4 && cx < sz - 4 && cy > 4 && cy < sz - 4)
-                        addLabel(cx, cy, labelText, 60,
-                                 &lv_font_montserrat_12, 0x4A, 0x7A, 0xB0);
+                    int tileSz; std::vector<int> px,py;
+                    void linestring_begin(uint32_t){px.clear();py.clear();}
+                    void linestring_point(vtzero::point p){px.push_back(toPx(p.x,tileSz));py.push_back(toPx(p.y,tileSz));}
+                    void linestring_end(){}
+                    void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
+                    void ring_begin(uint32_t){}void ring_point(vtzero::point){}void ring_end(vtzero::ring_type){}
+                } lm; lm.tileSz=sz;
+                vtzero::decode_linestring_geometry(feat.geometry(),lm);
+                if (lm.px.size()>=2) {
+                    int mid=(int)lm.px.size()/2, cx=lm.px[mid], cy=lm.py[mid];
+                    if (cx>4&&cx<sz-4&&cy>4&&cy<sz-4)
+                        addLabel(cx,cy,labelText.c_str(),60,&lv_font_montserrat_12,0x4A,0x7A,0xB0);
+                }
+            } else if (isTransport && geom == vtzero::GeomType::LINESTRING && z >= 13) {
+                struct LineMid {
+                    int tileSz; std::vector<int> px,py;
+                    void linestring_begin(uint32_t){px.clear();py.clear();}
+                    void linestring_point(vtzero::point p){px.push_back(toPx(p.x,tileSz));py.push_back(toPx(p.y,tileSz));}
+                    void linestring_end(){}
+                    void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
+                    void ring_begin(uint32_t){}void ring_point(vtzero::point){}void ring_end(vtzero::ring_type){}
+                } lm; lm.tileSz=sz;
+                vtzero::decode_linestring_geometry(feat.geometry(),lm);
+                if (lm.px.size()>=2) {
+                    int mid=(int)lm.px.size()/2, cx=lm.px[mid], cy=lm.py[mid];
+                    if (cx>4&&cx<sz-4&&cy>4&&cy<sz-4)
+                        addLabel(cx,cy,labelText.c_str(),80,&lv_font_montserrat_12,0x40,0x40,0x40);
                 }
             }
         }

@@ -136,7 +136,7 @@ static void discoverZooms() {
   }
   closedir(d);
   if (zMin <= zMax) {
-    zoomMin = zMin;
+    zoomMin = (zMin < 7) ? 7 : zMin;
     zoomMax = zMax;
     zoom = zMax;
   }
@@ -709,7 +709,12 @@ static void mapTimerCb(lv_timer_t *) {
             centerTX = lastCenterTxGPS = gpsTX;
             centerTY = lastCenterTyGPS = gpsTY;
             centerLat = gpsLat; centerLon = gpsLon;
-            dragAccumX = dragAccumY = 0;
+            int spriteX, spriteY;
+            MapMath::latLonToPixel((float)gpsLat, (float)gpsLon,
+                                   (float)gpsLat, (float)gpsLon,
+                                   zoom, true, centerTX, centerTY, &spriteX, &spriteY);
+            dragAccumX = SPRITE_SIZE / 2 - spriteX;
+            dragAccumY = SPRITE_SIZE / 2 - spriteY;
             velX = velY = 0.0f;
             reloadTiles();
         }
@@ -761,6 +766,9 @@ static void reloadTiles() {
         if (vecCanvas[dy][dx])
           lv_obj_add_flag(vecCanvas[dy][dx], LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(tileImg[dy][dx], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(tileImg[dy][dx],
+                       (CONT_W - SPRITE_SIZE) / 2 + dx * TILE_SIZE + dragAccumX,
+                       (MAP_H - SPRITE_SIZE) / 2 + dy * TILE_SIZE + dragAccumY);
         char p[512];
         snprintf(p, sizeof(p), "A:%s/%s/%d/%d/%d.jpg", mapsRoot(), mapRegion,
                  zoom, tx, ty);
@@ -813,13 +821,34 @@ void setPosition(double lat, double lon) {
   createMarkers();
 }
 
+static void recenterForZoom(int newZoom) {
+    int spriteCX = MAP_SPRITE_SIZE / 2 - dragAccumX;
+    int spriteCY = MAP_SPRITE_SIZE / 2 - dragAccumY;
+    float lat, lon;
+    MapMath::pixelToLatLon(spriteCX, spriteCY, zoom, true,
+                           centerTX, centerTY, 0, 0, &lat, &lon);
+
+    MapMath::latLonToTile(lat, lon, newZoom, &centerTX, &centerTY);
+    centerLat = lat;
+    centerLon = lon;
+
+    // Sub-tile correction: lat/lon may not land at sprite pixel 640 (screen
+    // centre) after the tile index is truncated.  Absorb the offset into
+    // dragAccumX/Y so markers and tiles stay aligned.
+    int spriteX, spriteY;
+    MapMath::latLonToPixel(lat, lon, lat, lon, newZoom, true,
+                           centerTX, centerTY, &spriteX, &spriteY);
+    dragAccumX = MAP_SPRITE_SIZE / 2 - spriteX;
+    dragAccumY = MAP_SPRITE_SIZE / 2 - spriteY;
+}
+
 void zoomIn() {
   if (zoom < zoomMax) {
+    mapFollowGps = false;
+    if (btnRecenter) lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), 0);
+    recenterForZoom(zoom + 1);
     zoom++;
-    if (mapActive) {
-      MapMath::latLonToTile(centerLat, centerLon, zoom, &centerTX, &centerTY);
-      reloadTiles();
-    }
+    if (mapActive) reloadTiles();
   }
 }
 
@@ -830,11 +859,11 @@ void refreshStations() {
 
 void zoomOut() {
   if (zoom > zoomMin) {
+    mapFollowGps = false;
+    if (btnRecenter) lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), 0);
+    recenterForZoom(zoom - 1);
     zoom--;
-    if (mapActive) {
-      MapMath::latLonToTile(centerLat, centerLon, zoom, &centerTX, &centerTY);
-      reloadTiles();
-    }
+    if (mapActive) reloadTiles();
   }
 }
 
@@ -868,15 +897,7 @@ static void backCb(lv_event_t *) {
 static void zoomCb(lv_event_t *e) {
   closeStationPopup();
   int d = (int)(intptr_t)lv_event_get_user_data(e);
-  double clat = centerLat, clon = centerLon;
-  MapMath::tileToLatLon(centerTX, centerTY, zoom, (float *)&clat,
-                        (float *)&clon);
-  if (d > 0)
-    zoomIn();
-  else
-    zoomOut();
-  MapMath::latLonToTile(clat, clon, zoom, &centerTX, &centerTY);
-  reloadTiles();
+  if (d > 0) zoomIn(); else zoomOut();
 }
 
 static bool fullscreenMap = false;
@@ -1108,11 +1129,16 @@ lv_obj_t *create(lv_obj_t *) {
     if (gpsLat != 0.0 || gpsLon != 0.0) {
       MapMath::latLonToTile((float)gpsLat, (float)gpsLon, zoom, &centerTX, &centerTY);
       centerLat = gpsLat; centerLon = gpsLon;
-      dragAccumX = dragAccumY = 0;
+      int spriteX, spriteY;
+      MapMath::latLonToPixel((float)gpsLat, (float)gpsLon,
+                             (float)gpsLat, (float)gpsLon,
+                             zoom, true, centerTX, centerTY, &spriteX, &spriteY);
+      dragAccumX = SPRITE_SIZE / 2 - spriteX;
+      dragAccumY = SPRITE_SIZE / 2 - spriteY;
       velX = velY = 0.0f;
       reloadTiles();
     }
-  }, LV_EVENT_CLICKED, NULL);
+  }, LV_EVENT_RELEASED, NULL);
   lv_obj_t *lblRec = lv_label_create(btnRecenter);
   lv_label_set_text(lblRec, LV_SYMBOL_GPS);
   lv_obj_center(lblRec);
