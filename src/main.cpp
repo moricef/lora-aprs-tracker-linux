@@ -467,9 +467,6 @@ static void loop() {
 
         if (sendUpdate && gps_loc_update) {
             STATION_Utils::sendBeacon();
-        } else if (sendUpdate) {
-            fprintf(stderr, "BCN: blocked — gps_loc_update=%d sats=%d hdop=%.1f\n",
-                    gps_loc_update, gpsFix.satellites, gpsHdop());
         }
 
         if (gps_time_update) SMARTBEACON_Utils::checkInterval(currentSpeed);
