@@ -619,18 +619,27 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
         return cls;
     };
 
+    // Couleurs fines landcover par subclass (features.json) — override la couleur
+    // de classe (sinon heath/scrub/fell tombent tous sur le vert "grass").
+    struct SubColor { const char *sub; uint8_t r,g,b; };
+    static const SubColor kLandcoverSub[] = {
+        {"heath",     0xD6,0xD9,0xA0}, {"scrub",     0xC9,0xD7,0xAC},
+        {"shrubbery", 0xC9,0xD7,0xAC}, {"fell",      0xD6,0xD9,0x9F},
+    };
     // Pass 1: landcover / landuse / water / park / aeroway / building polygons
-    struct PolyCtx { uint8_t *buf; int w,h,sz,zoom; const char *layer; };
     auto renderPolyLayer = [&](const char *layerName, const StyleRule *tbl, int n) {
+        bool isLandcover = (std::string(layerName) == "landcover");
         vtzero::vector_tile t{mvt};
         while (auto lay = t.next_layer()) {
             if (layerName != std::string(lay.name())) continue;
             while (auto feat = lay.next_feature()) {
                 if (feat.geometry_type() != vtzero::GeomType::POLYGON) continue;
-                std::string cls = readClass(feat);
+                std::string cls, sub; readClassSub(feat, cls, sub);
                 if (cls.empty()) continue;
                 uint8_t r,g,b;
                 if (!matchStyle(tbl, n, cls, z, r, g, b)) continue;
+                if (isLandcover && !sub.empty())
+                    for (auto &sc : kLandcoverSub) if (sub == sc.sub) { r=sc.r; g=sc.g; b=sc.b; break; }
                 PolyCollector pc; pc.sz=sz; pc.buf=buf; pc.w=w; pc.h=h; pc.r=r; pc.g=g; pc.b=b;
                 vtzero::decode_polygon_geometry(feat.geometry(), pc);
             }
