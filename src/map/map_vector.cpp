@@ -234,11 +234,11 @@ static void workerLoop() {
         if (!tmp) continue;
         renderTileBuf(tmp, sz, req.z, req.x, req.y);
 
-        // Check if any pixel was actually drawn (bg = F0EAD6 in ARGB8888 LE = B,G,R)
+        // Check if any pixel was actually drawn (bg = F2EFE9 in ARGB8888 LE = B,G,R)
         bool hasData = false;
         for (int i = 0; i < sz * sz; i++) {
             uint8_t *p = tmp + i * 4;
-            if (p[0] != 0xD6 || p[1] != 0xEA || p[2] != 0xF0) { hasData = true; break; }
+            if (p[0] != 0xE9 || p[1] != 0xEF || p[2] != 0xF2) { hasData = true; break; }
         }
         if (hasData) {
             cachePut(req.z, req.x, req.y, tmp, true);
@@ -359,7 +359,11 @@ struct PolyCollector {
     void ring_begin(uint32_t) { px.clear(); py.clear(); }
     void ring_point(vtzero::point p) { px.push_back(toPx(p.x, sz)); py.push_back(toPx(p.y, sz)); }
     void ring_end(vtzero::ring_type rt) {
-        if (rt == vtzero::ring_type::outer && px.size() >= 3)
+        // On remplit TOUS les rings (outer ET inner) en plein : le winding des
+        // tuiles bas-zoom est peu fiable (gros polygones classés inner à tort).
+        // Les vrais trous du landcover sont négligeables visuellement.
+        (void)rt;
+        if (px.size() >= 3)
             fillPoly(buf, w, h, px, py, r, g, b);
     }
     void points_begin(uint32_t) {} void points_point(vtzero::point) {} void points_end() {}
@@ -461,6 +465,36 @@ static const RoadStyle *findRoad(const std::string &cls) {
     return nullptr;
 }
 
+// Largeur de route par zoom — transcription de constants.hpp line_width_per_zoom
+// (Tile-Generator-Pack). Valeur = largeur pleine en px. -1 = non visible à ce zoom.
+static int roadWidthForZoom(const std::string &cls, int z) {
+    struct WZ { const char *cls; int z[14]; }; // index 0=z6 .. 13=z19
+    // -1 = absent (route pas dessinée à ce zoom)
+    static const WZ T[] = {
+        //                 z6 z7 z8 z9 z10 z11 z12 z13 z14 z15 z16 z17 z18 z19
+        {"motorway",      { 2, 2, 2, 2,  3,  3,  4,  5,  6,  7, 10, 18, 22, 28}},
+        {"motorway_link", {-1,-1,-1,-1,  2,  2,  2,  3,  3,  5,  8, 14, 14, 16}},
+        {"trunk",         { 2, 2, 2, 2,  3,  3,  4,  5,  6,  7, 10, 18, 22, 28}},
+        {"trunk_link",    {-1,-1,-1,-1,  2,  2,  2,  3,  3,  5,  8, 14, 14, 16}},
+        {"primary",       {-1,-1, 2, 2,  3,  3,  3,  4,  5,  6, 10, 16, 22, 28}},
+        {"primary_link",  {-1,-1,-1,-1,  2,  2,  2,  3,  3,  4,  8, 12, 14, 16}},
+        {"secondary",     {-1,-1,-1,-1,  2,  2,  3,  3,  4,  5, 10, 14, 22, 28}},
+        {"secondary_link",{-1,-1,-1,-1,  2,  2,  2,  3,  2,  3,  8, 10, 14, 16}},
+        {"tertiary",      {-1,-1,-1,-1, -1,  2,  2,  3,  3,  4, 10, 12, 19, 28}},
+        {"tertiary_link", {-1,-1,-1,-1, -1, -1,  2,  2,  2,  3,  8, 10, 12, 16}},
+        {"pedestrian",    {-1,-1,-1,-1, -1, -1, -1,  2,  2,  3,  8, 12, 15, 18}},
+        {"residential",   {-1,-1,-1,-1, -1, -1, -1,  2,  2,  3,  5,  8, 11, 18}},
+        {"living_street", {-1,-1,-1,-1, -1, -1, -1,  2,  2,  3,  5,  8, 11, 18}},
+        {"unclassified",  {-1,-1,-1,-1, -1, -1,  2,  2,  3,  3,  5, 12, 11, 18}},
+        {"service",       {-1,-1,-1,-1, -1, -1, -1,  2,  2,  2,  3,  6,  8, 10}},
+        {"track",         {-1,-1,-1,-1, -1, -1, -1, -1, -1,  2,  2,  4,  4,  6}},
+        {"rail",          {-1,-1,-1, 2,  2,  2,  2,  2,  2,  2,  3,  3,  4,  6}},
+    };
+    if (z < 6) z = 6; if (z > 19) z = 19;
+    for (auto &w : T) if (cls == w.cls) { int v = w.z[z-6]; return v; }
+    return 2; // défaut routes mineures non tabulées
+}
+
 // Waterway classification
 static const StyleRule kWaterway[] = {
     {"river",  10, 0xAA,0xD2,0xDF}, {"canal", 10, 0xAA,0xD2,0xDF},
@@ -547,10 +581,10 @@ struct StyledLineCollector {
 static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
     int w = sz, h = sz;
 
-    // Background
+    // Background — LAND_BG_COLOR du générateur (#f2efe9), octets B,G,R,A
     for (int i = 0; i < w * h; i++) {
         uint8_t *p = buf + i * 4;
-        p[0] = 0xD6; p[1] = 0xEA; p[2] = 0xF0; p[3] = 0xFF;
+        p[0] = 0xE9; p[1] = 0xEF; p[2] = 0xF2; p[3] = 0xFF;
     }
 
     auto [off, len] = pmtiles::get_tile(gunzip, (const char*)s_mapped, z, x, y);
@@ -710,7 +744,7 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
         StyledLineCollector lc;
         lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z; lc.width=1;
         lc.setRoads();
-        // Outline pass (darker, wider)
+        // Outline pass (liseré fin, fill+2) — uniquement si la route est large (≥3)
         vtzero::vector_tile t1{mvt};
         while (auto lay = t1.next_layer()) {
             if (std::string(lay.name()) != "transportation") continue;
@@ -719,16 +753,16 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
                 std::string cls = readClass(feat);
                 if (cls.empty()) continue;
                 auto *rd = findRoad(cls);
-                if (!rd || z < rd->minZ) continue;
-                // Only draw outline for major roads or at high zoom
-                if (z < 12 && rd->wMul < 2.0f) continue;
-                float zf = std::max(0.3f, (float)(z - 6) / 9.0f);
-                lc.r=0x30; lc.g=0x30; lc.b=0x30;
-                lc.width = std::max(2, (int)(rd->wMul * 1.4f * zf + 1.5f));
+                if (!rd) continue;
+                int fw = roadWidthForZoom(cls, z);
+                if (fw < 0) continue;            // route pas visible à ce zoom
+                if (fw < 3) continue;            // liseré seulement si assez large
+                lc.r=0x30; lc.g=0x30; lc.b=0x30; // liseré foncé (netteté haute zoom)
+                lc.width = fw + 2;
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
             }
         }
-        // Fill pass (road colour, thinner)
+        // Fill pass (couleur de route, largeur de la table)
         vtzero::vector_tile t2{mvt};
         while (auto lay = t2.next_layer()) {
             if (std::string(lay.name()) != "transportation") continue;
@@ -737,11 +771,11 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
                 std::string cls = readClass(feat);
                 if (cls.empty()) continue;
                 auto *rd = findRoad(cls);
-                if (!rd || z < rd->minZ) continue;
-                float zf = std::max(0.3f, (float)(z - 6) / 9.0f);
+                if (!rd) continue;
+                int fw = roadWidthForZoom(cls, z);
+                if (fw < 0) continue;            // route pas visible à ce zoom
                 lc.r=rd->r; lc.g=rd->g; lc.b=rd->b;
-                lc.width = std::max(1, (int)(rd->wMul * 1.2f * zf));
-                if (lc.width < 1) lc.width = 1;
+                lc.width = fw;
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
             }
         }
@@ -831,6 +865,14 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
     }
 
     placeLabels(buf, sz);
+}
+
+// ---- renderTileRaw : remplit un buffer ARGB8888 (B,G,R,A) sans cache ni LVGL
+// Utilisé par l'outil de debug PNG pour obtenir exactement les pixels d'une tuile.
+bool renderTileRaw(uint8_t *buf, int sz, int z, int x, int y) {
+    if (!s_mapped || !buf) return false;
+    renderTileBuf(buf, sz, z, x, y);
+    return true;
 }
 
 // ---- renderTile public (canvas version, with cache) ------------------------

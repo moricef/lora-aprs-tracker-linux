@@ -13,6 +13,10 @@ namespace MapVector {
     // Retourne true si la tile a été trouvée et rendue, false si tile vide/absente.
     bool renderTile(lv_obj_t *canvas, int z, int x, int y, int canvasSize);
 
+    // Remplit buf (sz*sz*4, ARGB8888 octets B,G,R,A) avec le rendu de la tuile.
+    // Outil de debug : pixels identiques à ce que le canvas afficherait.
+    bool renderTileRaw(uint8_t *buf, int sz, int z, int x, int y);
+
     bool isOpen();
     int  minZoom();
     int  maxZoom();
