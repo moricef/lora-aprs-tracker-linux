@@ -426,6 +426,7 @@ static const StyleRule kAeroway[] = {
     {"helipad",   11, 0xE7,0xE6,0xDE}, {"hangar",  12, 0xD9,0xD0,0xC9},
 };
 static const StyleRule kWater[] = {
+    {"ocean",     6, 0xAA,0xD2,0xDF},
     {"water",     8, 0xAA,0xD2,0xDF}, {"bay",        8, 0xAA,0xD2,0xDF},
     {"river",     8, 0xAA,0xD2,0xDF}, {"canal",     10, 0xAA,0xD2,0xDF},
     {"lake",      8, 0xAA,0xD2,0xDF}, {"reservoir",  8, 0xAA,0xD2,0xDF},
@@ -604,6 +605,25 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
         }
         return {};
     };
+    // Lit class + subclass d'un coup. Le schéma tilemaker regroupe les petites
+    // rues sous class="minor" (subclass=residential/living_street/…) et les
+    // chemins sous class="path" (subclass=footway/pedestrian/…).
+    auto readClassSub = [](vtzero::feature &f, std::string &cls, std::string &sub) {
+        cls.clear(); sub.clear();
+        while (auto p = f.next_property()) {
+            if (p.value().type() != vtzero::property_value_type::string_value) continue;
+            auto v = p.value().string_value();
+            if (p.key() == "class")    cls.assign(v.data(), v.size());
+            else if (p.key() == "subclass") sub.assign(v.data(), v.size());
+        }
+    };
+    // Clé de style routier : pour minor/path on prend le subclass (vrai tag OSM).
+    // Retourne "" si la route ne doit pas être rendue (chemins non-pedestrian).
+    auto roadKey = [](const std::string &cls, const std::string &sub) -> std::string {
+        if (cls == "minor") return sub.empty() ? std::string("residential") : sub;
+        if (cls == "path")  return (sub == "pedestrian") ? std::string("pedestrian") : std::string();
+        return cls;
+    };
 
     // Debug: dump unique class values per layer (once per tile)
     static int dbgTileCount = 0;
@@ -744,20 +764,25 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
         StyledLineCollector lc;
         lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z; lc.width=1;
         lc.setRoads();
-        // Outline pass (liseré fin, fill+2) — uniquement si la route est large (≥3)
+        // Outline pass (liseré fin, fill+2) — uniquement routes MAJEURES
+        // (motorway/trunk/primary/secondary, wMul>=1.5). Tertiary et en dessous
+        // n'ont pas de liseré (sinon ça surépaissit residential/living_street).
         vtzero::vector_tile t1{mvt};
         while (auto lay = t1.next_layer()) {
             if (std::string(lay.name()) != "transportation") continue;
             while (auto feat = lay.next_feature()) {
                 if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
-                std::string cls = readClass(feat);
-                if (cls.empty()) continue;
-                auto *rd = findRoad(cls);
+                std::string cls, sub; readClassSub(feat, cls, sub);
+                std::string key = roadKey(cls, sub);
+                if (key.empty()) continue;
+                auto *rd = findRoad(key);
                 if (!rd) continue;
-                int fw = roadWidthForZoom(cls, z);
-                if (fw < 0) continue;            // route pas visible à ce zoom
-                if (fw < 3) continue;            // liseré seulement si assez large
-                lc.r=0x30; lc.g=0x30; lc.b=0x30; // liseré foncé (netteté haute zoom)
+                if (rd->wMul < 1.5f) continue;   // pas de liseré sur tertiary et en dessous
+                int fw = roadWidthForZoom(key, z);
+                if (fw < 3) continue;            // ni si trop fine à ce zoom
+                // Liseré = couleur de la voie légèrement assombrie (×0.85, même teinte),
+                // pas du noir — discret sur le 7" 1024x600.
+                lc.r=(uint8_t)(rd->r*0.85f); lc.g=(uint8_t)(rd->g*0.85f); lc.b=(uint8_t)(rd->b*0.85f);
                 lc.width = fw + 2;
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
             }
@@ -768,11 +793,12 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
             if (std::string(lay.name()) != "transportation") continue;
             while (auto feat = lay.next_feature()) {
                 if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
-                std::string cls = readClass(feat);
-                if (cls.empty()) continue;
-                auto *rd = findRoad(cls);
+                std::string cls, sub; readClassSub(feat, cls, sub);
+                std::string key = roadKey(cls, sub);
+                if (key.empty()) continue;       // chemins non-pedestrian non rendus
+                auto *rd = findRoad(key);
                 if (!rd) continue;
-                int fw = roadWidthForZoom(cls, z);
+                int fw = roadWidthForZoom(key, z);
                 if (fw < 0) continue;            // route pas visible à ce zoom
                 lc.r=rd->r; lc.g=rd->g; lc.b=rd->b;
                 lc.width = fw;
