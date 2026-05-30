@@ -28,6 +28,10 @@
 
 extern const lv_font_t lv_font_montserrat_12;
 extern const lv_font_t lv_font_montserrat_14;
+// Polices doublées : le rendu SSAA se fait en 2×, ces tailles retombent à 12/14
+// après sous-échantillonnage (lissées).
+extern const lv_font_t lv_font_montserrat_24;
+extern const lv_font_t lv_font_montserrat_28;
 
 namespace MapVector {
 
@@ -111,7 +115,7 @@ static void addLabel(int px, int py, const char *text, int priority,
                      const lv_font_t *font, uint8_t r, uint8_t g, uint8_t b) {
     if (!text || !text[0]) return;
     int tw = textWidth(text, font);
-    if (tw <= 0 || tw > TILE_SIZE - 4) return;
+    if (tw <= 0 || tw > 2 * TILE_SIZE - 4) return; // rendu SSAA en 2× (tuile 512)
     int fh = font->line_height > 0 ? font->line_height : font->base_line;
     s_labels.push_back({px - tw/2, py - fh/2, tw, fh, priority, text, r, g, b, font});
 }
@@ -519,14 +523,15 @@ static const AdminStyle kAdmin[] = {
 
 // Place label styling: class → {minZoom, priority, font, r, g, b}
 struct PlaceStyle { const char *cls; int minZ; int prio; const lv_font_t *font; uint8_t r,g,b; };
+// Polices en taille 2× (24/28) : le SSAA rend en 2× puis réduit → effectif 12/14.
 static const PlaceStyle kPlaces[] = {
-    {"city",    5,  10, &lv_font_montserrat_14, 0x33,0x22,0x21},
-    {"town",    8,  20, &lv_font_montserrat_14, 0x33,0x22,0x21},
-    {"village", 10, 30, &lv_font_montserrat_12, 0x44,0x33,0x32},
-    {"hamlet",  12, 40, &lv_font_montserrat_12, 0x55,0x44,0x43},
-    {"suburb",  11, 45, &lv_font_montserrat_12, 0x55,0x44,0x43},
-    {"state",   4,  50, &lv_font_montserrat_14, 0x55,0x44,0x43},
-    {"country", 2,   5, &lv_font_montserrat_14, 0x33,0x22,0x21},
+    {"city",    5,  10, &lv_font_montserrat_28, 0x33,0x22,0x21},
+    {"town",    8,  20, &lv_font_montserrat_28, 0x33,0x22,0x21},
+    {"village", 10, 30, &lv_font_montserrat_24, 0x44,0x33,0x32},
+    {"hamlet",  12, 40, &lv_font_montserrat_24, 0x55,0x44,0x43},
+    {"suburb",  11, 45, &lv_font_montserrat_24, 0x55,0x44,0x43},
+    {"state",   4,  50, &lv_font_montserrat_28, 0x55,0x44,0x43},
+    {"country", 2,   5, &lv_font_montserrat_28, 0x33,0x22,0x21},
 };
 
 // ---- Path drawing with width ------------------------------------------------
@@ -578,8 +583,8 @@ struct StyledLineCollector {
     }
 };
 
-// ---- renderTileBuf ----------------------------------------------------------
-static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
+// ---- renderTileBufCore : rend la tuile à la taille sz (utilisé en 2x par le SSAA)
+static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
     int w = sz, h = sz;
 
     // Background — LAND_BG_COLOR du générateur (#f2efe9), octets B,G,R,A
@@ -852,7 +857,7 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
                             if (!ps_match) continue;
                             addLabel(cx,cy,labelText.c_str(),ps_match->prio,ps_match->font,ps_match->r,ps_match->g,ps_match->b);
                         } else {
-                            addLabel(cx,cy,labelText.c_str(),70,&lv_font_montserrat_12,0x4A,0x7A,0xB0);
+                            addLabel(cx,cy,labelText.c_str(),70,&lv_font_montserrat_24,0x4A,0x7A,0xB0);
                         }
                     }
                 }
@@ -869,7 +874,7 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
                 if (lm.px.size()>=2) {
                     int mid=(int)lm.px.size()/2, cx=lm.px[mid], cy=lm.py[mid];
                     if (cx>4&&cx<sz-4&&cy>4&&cy<sz-4)
-                        addLabel(cx,cy,labelText.c_str(),60,&lv_font_montserrat_12,0x4A,0x7A,0xB0);
+                        addLabel(cx,cy,labelText.c_str(),60,&lv_font_montserrat_24,0x4A,0x7A,0xB0);
                 }
             } else if (isTransport && geom == vtzero::GeomType::LINESTRING && z >= 13) {
                 struct LineMid {
@@ -884,13 +889,41 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
                 if (lm.px.size()>=2) {
                     int mid=(int)lm.px.size()/2, cx=lm.px[mid], cy=lm.py[mid];
                     if (cx>4&&cx<sz-4&&cy>4&&cy<sz-4)
-                        addLabel(cx,cy,labelText.c_str(),80,&lv_font_montserrat_12,0x40,0x40,0x40);
+                        addLabel(cx,cy,labelText.c_str(),80,&lv_font_montserrat_24,0x40,0x40,0x40);
                 }
             }
         }
     }
 
     placeLabels(buf, sz);
+}
+
+// ---- SSAA : sous-échantillonnage 2x2 (moyenne de boîte) → anti-aliasing ------
+static void downsample2x(const uint8_t *src, int ssz, uint8_t *dst, int dsz) {
+    for (int y = 0; y < dsz; y++) {
+        for (int x = 0; x < dsz; x++) {
+            const uint8_t *s0 = src + ((y*2)   * ssz + x*2) * 4;
+            const uint8_t *s1 = s0 + 4;
+            const uint8_t *s2 = src + ((y*2+1) * ssz + x*2) * 4;
+            const uint8_t *s3 = s2 + 4;
+            uint8_t *d = dst + (y * dsz + x) * 4;
+            d[0] = (uint8_t)((s0[0]+s1[0]+s2[0]+s3[0]) >> 2);
+            d[1] = (uint8_t)((s0[1]+s1[1]+s2[1]+s3[1]) >> 2);
+            d[2] = (uint8_t)((s0[2]+s1[2]+s2[2]+s3[2]) >> 2);
+            d[3] = 0xFF;
+        }
+    }
+}
+
+// ---- renderTileBuf : SSAA ×2 (rend en 2× puis réduit → bords lissés) ---------
+static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
+    const int SS = 2;
+    int ssz = sz * SS;
+    uint8_t *big = (uint8_t *)malloc((size_t)ssz * ssz * 4);
+    if (!big) { renderTileBufCore(buf, sz, z, x, y); return; } // fallback sans AA
+    renderTileBufCore(big, ssz, z, x, y);
+    downsample2x(big, ssz, buf, sz);
+    free(big);
 }
 
 // ---- renderTileRaw : remplit un buffer ARGB8888 (B,G,R,A) sans cache ni LVGL
