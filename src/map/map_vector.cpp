@@ -53,42 +53,31 @@ static int textWidth(const char *text, const lv_font_t *font) {
 static void drawTextLabel(uint8_t *buf, int bufW, int bufH,
                           int x, int y, const char *text,
                           const lv_font_t *font, uint8_t r, uint8_t g, uint8_t b) {
-    lv_draw_buf_t tmpDrawBuf{};
+    // LVGL 9 : draw_buf créé proprement (header+handlers), reshapé par glyphe
+    // comme le fait lv_draw_label.c. Le glyphe est décodé en A8 dedans.
+    static lv_draw_buf_t *gbuf = nullptr;
+    if (!gbuf) gbuf = lv_draw_buf_create(160, 200, LV_COLOR_FORMAT_A8, 0);
+    if (!gbuf) return;
     int penX = x;
     while (*text) {
         uint8_t c = (uint8_t)*text;
         uint8_t cn = (uint8_t)*(text + 1);
-        lv_font_glyph_dsc_t gd;
+        lv_font_glyph_dsc_t gd = {};
         if (!lv_font_get_glyph_dsc(font, &gd, c, cn)) { text++; continue; }
-        const uint8_t *src = (const uint8_t *)lv_font_get_glyph_bitmap(&gd, &tmpDrawBuf);
+        if (gd.box_w == 0 || gd.box_h == 0 || gd.box_w > 160 || gd.box_h > 200) { penX += gd.adv_w; text++; continue; }
+        lv_draw_buf_t *db = lv_draw_buf_reshape(gbuf, LV_COLOR_FORMAT_A8, gd.box_w, gd.box_h, LV_STRIDE_AUTO);
+        if (!db) { penX += gd.adv_w; text++; continue; }
+        const uint8_t *src = (const uint8_t *)lv_font_get_glyph_bitmap(&gd, db);
         if (!src) { text++; penX += gd.adv_w; continue; }
+        int stride = db->header.stride;
         int gx = penX + gd.ofs_x;
-        int gy = y + gd.ofs_y;
-        int stride = gd.stride ? (int)gd.stride : (int)gd.box_w;
+        // y = haut de ligne. Formule LVGL (lv_draw_label.c:626) :
+        int gy = y + (font->line_height - font->base_line) - (int)gd.box_h - gd.ofs_y;
         for (int row = 0; row < (int)gd.box_h; row++) {
             for (int col = 0; col < (int)gd.box_w; col++) {
                 int px = gx + col, py = gy + row;
                 if (px < 0 || px >= bufW || py < 0 || py >= bufH) continue;
-                uint8_t alpha = 0;
-                switch (gd.format) {
-                case LV_FONT_GLYPH_FORMAT_A8:
-                    alpha = src[row * stride + col]; break;
-                case LV_FONT_GLYPH_FORMAT_A4: {
-                    uint8_t v = src[row * stride + col / 2];
-                    alpha = (col & 1) ? (v & 0x0F) << 4 : (v & 0xF0);
-                    break;
-                }
-                case LV_FONT_GLYPH_FORMAT_A2: {
-                    uint8_t v = src[row * stride + col / 4];
-                    alpha = ((v >> (6 - (col & 3) * 2)) & 0x03) * 0x55;
-                    break;
-                }
-                case LV_FONT_GLYPH_FORMAT_A1:
-                    if ((src[row * stride + col / 8] >> (7 - (col & 7))) & 1)
-                        alpha = 0xFF;
-                    break;
-                default: continue;
-                }
+                uint8_t alpha = src[row * stride + col]; // A8 décodé
                 if (alpha == 0) continue;
                 uint8_t *p = buf + (py * bufW + px) * 4;
                 p[0] = ((int)b * alpha + (int)p[0] * (255 - alpha)) / 255;
@@ -104,7 +93,7 @@ static void drawTextLabel(uint8_t *buf, int bufW, int bufH,
 // ---- Label placement (collision avoidance) ---------------------------------
 struct LabelCandidate {
     int x, y, w, h, priority;
-    const char *text;
+    std::string text;          // copie (pas un pointeur vers une std::string temporaire)
     uint8_t r, g, b;
     const lv_font_t *font;
 };
@@ -140,7 +129,7 @@ static void placeLabels(uint8_t *buf, int sz) {
             overlap = true; break;
         }
         if (overlap) continue;
-        drawTextLabel(buf, sz, sz, lx, ly + l.h, l.text, l.font, l.r, l.g, l.b);
+        drawTextLabel(buf, sz, sz, lx, ly, l.text.c_str(), l.font, l.r, l.g, l.b); // ly = haut de ligne
         placed.push_back({lx, ly, l.w, l.h});
     }
     s_labels.clear();
@@ -630,26 +619,6 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
         return cls;
     };
 
-    // Debug: dump unique class values per layer (once per tile)
-    static int dbgTileCount = 0;
-    if (dbgTileCount < 5) {
-        dbgTileCount++;
-        std::map<std::string, std::set<std::string>> seen;
-        vtzero::vector_tile td{mvt};
-        while (auto lay = td.next_layer()) {
-            std::string lname = layerName(lay);
-            while (auto feat = lay.next_feature()) {
-                std::string c = readClass(feat);
-                if (!c.empty()) seen[lname].insert(c);
-            }
-        }
-        for (auto &kv : seen) {
-            std::string vals;
-            for (auto &v : kv.second) { if (!vals.empty()) vals += ","; vals += v; }
-            fprintf(stderr, "[VECT] z=%d %s: [%s]\n", z, kv.first.c_str(), vals.c_str());
-        }
-    }
-
     // Pass 1: landcover / landuse / water / park / aeroway / building polygons
     struct PolyCtx { uint8_t *buf; int w,h,sz,zoom; const char *layer; };
     auto renderPolyLayer = [&](const char *layerName, const StyleRule *tbl, int n) {
@@ -822,17 +791,17 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
         bool isTransport = (name == "transportation_name" || name == "transportation");
         if (!isPlace && !isWater && !isWaterway && !isTransport) continue;
         while (auto feat = lay.next_feature()) {
-            std::string labelText;
-            std::string cls;
+            std::string labelText, nameLatin, cls;
             while (auto prop = feat.next_property()) {
                 auto vt = prop.value();
-                if (prop.key() == "name" && vt.type() == vtzero::property_value_type::string_value) {
-                    auto v = vt.string_value(); labelText.assign(v.data(), v.size());
-                }
-                if (prop.key() == "class" && vt.type() == vtzero::property_value_type::string_value) {
-                    auto v = vt.string_value(); cls.assign(v.data(), v.size());
-                }
+                if (vt.type() != vtzero::property_value_type::string_value) continue;
+                auto v = vt.string_value(); std::string val(v.data(), v.size());
+                // Le schéma OMT écrit le nom sous "name:latin" (parfois "name").
+                if (prop.key() == "name")             labelText = val;
+                else if (prop.key() == "name:latin")  nameLatin = val;
+                else if (prop.key() == "class")       cls = val;
             }
+            if (labelText.empty()) labelText = nameLatin;
             if (labelText.empty()) continue;
             auto geom = feat.geometry_type();
             if ((isPlace || isWater) && (geom == vtzero::GeomType::POLYGON || geom == vtzero::GeomType::POINT)) {
@@ -842,7 +811,10 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
                     void ring_point(vtzero::point p){int px=toPx(p.x,tileSz),py=toPx(p.y,tileSz);
                         if(px<minX)minX=px;if(px>maxX)maxX=px;if(py<minY)minY=py;if(py>maxY)maxY=py;ptCount++;}
                     void ring_end(vtzero::ring_type){}
-                    void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
+                    void points_begin(uint32_t){}
+                    void points_point(vtzero::point p){int px=toPx(p.x,tileSz),py=toPx(p.y,tileSz);
+                        if(px<minX)minX=px;if(px>maxX)maxX=px;if(py<minY)minY=py;if(py>maxY)maxY=py;ptCount++;}
+                    void points_end(){}
                     void linestring_begin(uint32_t){}void linestring_point(vtzero::point){}void linestring_end(){}
                 } lp; lp.tileSz=sz;
                 if (geom == vtzero::GeomType::POLYGON) vtzero::decode_polygon_geometry(feat.geometry(),lp);
