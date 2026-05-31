@@ -795,10 +795,22 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
     free(big);
 }
 
-// ---- getTileLabels : extrait les labels d'une tuile (coords tile-locales à sz)
-// sans dessiner. Le placement/collision global est fait par map_raster (widgets LVGL).
+// ---- Per-tile label cache. Tiles never change, so a (z,x,y)'s labels are decoded
+// once and reused. Avoids re-decoding the 25 visible tiles on every pan step.
+static std::map<uint64_t, std::vector<Label>> s_labelCache;
+static std::deque<uint64_t> s_labelCacheOrder;
+static const size_t LABEL_CACHE_MAX = 80;
+static inline uint64_t labelKey(int z, int x, int y) {
+    return ((uint64_t)(z & 0x1F) << 48) | ((uint64_t)(x & 0xFFFFFF) << 24) | (uint64_t)(y & 0xFFFFFF);
+}
+
+// ---- getTileLabels: collect a tile's labels in tile-local coords (size sz) without
+// drawing. Global placement/collision is done by map_raster (LVGL widgets).
 void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
     if (!s_mapped) return;
+    uint64_t lk = labelKey(z, x, y);
+    auto cit = s_labelCache.find(lk);
+    if (cit != s_labelCache.end()) { out = cit->second; return; }
     auto [off, len] = pmtiles::get_tile(gunzip, (const char*)s_mapped, z, x, y);
     if (len == 0) return;
     std::string raw((const char*)s_mapped + off, len);
@@ -901,6 +913,12 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                 if (lm.px.size()>=2){int m=(int)lm.px.size()/2; push(lm.px[m],lm.py[m],ref,prio,rtFont(&lv_font_montserrat_12),rr,rg,rb,0,false,true);}
             }
         }
+    }
+    s_labelCache[lk] = out;
+    s_labelCacheOrder.push_back(lk);
+    if (s_labelCacheOrder.size() > LABEL_CACHE_MAX) {
+        s_labelCache.erase(s_labelCacheOrder.front());
+        s_labelCacheOrder.pop_front();
     }
 }
 
