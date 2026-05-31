@@ -754,27 +754,39 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                     const lv_font_t *f, uint8_t r, uint8_t g, uint8_t b) {
         if (px>4 && px<sz-4 && py>4 && py<sz-4) out.push_back({px,py,prio,t,r,g,b,f});
     };
+    // Milieu d'une polyligne (waterway / transportation_name) en coords tuile-locales.
+    struct LineMid { int ts; std::vector<int> px,py;
+        void linestring_begin(uint32_t){px.clear();py.clear();}
+        void linestring_point(vtzero::point p){px.push_back(toPx(p.x,ts));py.push_back(toPx(p.y,ts));}
+        void linestring_end(){} void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
+        void ring_begin(uint32_t){}void ring_point(vtzero::point){}void ring_end(vtzero::ring_type){}
+    };
     vtzero::vector_tile tv{mvt};
     while (auto lay = tv.next_layer()) {
         std::string name(lay.name());
-        // Le firmware ne labellise QUE les lieux et les cours d'eau (text_features),
-        // PAS les noms de rues → on ne traite pas transportation_name.
+        // Le firmware (Tile-Generator-Pack) labellise : lieux (text_features),
+        // cours d'eau (create_waterway_label) et refs de route majeure
+        // (create_road_label : le numéro A/N/D, PAS le nom de rue).
         bool isPlace = (name == "place"), isWater = (name == "water");
         bool isWaterway = (name == "waterway");
-        if (!isPlace && !isWater && !isWaterway) continue;
+        bool isRoadName = (name == "transportation_name");
+        if (!isPlace && !isWater && !isWaterway && !isRoadName) continue;
         while (auto feat = lay.next_feature()) {
-            std::string labelText, nameLatin, cls;
+            std::string labelText, nameLatin, cls, ref;
             while (auto prop = feat.next_property()) {
                 if (prop.value().type() != vtzero::property_value_type::string_value) continue;
                 auto v = prop.value().string_value(); std::string val(v.data(), v.size());
                 if (prop.key() == "name")            labelText = val;
                 else if (prop.key() == "name:latin") nameLatin = val;
                 else if (prop.key() == "class")      cls = val;
+                else if (prop.key() == "ref")        ref = val;
             }
-            if (labelText.empty()) labelText = nameLatin;
-            if (labelText.empty()) continue;
             auto geom = feat.geometry_type();
+
+            // --- Lieux + lac : centroïde du polygone/point ---
             if ((isPlace || isWater) && (geom == vtzero::GeomType::POLYGON || geom == vtzero::GeomType::POINT)) {
+                if (labelText.empty()) labelText = nameLatin;
+                if (labelText.empty()) continue;
                 struct LabelPos { int minX=99999,minY=99999,maxX=-99999,maxY=-99999,n=0,ts=0;
                     void add(vtzero::point p){int px=toPx(p.x,ts),py=toPx(p.y,ts);
                         if(px<minX)minX=px;if(px>maxX)maxX=px;if(py<minY)minY=py;if(py>maxY)maxY=py;n++;}
@@ -791,15 +803,36 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                             push(cx,cy,labelText,ps.prio,ps.font,ps.r,ps.g,ps.b); break; }
                     } else if (z >= 12) push(cx,cy,labelText,70,&lv_font_montserrat_12,0x4A,0x7A,0xB0);
                 }
-            } else if (isWaterway && geom == vtzero::GeomType::LINESTRING && z >= 11) {
-                struct LineMid { int ts; std::vector<int> px,py;
-                    void linestring_begin(uint32_t){px.clear();py.clear();}
-                    void linestring_point(vtzero::point p){px.push_back(toPx(p.x,ts));py.push_back(toPx(p.y,ts));}
-                    void linestring_end(){} void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
-                    void ring_begin(uint32_t){}void ring_point(vtzero::point){}void ring_end(vtzero::ring_type){}
-                } lm; lm.ts=sz;
+            }
+            // --- Cours d'eau : nom, min_zoom par type (river=10/canal=12/stream=14) ---
+            else if (isWaterway && geom == vtzero::GeomType::LINESTRING) {
+                if (labelText.empty()) labelText = nameLatin;
+                if (labelText.empty()) continue;
+                int minZ;
+                if      (cls == "river")  minZ = 10;
+                else if (cls == "canal")  minZ = 12;
+                else if (cls == "stream") minZ = 14;
+                else continue;                       // ditch/drain : pas de label (firmware)
+                if (z < minZ) continue;
+                LineMid lm; lm.ts=sz;
                 vtzero::decode_linestring_geometry(feat.geometry(),lm);
                 if (lm.px.size()>=2){int m=(int)lm.px.size()/2; push(lm.px[m],lm.py[m],labelText,60,&lv_font_montserrat_12,0x4A,0x7A,0xB0);}
+            }
+            // --- Refs de route majeure : numéro A/N/D, pas le nom de rue ---
+            else if (isRoadName && geom == vtzero::GeomType::LINESTRING) {
+                if (ref.empty()) continue;
+                if (cls!="motorway"&&cls!="trunk"&&cls!="primary"&&cls!="secondary") continue;
+                bool wanted = (ref[0]=='A' || ref[0]=='N');
+                if (!wanted && ref[0]=='D') {        // D ex-nationale réutilise la plage 1000-1999
+                    try { int n=std::stoi(ref.substr(1)); wanted = (n>=1000 && n<=1999); } catch(...) {}
+                }
+                if (!wanted) continue;
+                int minZ = (cls=="motorway"||cls=="trunk") ? 10 : (cls=="primary" ? 11 : 12);
+                if (z < minZ) continue;
+                int prio = (cls=="motorway"||cls=="trunk") ? 25 : (cls=="primary" ? 35 : 45);
+                LineMid lm; lm.ts=sz;
+                vtzero::decode_linestring_geometry(feat.geometry(),lm);
+                if (lm.px.size()>=2){int m=(int)lm.px.size()/2; push(lm.px[m],lm.py[m],ref,prio,&lv_font_montserrat_12,0x33,0x33,0x33);}
             }
         }
     }
