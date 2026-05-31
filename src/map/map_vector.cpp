@@ -872,9 +872,13 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                 int minZ = (cls=="motorway"||cls=="trunk") ? 10 : (cls=="primary" ? 11 : 12);
                 if (z < minZ) continue;
                 int prio = (cls=="motorway"||cls=="trunk") ? 25 : (cls=="primary" ? 35 : 45);
+                // Couleur du ref = couleur de la route, assombrie (OSM / firmware darken).
+                const RoadStyle *rd = findRoad(cls);
+                uint8_t rr=0x33,rg=0x33,rb=0x33;
+                if (rd) { rr=(uint8_t)(rd->r*0.55f); rg=(uint8_t)(rd->g*0.55f); rb=(uint8_t)(rd->b*0.55f); }
                 LineMid lm; lm.ts=sz;
                 vtzero::decode_linestring_geometry(feat.geometry(),lm);
-                if (lm.px.size()>=2){int m=(int)lm.px.size()/2; push(lm.px[m],lm.py[m],ref,prio,rtFont(&lv_font_montserrat_12),0x33,0x33,0x33);}
+                if (lm.px.size()>=2){int m=(int)lm.px.size()/2; push(lm.px[m],lm.py[m],ref,prio,rtFont(&lv_font_montserrat_12),rr,rg,rb);}
             }
         }
     }
