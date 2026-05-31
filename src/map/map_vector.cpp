@@ -87,9 +87,6 @@ static void drawTextLabel(uint8_t *buf, int bufW, int bufH,
                     p[2] = (cr*alpha + p[2]*(255-alpha))/255;
                 }
         };
-        // Halo blanc (contour fin) pour la lisibilité sur fonds variés, puis le texte.
-        for (int oy=-1; oy<=1; oy++) for (int ox=-1; ox<=1; ox++)
-            if (ox||oy) blit(ox, oy, 0xFF, 0xFF, 0xFF);
         blit(0, 0, r, g, b);
         penX += gd.adv_w;
         text++;
