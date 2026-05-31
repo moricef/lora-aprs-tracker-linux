@@ -1109,6 +1109,9 @@ static void mapTouchCB(lv_event_t *e) {
 
     updateMarkerPositions();
     reposTraceCanvas();
+    // Les labels suivent le même offset que les tuiles, sinon ils traînent au pan.
+    repositionMapLabels((CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
+                        (MAP_H - SPRITE_SIZE) / 2 + dragAccumY);
 
     if (centerTX != lctx || centerTY != lcty) {
       lctx = centerTX;
