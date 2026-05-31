@@ -604,17 +604,12 @@ static void refreshMapLabels() {
     lv_obj_set_style_text_color(lbl, lv_color_make(l.r, l.g, l.b), 0);
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
     if (l.followLine) {
-      // Cours d'eau : texte le long de la ligne, sans fond ni bordure (firmware GEOM_TEXT_LINE).
+      // Cours d'eau : texte le long de la ligne (firmware GEOM_TEXT_LINE).
       lv_obj_set_style_transform_pivot_x(lbl, w / 2, 0);
       lv_obj_set_style_transform_pivot_y(lbl, h / 2, 0);
       lv_obj_set_style_transform_rotation(lbl, l.angle * 10, 0); // LVGL : 0,1°
-    } else {
-      // Lieux et refs de route : panneau (fond clair pour lisibilité).
-      lv_obj_set_style_bg_color(lbl, lv_color_hex(0xFFFFFF), 0);
-      lv_obj_set_style_bg_opa(lbl, LV_OPA_60, 0);
-      lv_obj_set_style_pad_hor(lbl, 1, 0);
-      lv_obj_set_style_radius(lbl, 2, 0);
     }
+    // Pas de fond : texte seul, comme sur OSM (halo fin = étape surface unique).
     lv_obj_set_pos(lbl, lx, ly);
     mapLabelSrx[mapLabelCount] = lx - ox0; // position relative au sprite (drag-suivi)
     mapLabelSry[mapLabelCount] = ly - oy0;
