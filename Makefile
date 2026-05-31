@@ -57,6 +57,10 @@ ifdef WITH_DISPLAY
   # Vector tiles
   LDFLAGS += -lz
 
+  # FreeType : polices accentuées au runtime (labels carte, comme le firmware OpenSans-Bold)
+  INC     += $(shell pkg-config --cflags freetype2)
+  LDFLAGS += $(shell pkg-config --libs freetype2)
+
   # LVGL C (tous sauf ThorVG vector + drivers SDL)
   LVGL_C := $(shell find lib/lvgl/src -name '*.c' 2>/dev/null \
              | grep -v lv_draw_vector \

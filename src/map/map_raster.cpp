@@ -569,7 +569,8 @@ static void repositionMapLabels(int ox, int oy) {
 static void refreshMapLabels() {
   clearMapLabels();
   if (!(zoom >= 9 && MapVector::isOpen()) || !mapCont) return;
-  struct SL { int x, y, prio; std::string text; uint8_t r, g, b; const lv_font_t *font; };
+  struct SL { int x, y, prio; std::string text; uint8_t r, g, b; const lv_font_t *font;
+              int angle; bool followLine; };
   std::vector<SL> all;
   int mapH = fullscreenMap ? 600 : MAP_H;
   int ox0 = (CONT_W - SPRITE_SIZE) / 2 + dragAccumX;
@@ -580,7 +581,7 @@ static void refreshMapLabels() {
       std::vector<MapVector::Label> tl;
       MapVector::getTileLabels(zoom, tx, ty, tl);
       int sx = ox0 + dx * TILE_SIZE, sy = oy0 + dy * TILE_SIZE;
-      for (auto &l : tl) all.push_back({sx + l.px, sy + l.py, l.priority, l.text, l.r, l.g, l.b, l.font});
+      for (auto &l : tl) all.push_back({sx + l.px, sy + l.py, l.priority, l.text, l.r, l.g, l.b, l.font, l.angle, l.followLine});
     }
   std::sort(all.begin(), all.end(), [](const SL &a, const SL &b) { return a.prio < b.prio; });
   struct Box { int x, y, w, h; };
@@ -599,11 +600,19 @@ static void refreshMapLabels() {
     lv_label_set_text(lbl, l.text.c_str());
     lv_obj_set_style_text_font(lbl, l.font, 0);
     lv_obj_set_style_text_color(lbl, lv_color_make(l.r, l.g, l.b), 0);
-    lv_obj_set_style_bg_color(lbl, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_opa(lbl, LV_OPA_60, 0);   // fond clair = lisibilité (halo propre)
-    lv_obj_set_style_pad_hor(lbl, 1, 0);
-    lv_obj_set_style_radius(lbl, 2, 0);
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+    if (l.followLine) {
+      // Cours d'eau : texte le long de la ligne, sans fond ni bordure (firmware GEOM_TEXT_LINE).
+      lv_obj_set_style_transform_pivot_x(lbl, w / 2, 0);
+      lv_obj_set_style_transform_pivot_y(lbl, h / 2, 0);
+      lv_obj_set_style_transform_rotation(lbl, l.angle * 10, 0); // LVGL : 0,1°
+    } else {
+      // Lieux et refs de route : panneau (fond clair pour lisibilité).
+      lv_obj_set_style_bg_color(lbl, lv_color_hex(0xFFFFFF), 0);
+      lv_obj_set_style_bg_opa(lbl, LV_OPA_60, 0);
+      lv_obj_set_style_pad_hor(lbl, 1, 0);
+      lv_obj_set_style_radius(lbl, 2, 0);
+    }
     lv_obj_set_pos(lbl, lx, ly);
     mapLabelSrx[mapLabelCount] = lx - ox0; // position relative au sprite (drag-suivi)
     mapLabelSry[mapLabelCount] = ly - oy0;
@@ -1167,6 +1176,7 @@ lv_obj_t *create(lv_obj_t *) {
   discoverRegion();
   discoverZooms();
   discoverDefaultPosition();
+  MapVector::initLabelFonts();   // police accentuée (OpenSans-Bold), comme le firmware
 
   lv_obj_t *scr = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x1a1a2e), 0);
