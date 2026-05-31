@@ -13,6 +13,8 @@ namespace MapVector {
         std::string text;
         uint8_t r, g, b;
         const lv_font_t *font;
+        int angle = 0;              // orientation (degrés) si followLine ; 0 = panneau droit
+        bool followLine = false;    // true = texte le long de la ligne, sans fond (waterway)
     };
 
     // Ouvre le fichier .pmtiles (mmap) et garde une référence globale.
@@ -32,6 +34,11 @@ namespace MapVector {
     // Extrait les labels d'une tuile (lieux, lac, cours d'eau, refs de route) en coords
     // tuile-locales, SANS les dessiner. Le placement global est fait par l'appelant.
     void getTileLabels(int z, int x, int y, std::vector<Label> &out);
+
+    // Charge la police accentuée (OpenSans-Bold.ttf) pour les labels, comme le firmware
+    // charge OpenSans-Bold.vlw. À appeler une fois après l'init LVGL. Sans elle, les
+    // labels retombent sur montserrat (ASCII) et les accents français sont coupés.
+    bool initLabelFonts();
 
     bool isOpen();
     int  minZoom();
