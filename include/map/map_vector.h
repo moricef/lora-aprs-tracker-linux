@@ -29,7 +29,7 @@ namespace MapVector {
     // Outil de debug : pixels identiques à ce que le canvas afficherait.
     bool renderTileRaw(uint8_t *buf, int sz, int z, int x, int y);
 
-    // Extrait les labels d'une tuile (place/water/waterway/transport names) en coords
+    // Extrait les labels d'une tuile (lieux, lac, cours d'eau, refs de route) en coords
     // tuile-locales, SANS les dessiner. Le placement global est fait par l'appelant.
     void getTileLabels(int z, int x, int y, std::vector<Label> &out);
 
