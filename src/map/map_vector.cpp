@@ -757,10 +757,11 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
     vtzero::vector_tile tv{mvt};
     while (auto lay = tv.next_layer()) {
         std::string name(lay.name());
+        // Le firmware ne labellise QUE les lieux et les cours d'eau (text_features),
+        // PAS les noms de rues → on ne traite pas transportation_name.
         bool isPlace = (name == "place"), isWater = (name == "water");
         bool isWaterway = (name == "waterway");
-        bool isTransport = (name == "transportation_name");
-        if (!isPlace && !isWater && !isWaterway && !isTransport) continue;
+        if (!isPlace && !isWater && !isWaterway) continue;
         while (auto feat = lay.next_feature()) {
             std::string labelText, nameLatin, cls;
             while (auto prop = feat.next_property()) {
@@ -799,15 +800,6 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                 } lm; lm.ts=sz;
                 vtzero::decode_linestring_geometry(feat.geometry(),lm);
                 if (lm.px.size()>=2){int m=(int)lm.px.size()/2; push(lm.px[m],lm.py[m],labelText,60,&lv_font_montserrat_12,0x4A,0x7A,0xB0);}
-            } else if (isTransport && geom == vtzero::GeomType::LINESTRING && z >= 13) {
-                struct LineMid { int ts; std::vector<int> px,py;
-                    void linestring_begin(uint32_t){px.clear();py.clear();}
-                    void linestring_point(vtzero::point p){px.push_back(toPx(p.x,ts));py.push_back(toPx(p.y,ts));}
-                    void linestring_end(){} void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
-                    void ring_begin(uint32_t){}void ring_point(vtzero::point){}void ring_end(vtzero::ring_type){}
-                } lm; lm.ts=sz;
-                vtzero::decode_linestring_geometry(feat.geometry(),lm);
-                if (lm.px.size()>=2){int m=(int)lm.px.size()/2; push(lm.px[m],lm.py[m],labelText,80,&lv_font_montserrat_12,0x40,0x40,0x40);}
             }
         }
     }
