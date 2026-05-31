@@ -542,93 +542,98 @@ static lv_obj_t *vecCanvas[GRID][GRID];
 static int vecLastZ[GRID][GRID], vecLastTX[GRID][GRID], vecLastTY[GRID][GRID];
 static uint8_t *vecBuf[GRID][GRID];
 
-// Labels carto au niveau écran (widgets LVGL, collision globale inter-tuiles).
+// Single label overlay: every label is drawn into one ARGB canvas the size of the
+// tile sprite, positioned at the sprite origin so it pans with the tiles. Global
+// collision runs before drawing. Mirrors the firmware's single-sprite label pass.
 #include <vector>
 #include <algorithm>
+#include <cstring>
 static bool fullscreenMap = false;
-#define MAX_MAP_LABELS 100
-static lv_obj_t *mapLabels[MAX_MAP_LABELS];
-static int mapLabelSrx[MAX_MAP_LABELS], mapLabelSry[MAX_MAP_LABELS]; // pos relative au sprite
-static int mapLabelCount = 0;
+static lv_obj_t *labelCanvas = nullptr;
+static uint8_t *labelBuf = nullptr;
+#define LABEL_CANVAS_W SPRITE_SIZE
+#define LABEL_CANVAS_H SPRITE_SIZE
 
 static void clearMapLabels() {
-  for (int i = 0; i < mapLabelCount; i++)
-    if (mapLabels[i] && lv_obj_is_valid(mapLabels[i])) lv_obj_del(mapLabels[i]);
-  mapLabelCount = 0;
+  if (!labelBuf) return;
+  memset(labelBuf, 0, LABEL_CANVAS_W * LABEL_CANVAS_H * 4);
+  if (labelCanvas && lv_obj_is_valid(labelCanvas)) lv_obj_invalidate(labelCanvas);
 }
 
-// Recale les labels selon l'origine sprite courante (ox,oy = coin haut-gauche du
-// sprite à l'écran, dragAccum inclus). Appelé pendant le pan, comme les tuiles.
+// Move the label overlay to the current sprite origin (same frame as the tiles).
 static void repositionMapLabels(int ox, int oy) {
-  for (int i = 0; i < mapLabelCount; i++)
-    if (mapLabels[i] && lv_obj_is_valid(mapLabels[i]))
-      lv_obj_set_pos(mapLabels[i], ox + mapLabelSrx[i], oy + mapLabelSry[i]);
+  if (labelCanvas && lv_obj_is_valid(labelCanvas)) lv_obj_set_pos(labelCanvas, ox, oy);
 }
 
-// Collecte les labels des tuiles visibles, placement global (collision), création widgets.
+// Collect labels from the visible tiles, run global collision, draw them into the
+// overlay canvas. Positions are in sprite coords (tile-aligned), like the tile grid.
 static void refreshMapLabels() {
-  clearMapLabels();
-  if (!(zoom >= 9 && MapVector::isOpen()) || !mapCont) return;
+  if (!labelBuf || !labelCanvas) return;
+  memset(labelBuf, 0, LABEL_CANVAS_W * LABEL_CANVAS_H * 4);
+  if (!(zoom >= 9 && MapVector::isOpen())) { lv_obj_invalidate(labelCanvas); return; }
+
   struct SL { int x, y, prio; std::string text; uint8_t r, g, b; const lv_font_t *font;
               int angle; bool followLine; bool shield; };
   std::vector<SL> all;
-  int mapH = fullscreenMap ? 600 : MAP_H;
-  int ox0 = (CONT_W - SPRITE_SIZE) / 2 + dragAccumX;
-  int oy0 = (mapH - SPRITE_SIZE) / 2 + dragAccumY;
   for (int dy = 0; dy < GRID; dy++)
     for (int dx = 0; dx < GRID; dx++) {
       int tx = centerTX + dx - GRID / 2, ty = centerTY + dy - GRID / 2;
       std::vector<MapVector::Label> tl;
       MapVector::getTileLabels(zoom, tx, ty, tl);
-      int sx = ox0 + dx * TILE_SIZE, sy = oy0 + dy * TILE_SIZE;
+      int sx = dx * TILE_SIZE, sy = dy * TILE_SIZE;   // sprite coords, aligned with the tiles
       for (auto &l : tl) all.push_back({sx + l.px, sy + l.py, l.priority, l.text, l.r, l.g, l.b, l.font, l.angle, l.followLine, l.shield});
     }
   std::sort(all.begin(), all.end(), [](const SL &a, const SL &b) { return a.prio < b.prio; });
+
   struct Box { int x, y, w, h; };
   std::vector<Box> placed;
   std::vector<std::string> seenText; // one label per name/ref on screen (avoids cross-tile repeats)
+
+  lv_layer_t layer;
+  lv_canvas_init_layer(labelCanvas, &layer);
+
   for (auto &l : all) {
-    if (mapLabelCount >= MAX_MAP_LABELS) break;
     if (std::find(seenText.begin(), seenText.end(), l.text) != seenText.end()) continue;
     int h = l.font->line_height;
-    int w = (int)(l.text.size() * h * 0.52f); // estimation largeur (évite l'API texte v8)
+    int w = (int)(l.text.size() * h * 0.55f) + 6;
     int lx = l.x - w / 2, ly = l.y - h / 2;
-    if (lx + w < 0 || lx > CONT_W || ly + h < 0 || ly > mapH) continue; // hors zone visible
+    if (lx < 0 || lx + w > LABEL_CANVAS_W || ly < 0 || ly + h > LABEL_CANVAS_H) continue;
     bool ov = false;
     for (auto &p : placed)
       if (!(lx + w + 3 <= p.x || p.x + p.w + 3 <= lx || ly + h + 2 <= p.y || p.y + p.h + 2 <= ly)) { ov = true; break; }
     if (ov) continue;
-    lv_obj_t *lbl = lv_label_create(mapCont);
-    lv_label_set_text(lbl, l.text.c_str());
-    lv_obj_set_style_text_font(lbl, l.font, 0);
-    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_area_t a = { lx, ly, lx + w - 1, ly + h - 1 };
     if (l.shield) {
       // Road ref shield: lightened color as background, base color as border,
       // darkened color as text (r,g,b carry the road base color).
-      lv_obj_set_style_text_color(lbl, lv_color_make((uint8_t)(l.r*0.55f), (uint8_t)(l.g*0.55f), (uint8_t)(l.b*0.55f)), 0);
-      lv_obj_set_style_bg_color(lbl, lv_color_make((uint8_t)(l.r+(255-l.r)*0.78f), (uint8_t)(l.g+(255-l.g)*0.78f), (uint8_t)(l.b+(255-l.b)*0.78f)), 0);
-      lv_obj_set_style_bg_opa(lbl, LV_OPA_COVER, 0);
-      lv_obj_set_style_border_color(lbl, lv_color_make(l.r, l.g, l.b), 0);
-      lv_obj_set_style_border_width(lbl, 1, 0);
-      lv_obj_set_style_pad_hor(lbl, 2, 0);
-      lv_obj_set_style_pad_ver(lbl, 1, 0);
-      lv_obj_set_style_radius(lbl, 3, 0);
+      lv_draw_rect_dsc_t rd; lv_draw_rect_dsc_init(&rd);
+      rd.bg_color = lv_color_make((uint8_t)(l.r+(255-l.r)*0.78f), (uint8_t)(l.g+(255-l.g)*0.78f), (uint8_t)(l.b+(255-l.b)*0.78f));
+      rd.bg_opa = LV_OPA_COVER;
+      rd.border_color = lv_color_make(l.r, l.g, l.b);
+      rd.border_width = 1; rd.border_opa = LV_OPA_COVER; rd.radius = 3;
+      lv_draw_rect(&layer, &rd, &a);
+      lv_draw_label_dsc_t ld; lv_draw_label_dsc_init(&ld);
+      ld.text = l.text.c_str(); ld.font = l.font; ld.align = LV_TEXT_ALIGN_CENTER;
+      ld.color = lv_color_make((uint8_t)(l.r*0.55f), (uint8_t)(l.g*0.55f), (uint8_t)(l.b*0.55f));
+      lv_draw_label(&layer, &ld, &a);
     } else {
-      lv_obj_set_style_text_color(lbl, lv_color_make(l.r, l.g, l.b), 0);
-      if (l.followLine) {
-        // Text oriented along the path.
-        lv_obj_set_style_transform_pivot_x(lbl, w / 2, 0);
-        lv_obj_set_style_transform_pivot_y(lbl, h / 2, 0);
-        lv_obj_set_style_transform_rotation(lbl, l.angle * 10, 0); // 0,1° (unité LVGL)
-      }
+      lv_draw_label_dsc_t ld; lv_draw_label_dsc_init(&ld);
+      ld.text = l.text.c_str(); ld.font = l.font; ld.align = LV_TEXT_ALIGN_CENTER;
+      if (l.followLine) ld.rotation = l.angle * 10;
+      // White halo (4 diagonal offsets) so text stays legible over the map.
+      ld.color = lv_color_white();
+      const int off[4][2] = {{-1,-1},{1,-1},{-1,1},{1,1}};
+      for (auto &o : off) { lv_area_t ha = { lx + o[0], ly + o[1], lx + o[0] + w - 1, ly + o[1] + h - 1 }; lv_draw_label(&layer, &ld, &ha); }
+      ld.color = lv_color_make(l.r, l.g, l.b);
+      lv_draw_label(&layer, &ld, &a);
     }
-    lv_obj_set_pos(lbl, lx, ly);
-    mapLabelSrx[mapLabelCount] = lx - ox0; // position relative au sprite (drag-suivi)
-    mapLabelSry[mapLabelCount] = ly - oy0;
-    mapLabels[mapLabelCount++] = lbl;
     placed.push_back({lx, ly, w, h});
     seenText.push_back(l.text);
   }
+
+  lv_canvas_finish_layer(labelCanvas, &layer);
+  lv_obj_invalidate(labelCanvas);
 }
 
 // Trace canvas overlay for station movement lines
@@ -883,6 +888,9 @@ static void reloadTiles() {
   drawOwnTrace();
   reposTraceCanvas();
   refreshMapLabels();
+  // Keep overlays above the (re)created vector tile canvases; markers go on top next.
+  if (traceCanvas) lv_obj_move_foreground(traceCanvas);
+  if (labelCanvas) lv_obj_move_foreground(labelCanvas);
   createMarkers();
   setPosition(gpsLat, gpsLon);
 }
@@ -966,6 +974,10 @@ static void backCb(lv_event_t *) {
   if (mapTimer) { lv_timer_del(mapTimer); mapTimer = nullptr; }
   deleteMarkers();
   clearMapLabels();
+  // Free label canvas
+  if (labelCanvas && lv_obj_is_valid(labelCanvas)) lv_obj_del(labelCanvas);
+  labelCanvas = nullptr;
+  if (labelBuf) { lv_free(labelBuf); labelBuf = nullptr; }
   // Free trace canvas
   if (traceCanvas && lv_obj_is_valid(traceCanvas)) lv_obj_del(traceCanvas);
   traceCanvas = nullptr;
@@ -1362,6 +1374,14 @@ lv_obj_t *create(lv_obj_t *) {
   lv_obj_set_pos(traceCanvas, (CONT_W - SPRITE_SIZE) / 2, (MAP_H - SPRITE_SIZE) / 2);
   lv_obj_set_size(traceCanvas, TRACE_CANVAS_W, MAP_H);
   lv_obj_clear_flag(traceCanvas, LV_OBJ_FLAG_CLICKABLE);
+
+  // Label overlay (single sprite-sized canvas, panned with the tiles)
+  labelBuf = (uint8_t *)lv_malloc(LV_CANVAS_BUF_SIZE(LABEL_CANVAS_W, LABEL_CANVAS_H, 32, LV_DRAW_BUF_STRIDE_ALIGN));
+  labelCanvas = lv_canvas_create(mapCont);
+  lv_canvas_set_buffer(labelCanvas, labelBuf, LABEL_CANVAS_W, LABEL_CANVAS_H, LV_COLOR_FORMAT_ARGB8888);
+  lv_obj_set_pos(labelCanvas, (CONT_W - SPRITE_SIZE) / 2, (MAP_H - SPRITE_SIZE) / 2);
+  lv_obj_clear_flag(labelCanvas, LV_OBJ_FLAG_CLICKABLE);
+  memset(labelBuf, 0, LABEL_CANVAS_W * LABEL_CANVAS_H * 4);
 
   mapActive = true;
   reloadTiles(); // load tiles + create station markers
