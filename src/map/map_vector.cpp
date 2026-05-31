@@ -59,10 +59,7 @@ bool initLabelFonts() {
         printf("[map] OpenSans-Bold.ttf introuvable — labels en montserrat (accents coupés)\n");
         return false;
     }
-    if (lv_freetype_init(256) != LV_RESULT_OK) {
-        printf("[map] lv_freetype_init a échoué\n");
-        return false;
-    }
+    // FreeType est déjà initialisé par lv_init() (LV_USE_FREETYPE=1) — ne pas le ré-init.
     s_font12 = lv_freetype_font_create(found, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, 14, LV_FREETYPE_FONT_STYLE_NORMAL);
     s_font14 = lv_freetype_font_create(found, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, 16, LV_FREETYPE_FONT_STYLE_NORMAL);
     printf("[map] police labels: %s (%s)\n", found, (s_font12 && s_font14) ? "OK" : "partiel");
