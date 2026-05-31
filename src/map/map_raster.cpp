@@ -570,7 +570,7 @@ static void refreshMapLabels() {
   clearMapLabels();
   if (!(zoom >= 9 && MapVector::isOpen()) || !mapCont) return;
   struct SL { int x, y, prio; std::string text; uint8_t r, g, b; const lv_font_t *font;
-              int angle; bool followLine; };
+              int angle; bool followLine; bool shield; };
   std::vector<SL> all;
   int mapH = fullscreenMap ? 600 : MAP_H;
   int ox0 = (CONT_W - SPRITE_SIZE) / 2 + dragAccumX;
@@ -581,12 +581,12 @@ static void refreshMapLabels() {
       std::vector<MapVector::Label> tl;
       MapVector::getTileLabels(zoom, tx, ty, tl);
       int sx = ox0 + dx * TILE_SIZE, sy = oy0 + dy * TILE_SIZE;
-      for (auto &l : tl) all.push_back({sx + l.px, sy + l.py, l.priority, l.text, l.r, l.g, l.b, l.font, l.angle, l.followLine});
+      for (auto &l : tl) all.push_back({sx + l.px, sy + l.py, l.priority, l.text, l.r, l.g, l.b, l.font, l.angle, l.followLine, l.shield});
     }
   std::sort(all.begin(), all.end(), [](const SL &a, const SL &b) { return a.prio < b.prio; });
   struct Box { int x, y, w, h; };
   std::vector<Box> placed;
-  std::vector<std::string> seenText; // 1 seule étiquette par nom/ref à l'écran (anti-répétition inter-tuiles)
+  std::vector<std::string> seenText; // one label per name/ref on screen (avoids cross-tile repeats)
   for (auto &l : all) {
     if (mapLabelCount >= MAX_MAP_LABELS) break;
     if (std::find(seenText.begin(), seenText.end(), l.text) != seenText.end()) continue;
@@ -601,15 +601,27 @@ static void refreshMapLabels() {
     lv_obj_t *lbl = lv_label_create(mapCont);
     lv_label_set_text(lbl, l.text.c_str());
     lv_obj_set_style_text_font(lbl, l.font, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_make(l.r, l.g, l.b), 0);
     lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
-    if (l.followLine) {
-      // Cours d'eau : texte le long de la ligne (firmware GEOM_TEXT_LINE).
-      lv_obj_set_style_transform_pivot_x(lbl, w / 2, 0);
-      lv_obj_set_style_transform_pivot_y(lbl, h / 2, 0);
-      lv_obj_set_style_transform_rotation(lbl, l.angle * 10, 0); // LVGL : 0,1°
+    if (l.shield) {
+      // Road ref shield: lightened color as background, base color as border,
+      // darkened color as text (r,g,b carry the road base color).
+      lv_obj_set_style_text_color(lbl, lv_color_make((uint8_t)(l.r*0.55f), (uint8_t)(l.g*0.55f), (uint8_t)(l.b*0.55f)), 0);
+      lv_obj_set_style_bg_color(lbl, lv_color_make((uint8_t)(l.r+(255-l.r)*0.78f), (uint8_t)(l.g+(255-l.g)*0.78f), (uint8_t)(l.b+(255-l.b)*0.78f)), 0);
+      lv_obj_set_style_bg_opa(lbl, LV_OPA_COVER, 0);
+      lv_obj_set_style_border_color(lbl, lv_color_make(l.r, l.g, l.b), 0);
+      lv_obj_set_style_border_width(lbl, 1, 0);
+      lv_obj_set_style_pad_hor(lbl, 2, 0);
+      lv_obj_set_style_pad_ver(lbl, 1, 0);
+      lv_obj_set_style_radius(lbl, 3, 0);
+    } else {
+      lv_obj_set_style_text_color(lbl, lv_color_make(l.r, l.g, l.b), 0);
+      if (l.followLine) {
+        // Text oriented along the path.
+        lv_obj_set_style_transform_pivot_x(lbl, w / 2, 0);
+        lv_obj_set_style_transform_pivot_y(lbl, h / 2, 0);
+        lv_obj_set_style_transform_rotation(lbl, l.angle * 10, 0); // 0,1° (unité LVGL)
+      }
     }
-    // Pas de fond : texte seul, comme sur OSM (halo fin = étape surface unique).
     lv_obj_set_pos(lbl, lx, ly);
     mapLabelSrx[mapLabelCount] = lx - ox0; // position relative au sprite (drag-suivi)
     mapLabelSry[mapLabelCount] = ly - oy0;
@@ -1116,7 +1128,7 @@ static void mapTouchCB(lv_event_t *e) {
 
     updateMarkerPositions();
     reposTraceCanvas();
-    // Les labels suivent le même offset que les tuiles, sinon ils traînent au pan.
+    // Labels use the same offset as the tiles, otherwise they lag during pan.
     repositionMapLabels((CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
                         (MAP_H - SPRITE_SIZE) / 2 + dragAccumY);
 
@@ -1174,7 +1186,7 @@ lv_obj_t *create(lv_obj_t *) {
   discoverRegion();
   discoverZooms();
   discoverDefaultPosition();
-  MapVector::initLabelFonts();   // police accentuée (OpenSans-Bold), comme le firmware
+  MapVector::initLabelFonts();   // accented label font (OpenSans-Bold)
 
   lv_obj_t *scr = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x1a1a2e), 0);

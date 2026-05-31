@@ -15,6 +15,7 @@ namespace MapVector {
         const lv_font_t *font;
         int angle = 0;              // orientation (degrés) si followLine ; 0 = panneau droit
         bool followLine = false;    // true = texte le long de la ligne, sans fond (waterway)
+        bool shield = false;        // true = ref de route : cartouche couleur de route (r,g,b = couleur de base)
     };
 
     // Ouvre le fichier .pmtiles (mmap) et garde une référence globale.
