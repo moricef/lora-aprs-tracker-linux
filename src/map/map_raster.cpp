@@ -553,6 +553,12 @@ static lv_obj_t *labelCanvas = nullptr;
 static uint8_t *labelBuf = nullptr;
 #define LABEL_CANVAS_W SPRITE_SIZE
 #define LABEL_CANVAS_H SPRITE_SIZE
+// Scratch canvas: a waterway word is rendered here horizontally, then blitted rotated
+// onto the overlay so the whole word follows the river (label rotation only slants glyphs).
+static lv_obj_t *tmpLabelCanvas = nullptr;
+static uint8_t *tmpLabelBuf = nullptr;
+#define TMP_LABEL_W 320
+#define TMP_LABEL_H 40
 
 static void clearMapLabels() {
   if (!labelBuf) return;
@@ -592,6 +598,19 @@ static void refreshMapLabels() {
   lv_layer_t layer;
   lv_canvas_init_layer(labelCanvas, &layer);
 
+  // Draw a word with a white halo (4 diagonal offsets) into the given layer/area.
+  auto drawHalo = [](lv_layer_t *L, const char *txt, const lv_font_t *font,
+                     int x0, int y0, int ww, int hh, uint8_t r, uint8_t g, uint8_t b) {
+    lv_draw_label_dsc_t d; lv_draw_label_dsc_init(&d);
+    d.text = txt; d.font = font; d.align = LV_TEXT_ALIGN_CENTER;
+    d.color = lv_color_white();
+    const int off[4][2] = {{-1,-1},{1,-1},{-1,1},{1,1}};
+    for (auto &o : off) { lv_area_t ha = { x0 + o[0], y0 + o[1], x0 + o[0] + ww - 1, y0 + o[1] + hh - 1 }; lv_draw_label(L, &d, &ha); }
+    d.color = lv_color_make(r, g, b);
+    lv_area_t a = { x0, y0, x0 + ww - 1, y0 + hh - 1 };
+    lv_draw_label(L, &d, &a);
+  };
+
   for (auto &l : all) {
     if (std::find(seenText.begin(), seenText.end(), l.text) != seenText.end()) continue;
     int h = l.font->line_height;
@@ -617,16 +636,24 @@ static void refreshMapLabels() {
       ld.text = l.text.c_str(); ld.font = l.font; ld.align = LV_TEXT_ALIGN_CENTER;
       ld.color = lv_color_make((uint8_t)(l.r*0.55f), (uint8_t)(l.g*0.55f), (uint8_t)(l.b*0.55f));
       lv_draw_label(&layer, &ld, &a);
+    } else if (l.followLine && tmpLabelBuf) {
+      // Waterway: render the word horizontally to the scratch canvas, then blit it
+      // rotated so the whole word follows the river.
+      int ww = (w < TMP_LABEL_W) ? w : TMP_LABEL_W;
+      int hh = (h < TMP_LABEL_H) ? h : TMP_LABEL_H;
+      memset(tmpLabelBuf, 0, TMP_LABEL_W * TMP_LABEL_H * 4);
+      lv_layer_t tl; lv_canvas_init_layer(tmpLabelCanvas, &tl);
+      drawHalo(&tl, l.text.c_str(), l.font, 0, 0, ww, hh, l.r, l.g, l.b);
+      lv_canvas_finish_layer(tmpLabelCanvas, &tl);
+      lv_draw_image_dsc_t id; lv_draw_image_dsc_init(&id);
+      id.src = lv_canvas_get_image(tmpLabelCanvas);
+      id.rotation = l.angle * 10;       // rotate the whole word (0.1° units)
+      id.pivot.x = ww / 2; id.pivot.y = hh / 2;
+      lv_area_t ia = { l.x - ww / 2, l.y - hh / 2,
+                       l.x - ww / 2 + TMP_LABEL_W - 1, l.y - hh / 2 + TMP_LABEL_H - 1 };
+      lv_draw_image(&layer, &id, &ia);
     } else {
-      lv_draw_label_dsc_t ld; lv_draw_label_dsc_init(&ld);
-      ld.text = l.text.c_str(); ld.font = l.font; ld.align = LV_TEXT_ALIGN_CENTER;
-      if (l.followLine) ld.rotation = l.angle * 10;
-      // White halo (4 diagonal offsets) so text stays legible over the map.
-      ld.color = lv_color_white();
-      const int off[4][2] = {{-1,-1},{1,-1},{-1,1},{1,1}};
-      for (auto &o : off) { lv_area_t ha = { lx + o[0], ly + o[1], lx + o[0] + w - 1, ly + o[1] + h - 1 }; lv_draw_label(&layer, &ld, &ha); }
-      ld.color = lv_color_make(l.r, l.g, l.b);
-      lv_draw_label(&layer, &ld, &a);
+      drawHalo(&layer, l.text.c_str(), l.font, lx, ly, w, h, l.r, l.g, l.b);
     }
     placed.push_back({lx, ly, w, h});
     seenText.push_back(l.text);
@@ -974,10 +1001,13 @@ static void backCb(lv_event_t *) {
   if (mapTimer) { lv_timer_del(mapTimer); mapTimer = nullptr; }
   deleteMarkers();
   clearMapLabels();
-  // Free label canvas
+  // Free label canvas + scratch
   if (labelCanvas && lv_obj_is_valid(labelCanvas)) lv_obj_del(labelCanvas);
   labelCanvas = nullptr;
   if (labelBuf) { lv_free(labelBuf); labelBuf = nullptr; }
+  if (tmpLabelCanvas && lv_obj_is_valid(tmpLabelCanvas)) lv_obj_del(tmpLabelCanvas);
+  tmpLabelCanvas = nullptr;
+  if (tmpLabelBuf) { lv_free(tmpLabelBuf); tmpLabelBuf = nullptr; }
   // Free trace canvas
   if (traceCanvas && lv_obj_is_valid(traceCanvas)) lv_obj_del(traceCanvas);
   traceCanvas = nullptr;
@@ -1382,6 +1412,12 @@ lv_obj_t *create(lv_obj_t *) {
   lv_obj_set_pos(labelCanvas, (CONT_W - SPRITE_SIZE) / 2, (MAP_H - SPRITE_SIZE) / 2);
   lv_obj_clear_flag(labelCanvas, LV_OBJ_FLAG_CLICKABLE);
   memset(labelBuf, 0, LABEL_CANVAS_W * LABEL_CANVAS_H * 4);
+
+  // Scratch canvas for rotated waterway words (hidden, off-screen buffer only)
+  tmpLabelBuf = (uint8_t *)lv_malloc(LV_CANVAS_BUF_SIZE(TMP_LABEL_W, TMP_LABEL_H, 32, LV_DRAW_BUF_STRIDE_ALIGN));
+  tmpLabelCanvas = lv_canvas_create(mapCont);
+  lv_canvas_set_buffer(tmpLabelCanvas, tmpLabelBuf, TMP_LABEL_W, TMP_LABEL_H, LV_COLOR_FORMAT_ARGB8888);
+  lv_obj_add_flag(tmpLabelCanvas, LV_OBJ_FLAG_HIDDEN);
 
   mapActive = true;
   reloadTiles(); // load tiles + create station markers
