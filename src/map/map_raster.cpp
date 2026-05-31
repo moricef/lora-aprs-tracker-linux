@@ -542,6 +542,76 @@ static lv_obj_t *vecCanvas[GRID][GRID];
 static int vecLastZ[GRID][GRID], vecLastTX[GRID][GRID], vecLastTY[GRID][GRID];
 static uint8_t *vecBuf[GRID][GRID];
 
+// Labels carto au niveau écran (widgets LVGL, collision globale inter-tuiles).
+#include <vector>
+#include <algorithm>
+static bool fullscreenMap = false;
+#define MAX_MAP_LABELS 100
+static lv_obj_t *mapLabels[MAX_MAP_LABELS];
+static int mapLabelSrx[MAX_MAP_LABELS], mapLabelSry[MAX_MAP_LABELS]; // pos relative au sprite
+static int mapLabelCount = 0;
+
+static void clearMapLabels() {
+  for (int i = 0; i < mapLabelCount; i++)
+    if (mapLabels[i] && lv_obj_is_valid(mapLabels[i])) lv_obj_del(mapLabels[i]);
+  mapLabelCount = 0;
+}
+
+// Recale les labels selon l'origine sprite courante (ox,oy = coin haut-gauche du
+// sprite à l'écran, dragAccum inclus). Appelé pendant le pan, comme les tuiles.
+static void repositionMapLabels(int ox, int oy) {
+  for (int i = 0; i < mapLabelCount; i++)
+    if (mapLabels[i] && lv_obj_is_valid(mapLabels[i]))
+      lv_obj_set_pos(mapLabels[i], ox + mapLabelSrx[i], oy + mapLabelSry[i]);
+}
+
+// Collecte les labels des tuiles visibles, placement global (collision), création widgets.
+static void refreshMapLabels() {
+  clearMapLabels();
+  if (!(zoom >= 9 && MapVector::isOpen()) || !mapCont) return;
+  struct SL { int x, y, prio; std::string text; uint8_t r, g, b; const lv_font_t *font; };
+  std::vector<SL> all;
+  int mapH = fullscreenMap ? 600 : MAP_H;
+  int ox0 = (CONT_W - SPRITE_SIZE) / 2 + dragAccumX;
+  int oy0 = (mapH - SPRITE_SIZE) / 2 + dragAccumY;
+  for (int dy = 0; dy < GRID; dy++)
+    for (int dx = 0; dx < GRID; dx++) {
+      int tx = centerTX + dx - GRID / 2, ty = centerTY + dy - GRID / 2;
+      std::vector<MapVector::Label> tl;
+      MapVector::getTileLabels(zoom, tx, ty, tl);
+      int sx = ox0 + dx * TILE_SIZE, sy = oy0 + dy * TILE_SIZE;
+      for (auto &l : tl) all.push_back({sx + l.px, sy + l.py, l.priority, l.text, l.r, l.g, l.b, l.font});
+    }
+  std::sort(all.begin(), all.end(), [](const SL &a, const SL &b) { return a.prio < b.prio; });
+  struct Box { int x, y, w, h; };
+  std::vector<Box> placed;
+  for (auto &l : all) {
+    if (mapLabelCount >= MAX_MAP_LABELS) break;
+    int h = l.font->line_height;
+    int w = (int)(l.text.size() * h * 0.52f); // estimation largeur (évite l'API texte v8)
+    int lx = l.x - w / 2, ly = l.y - h / 2;
+    if (lx + w < 0 || lx > CONT_W || ly + h < 0 || ly > mapH) continue; // hors zone visible
+    bool ov = false;
+    for (auto &p : placed)
+      if (!(lx + w + 3 <= p.x || p.x + p.w + 3 <= lx || ly + h + 2 <= p.y || p.y + p.h + 2 <= ly)) { ov = true; break; }
+    if (ov) continue;
+    lv_obj_t *lbl = lv_label_create(mapCont);
+    lv_label_set_text(lbl, l.text.c_str());
+    lv_obj_set_style_text_font(lbl, l.font, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_make(l.r, l.g, l.b), 0);
+    lv_obj_set_style_bg_color(lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(lbl, LV_OPA_60, 0);   // fond clair = lisibilité (halo propre)
+    lv_obj_set_style_pad_hor(lbl, 1, 0);
+    lv_obj_set_style_radius(lbl, 2, 0);
+    lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(lbl, lx, ly);
+    mapLabelSrx[mapLabelCount] = lx - ox0; // position relative au sprite (drag-suivi)
+    mapLabelSry[mapLabelCount] = ly - oy0;
+    mapLabels[mapLabelCount++] = lbl;
+    placed.push_back({lx, ly, w, h});
+  }
+}
+
 // Trace canvas overlay for station movement lines
 static lv_obj_t *traceCanvas = nullptr;
 static uint8_t *traceBuf = nullptr;
@@ -793,6 +863,7 @@ static void reloadTiles() {
   drawTraces();
   drawOwnTrace();
   reposTraceCanvas();
+  refreshMapLabels();
   createMarkers();
   setPosition(gpsLat, gpsLon);
 }
@@ -875,6 +946,7 @@ static void backCb(lv_event_t *) {
   mapActive = false;
   if (mapTimer) { lv_timer_del(mapTimer); mapTimer = nullptr; }
   deleteMarkers();
+  clearMapLabels();
   // Free trace canvas
   if (traceCanvas && lv_obj_is_valid(traceCanvas)) lv_obj_del(traceCanvas);
   traceCanvas = nullptr;
@@ -900,8 +972,6 @@ static void zoomCb(lv_event_t *e) {
   if (d > 0) zoomIn(); else zoomOut();
 }
 
-static bool fullscreenMap = false;
-
 static void reposTraceCanvas() {
     if (!traceCanvas || !lv_obj_is_valid(traceCanvas)) return;
     int mapH = fullscreenMap ? 600 : MAP_H;
@@ -923,6 +993,8 @@ static void repositionAll() {
         }
     reposTraceCanvas();
     updateMarkerPositions();
+    repositionMapLabels((CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
+                        (mapH - SPRITE_SIZE) / 2 + dragAccumY);
 }
 
 static lv_obj_t *tbarMap = nullptr;

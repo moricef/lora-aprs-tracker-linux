@@ -28,115 +28,12 @@
 
 extern const lv_font_t lv_font_montserrat_12;
 extern const lv_font_t lv_font_montserrat_14;
-// Polices doublées : le rendu SSAA se fait en 2×, ces tailles retombent à 12/14
-// après sous-échantillonnage (lissées).
-extern const lv_font_t lv_font_montserrat_24;
-extern const lv_font_t lv_font_montserrat_28;
-extern const lv_font_t lv_font_montserrat_32;
 
 namespace MapVector {
 
 #define EXTENT    4096
 #define TILE_SIZE 256
 
-// ---- Glyph rendering from LVGL fonts (worker-thread safe) ------------------
-static int textWidth(const char *text, const lv_font_t *font) {
-    int w = 0;
-    while (*text) {
-        lv_font_glyph_dsc_t g;
-        if (lv_font_get_glyph_dsc(font, &g, (uint8_t)*text, (uint8_t)*(text+1)))
-            w += g.adv_w;
-        text++;
-    }
-    return w;
-}
-
-static void drawTextLabel(uint8_t *buf, int bufW, int bufH,
-                          int x, int y, const char *text,
-                          const lv_font_t *font, uint8_t r, uint8_t g, uint8_t b) {
-    // LVGL 9 : draw_buf créé proprement (header+handlers), reshapé par glyphe
-    // comme le fait lv_draw_label.c. Le glyphe est décodé en A8 dedans.
-    static lv_draw_buf_t *gbuf = nullptr;
-    if (!gbuf) gbuf = lv_draw_buf_create(160, 200, LV_COLOR_FORMAT_A8, 0);
-    if (!gbuf) return;
-    int penX = x;
-    while (*text) {
-        uint8_t c = (uint8_t)*text;
-        uint8_t cn = (uint8_t)*(text + 1);
-        lv_font_glyph_dsc_t gd = {};
-        if (!lv_font_get_glyph_dsc(font, &gd, c, cn)) { text++; continue; }
-        if (gd.box_w == 0 || gd.box_h == 0 || gd.box_w > 160 || gd.box_h > 200) { penX += gd.adv_w; text++; continue; }
-        lv_draw_buf_t *db = lv_draw_buf_reshape(gbuf, LV_COLOR_FORMAT_A8, gd.box_w, gd.box_h, LV_STRIDE_AUTO);
-        if (!db) { penX += gd.adv_w; text++; continue; }
-        const uint8_t *src = (const uint8_t *)lv_font_get_glyph_bitmap(&gd, db);
-        if (!src) { text++; penX += gd.adv_w; continue; }
-        int stride = db->header.stride;
-        int gx = penX + gd.ofs_x;
-        // y = haut de ligne. Formule LVGL (lv_draw_label.c:626) :
-        int gy = y + (font->line_height - font->base_line) - (int)gd.box_h - gd.ofs_y;
-        auto blit = [&](int ox, int oy, uint8_t cr, uint8_t cg, uint8_t cb) {
-            for (int row = 0; row < (int)gd.box_h; row++)
-                for (int col = 0; col < (int)gd.box_w; col++) {
-                    uint8_t alpha = src[row * stride + col];
-                    if (alpha == 0) continue;
-                    int px = gx + col + ox, py = gy + row + oy;
-                    if (px < 0 || px >= bufW || py < 0 || py >= bufH) continue;
-                    uint8_t *p = buf + (py * bufW + px) * 4;
-                    p[0] = (cb*alpha + p[0]*(255-alpha))/255;
-                    p[1] = (cg*alpha + p[1]*(255-alpha))/255;
-                    p[2] = (cr*alpha + p[2]*(255-alpha))/255;
-                }
-        };
-        blit(0, 0, r, g, b);
-        penX += gd.adv_w;
-        text++;
-    }
-}
-
-// ---- Label placement (collision avoidance) ---------------------------------
-struct LabelCandidate {
-    int x, y, w, h, priority;
-    std::string text;          // copie (pas un pointeur vers une std::string temporaire)
-    uint8_t r, g, b;
-    const lv_font_t *font;
-};
-
-static std::vector<LabelCandidate> s_labels;
-
-static void addLabel(int px, int py, const char *text, int priority,
-                     const lv_font_t *font, uint8_t r, uint8_t g, uint8_t b) {
-    if (!text || !text[0]) return;
-    int tw = textWidth(text, font);
-    if (tw <= 0 || tw > 2 * TILE_SIZE - 4) return; // rendu SSAA en 2× (tuile 512)
-    int fh = font->line_height > 0 ? font->line_height : font->base_line;
-    s_labels.push_back({px - tw/2, py - fh/2, tw, fh, priority, text, r, g, b, font});
-}
-
-static void placeLabels(uint8_t *buf, int sz) {
-    struct Placed { int x, y, w, h; };
-    std::vector<Placed> placed;
-    std::sort(s_labels.begin(), s_labels.end(),
-              [](const LabelCandidate &a, const LabelCandidate &b) {
-                  return a.priority < b.priority;
-              });
-    for (auto &l : s_labels) {
-        int lx = l.x, ly = l.y;
-        if (lx < 1) lx = 1;
-        if (ly < 1) ly = 1;
-        if (lx + l.w > sz - 1) lx = sz - 1 - l.w;
-        if (ly + l.h > sz - 1) ly = sz - 1 - l.h;
-        bool overlap = false;
-        for (auto &p : placed) {
-            if (lx + l.w + 2 <= p.x || p.x + p.w + 2 <= lx ||
-                ly + l.h + 2 <= p.y || p.y + p.h + 2 <= ly) continue;
-            overlap = true; break;
-        }
-        if (overlap) continue;
-        drawTextLabel(buf, sz, sz, lx, ly, l.text.c_str(), l.font, l.r, l.g, l.b); // ly = haut de ligne
-        placed.push_back({lx, ly, l.w, l.h});
-    }
-    s_labels.clear();
-}
 
 static int    s_fd       = -1;
 static void  *s_mapped   = nullptr;
@@ -516,16 +413,16 @@ static const AdminStyle kAdmin[] = {
 // Place label styling: class → {minZoom, priority, font, r, g, b}
 struct PlaceStyle { const char *cls; int minZ; int prio; const lv_font_t *font; uint8_t r,g,b; };
 // Polices en taille 2× (24/28) : le SSAA rend en 2× puis réduit → effectif 12/14.
-// Tailles 2× (SSAA → effectif moitié). min_zoom relevés pour désencombrer le bas
-// zoom (la donnée n'a pas de population pour filtrer plus finement).
+// Polices normales (labels dessinés par LVGL au niveau écran, pas de SSAA).
+// min_zoom relevés pour désencombrer le bas zoom (pas de population dans la donnée).
 static const PlaceStyle kPlaces[] = {
-    {"city",    5,  10, &lv_font_montserrat_32, 0x33,0x22,0x21}, // ~16px
-    {"town",    9,  20, &lv_font_montserrat_32, 0x33,0x22,0x21}, // 8→9
-    {"village", 12, 30, &lv_font_montserrat_28, 0x44,0x33,0x32}, // 10→12, ~14px
-    {"hamlet",  14, 40, &lv_font_montserrat_28, 0x55,0x44,0x43}, // 12→14
-    {"suburb",  13, 45, &lv_font_montserrat_28, 0x55,0x44,0x43}, // 11→13
-    {"state",   4,  50, &lv_font_montserrat_32, 0x55,0x44,0x43},
-    {"country", 2,   5, &lv_font_montserrat_32, 0x33,0x22,0x21},
+    {"city",    5,  10, &lv_font_montserrat_14, 0x33,0x22,0x21},
+    {"town",    9,  20, &lv_font_montserrat_14, 0x33,0x22,0x21},
+    {"village", 12, 30, &lv_font_montserrat_12, 0x44,0x33,0x32},
+    {"hamlet",  14, 40, &lv_font_montserrat_12, 0x55,0x44,0x43},
+    {"suburb",  13, 45, &lv_font_montserrat_12, 0x55,0x44,0x43},
+    {"state",   4,  50, &lv_font_montserrat_14, 0x55,0x44,0x43},
+    {"country", 2,   5, &lv_font_montserrat_14, 0x33,0x22,0x21},
 };
 
 // ---- Path drawing with width ------------------------------------------------
@@ -812,93 +709,6 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
         }
     }
 
-    // Pass 6: labels
-    vtzero::vector_tile t3{mvt};
-    while (auto lay = t3.next_layer()) {
-        std::string name = layerName(lay);
-        bool isPlace = (name == "place");
-        bool isWater = (name == "water");
-        bool isWaterway = (name == "waterway");
-        bool isTransport = (name == "transportation_name" || name == "transportation");
-        if (!isPlace && !isWater && !isWaterway && !isTransport) continue;
-        while (auto feat = lay.next_feature()) {
-            std::string labelText, nameLatin, cls;
-            while (auto prop = feat.next_property()) {
-                auto vt = prop.value();
-                if (vt.type() != vtzero::property_value_type::string_value) continue;
-                auto v = vt.string_value(); std::string val(v.data(), v.size());
-                // Le schéma OMT écrit le nom sous "name:latin" (parfois "name").
-                if (prop.key() == "name")             labelText = val;
-                else if (prop.key() == "name:latin")  nameLatin = val;
-                else if (prop.key() == "class")       cls = val;
-            }
-            if (labelText.empty()) labelText = nameLatin;
-            if (labelText.empty()) continue;
-            auto geom = feat.geometry_type();
-            if ((isPlace || isWater) && (geom == vtzero::GeomType::POLYGON || geom == vtzero::GeomType::POINT)) {
-                struct LabelPos {
-                    int minX=99999,minY=99999,maxX=-99999,maxY=-99999,ptCount=0,tileSz=0;
-                    void ring_begin(uint32_t){minX=minY=99999;maxX=maxY=-99999;ptCount=0;}
-                    void ring_point(vtzero::point p){int px=toPx(p.x,tileSz),py=toPx(p.y,tileSz);
-                        if(px<minX)minX=px;if(px>maxX)maxX=px;if(py<minY)minY=py;if(py>maxY)maxY=py;ptCount++;}
-                    void ring_end(vtzero::ring_type){}
-                    void points_begin(uint32_t){}
-                    void points_point(vtzero::point p){int px=toPx(p.x,tileSz),py=toPx(p.y,tileSz);
-                        if(px<minX)minX=px;if(px>maxX)maxX=px;if(py<minY)minY=py;if(py>maxY)maxY=py;ptCount++;}
-                    void points_end(){}
-                    void linestring_begin(uint32_t){}void linestring_point(vtzero::point){}void linestring_end(){}
-                } lp; lp.tileSz=sz;
-                if (geom == vtzero::GeomType::POLYGON) vtzero::decode_polygon_geometry(feat.geometry(),lp);
-                else vtzero::decode_point_geometry(feat.geometry(),lp);
-                if (lp.ptCount>0) {
-                    int cx=(lp.minX+lp.maxX)/2, cy=(lp.minY+lp.maxY)/2;
-                    if (cx>4&&cx<sz-4&&cy>4&&cy<sz-4) {
-                        if (isPlace) {
-                            const PlaceStyle *ps_match = nullptr;
-                            if (!cls.empty()) for (auto &ps : kPlaces)
-                                if (cls==ps.cls && z>=ps.minZ) { ps_match=&ps; break; }
-                            if (!ps_match) continue;
-                            addLabel(cx,cy,labelText.c_str(),ps_match->prio,ps_match->font,ps_match->r,ps_match->g,ps_match->b);
-                        } else if (z >= 12) { // noms de lacs : seulement à partir de z12
-                            addLabel(cx,cy,labelText.c_str(),70,&lv_font_montserrat_28,0x4A,0x7A,0xB0);
-                        }
-                    }
-                }
-            } else if (isWaterway && geom == vtzero::GeomType::LINESTRING) {
-                struct LineMid {
-                    int tileSz; std::vector<int> px,py;
-                    void linestring_begin(uint32_t){px.clear();py.clear();}
-                    void linestring_point(vtzero::point p){px.push_back(toPx(p.x,tileSz));py.push_back(toPx(p.y,tileSz));}
-                    void linestring_end(){}
-                    void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
-                    void ring_begin(uint32_t){}void ring_point(vtzero::point){}void ring_end(vtzero::ring_type){}
-                } lm; lm.tileSz=sz;
-                vtzero::decode_linestring_geometry(feat.geometry(),lm);
-                if (z >= 11 && lm.px.size()>=2) { // noms de rivières : à partir de z11
-                    int mid=(int)lm.px.size()/2, cx=lm.px[mid], cy=lm.py[mid];
-                    if (cx>4&&cx<sz-4&&cy>4&&cy<sz-4)
-                        addLabel(cx,cy,labelText.c_str(),60,&lv_font_montserrat_28,0x4A,0x7A,0xB0);
-                }
-            } else if (isTransport && geom == vtzero::GeomType::LINESTRING && z >= 13) {
-                struct LineMid {
-                    int tileSz; std::vector<int> px,py;
-                    void linestring_begin(uint32_t){px.clear();py.clear();}
-                    void linestring_point(vtzero::point p){px.push_back(toPx(p.x,tileSz));py.push_back(toPx(p.y,tileSz));}
-                    void linestring_end(){}
-                    void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
-                    void ring_begin(uint32_t){}void ring_point(vtzero::point){}void ring_end(vtzero::ring_type){}
-                } lm; lm.tileSz=sz;
-                vtzero::decode_linestring_geometry(feat.geometry(),lm);
-                if (lm.px.size()>=2) {
-                    int mid=(int)lm.px.size()/2, cx=lm.px[mid], cy=lm.py[mid];
-                    if (cx>4&&cx<sz-4&&cy>4&&cy<sz-4)
-                        addLabel(cx,cy,labelText.c_str(),80,&lv_font_montserrat_28,0x40,0x40,0x40);
-                }
-            }
-        }
-    }
-
-    placeLabels(buf, sz);
 }
 
 // ---- SSAA : sous-échantillonnage 2x2 (moyenne de boîte) → anti-aliasing ------
@@ -927,6 +737,80 @@ static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
     renderTileBufCore(big, ssz, z, x, y);
     downsample2x(big, ssz, buf, sz);
     free(big);
+}
+
+// ---- getTileLabels : extrait les labels d'une tuile (coords tile-locales à sz)
+// sans dessiner. Le placement/collision global est fait par map_raster (widgets LVGL).
+void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
+    if (!s_mapped) return;
+    auto [off, len] = pmtiles::get_tile(gunzip, (const char*)s_mapped, z, x, y);
+    if (len == 0) return;
+    std::string raw((const char*)s_mapped + off, len);
+    std::string mvt = (s_header.tile_compression == pmtiles::COMPRESSION_GZIP)
+                      ? gunzip(raw, 0) : raw;
+    if (mvt.empty()) return;
+    const int sz = TILE_SIZE;
+    auto push = [&](int px, int py, const std::string &t, int prio,
+                    const lv_font_t *f, uint8_t r, uint8_t g, uint8_t b) {
+        if (px>4 && px<sz-4 && py>4 && py<sz-4) out.push_back({px,py,prio,t,r,g,b,f});
+    };
+    vtzero::vector_tile tv{mvt};
+    while (auto lay = tv.next_layer()) {
+        std::string name(lay.name());
+        bool isPlace = (name == "place"), isWater = (name == "water");
+        bool isWaterway = (name == "waterway");
+        bool isTransport = (name == "transportation_name");
+        if (!isPlace && !isWater && !isWaterway && !isTransport) continue;
+        while (auto feat = lay.next_feature()) {
+            std::string labelText, nameLatin, cls;
+            while (auto prop = feat.next_property()) {
+                if (prop.value().type() != vtzero::property_value_type::string_value) continue;
+                auto v = prop.value().string_value(); std::string val(v.data(), v.size());
+                if (prop.key() == "name")            labelText = val;
+                else if (prop.key() == "name:latin") nameLatin = val;
+                else if (prop.key() == "class")      cls = val;
+            }
+            if (labelText.empty()) labelText = nameLatin;
+            if (labelText.empty()) continue;
+            auto geom = feat.geometry_type();
+            if ((isPlace || isWater) && (geom == vtzero::GeomType::POLYGON || geom == vtzero::GeomType::POINT)) {
+                struct LabelPos { int minX=99999,minY=99999,maxX=-99999,maxY=-99999,n=0,ts=0;
+                    void add(vtzero::point p){int px=toPx(p.x,ts),py=toPx(p.y,ts);
+                        if(px<minX)minX=px;if(px>maxX)maxX=px;if(py<minY)minY=py;if(py>maxY)maxY=py;n++;}
+                    void ring_begin(uint32_t){} void ring_point(vtzero::point p){add(p);} void ring_end(vtzero::ring_type){}
+                    void points_begin(uint32_t){} void points_point(vtzero::point p){add(p);} void points_end(){}
+                    void linestring_begin(uint32_t){}void linestring_point(vtzero::point){}void linestring_end(){}
+                } lp; lp.ts=sz;
+                if (geom == vtzero::GeomType::POLYGON) vtzero::decode_polygon_geometry(feat.geometry(),lp);
+                else vtzero::decode_point_geometry(feat.geometry(),lp);
+                if (lp.n>0) {
+                    int cx=(lp.minX+lp.maxX)/2, cy=(lp.minY+lp.maxY)/2;
+                    if (isPlace) {
+                        for (auto &ps : kPlaces) if (cls==ps.cls && z>=ps.minZ) {
+                            push(cx,cy,labelText,ps.prio,ps.font,ps.r,ps.g,ps.b); break; }
+                    } else if (z >= 12) push(cx,cy,labelText,70,&lv_font_montserrat_12,0x4A,0x7A,0xB0);
+                }
+            } else if (isWaterway && geom == vtzero::GeomType::LINESTRING && z >= 11) {
+                struct LineMid { int ts; std::vector<int> px,py;
+                    void linestring_begin(uint32_t){px.clear();py.clear();}
+                    void linestring_point(vtzero::point p){px.push_back(toPx(p.x,ts));py.push_back(toPx(p.y,ts));}
+                    void linestring_end(){} void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
+                    void ring_begin(uint32_t){}void ring_point(vtzero::point){}void ring_end(vtzero::ring_type){}
+                } lm; lm.ts=sz;
+                vtzero::decode_linestring_geometry(feat.geometry(),lm);
+                if (lm.px.size()>=2){int m=(int)lm.px.size()/2; push(lm.px[m],lm.py[m],labelText,60,&lv_font_montserrat_12,0x4A,0x7A,0xB0);}
+            } else if (isTransport && geom == vtzero::GeomType::LINESTRING && z >= 13) {
+                struct LineMid { int ts; std::vector<int> px,py;
+                    void linestring_begin(uint32_t){px.clear();py.clear();}
+                    void linestring_point(vtzero::point p){px.push_back(toPx(p.x,ts));py.push_back(toPx(p.y,ts));}
+                    void linestring_end(){} void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
+                    void ring_begin(uint32_t){}void ring_point(vtzero::point){}void ring_end(vtzero::ring_type){}
+                } lm; lm.ts=sz;
+                vtzero::decode_linestring_geometry(feat.geometry(),lm);
+                if (lm.px.size()>=2){int m=(int)lm.px.size()/2; push(lm.px[m],lm.py[m],labelText,80,&lv_font_montserrat_12,0x40,0x40,0x40);}
+            }
+        }
+    }
 }
 
 // ---- renderTileRaw : remplit un buffer ARGB8888 (B,G,R,A) sans cache ni LVGL
