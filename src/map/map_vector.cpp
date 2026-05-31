@@ -33,9 +33,9 @@ extern const lv_font_t lv_font_montserrat_14;
 
 namespace MapVector {
 
-// Polices labels chargées au runtime depuis OpenSans-Bold.ttf — comme le firmware
-// charge OpenSans-Bold-XX.vlw. Indispensable : montserrat n'a que l'ASCII, donc les
-// accents français (é è à ô ç…) sont coupés. Fallback montserrat si le TTF manque.
+// Label fonts loaded at runtime from OpenSans-Bold.ttf. Required because the
+// built-in montserrat fonts are ASCII-only and drop French accents (é è à ô ç…).
+// Falls back to montserrat when the TTF is missing.
 static lv_font_t *s_font12 = nullptr;
 static lv_font_t *s_font14 = nullptr;
 
@@ -59,7 +59,7 @@ bool initLabelFonts() {
         printf("[map] OpenSans-Bold.ttf introuvable — labels en montserrat (accents coupés)\n");
         return false;
     }
-    // FreeType est déjà initialisé par lv_init() (LV_USE_FREETYPE=1) — ne pas le ré-init.
+    // FreeType is already initialized by lv_init() (LV_USE_FREETYPE=1); don't re-init.
     s_font12 = lv_freetype_font_create(found, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, 14, LV_FREETYPE_FONT_STYLE_NORMAL);
     s_font14 = lv_freetype_font_create(found, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, 16, LV_FREETYPE_FONT_STYLE_NORMAL);
     printf("[map] police labels: %s (%s)\n", found, (s_font12 && s_font14) ? "OK" : "partiel");
@@ -677,13 +677,13 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
         }
     }
 
-    // Pass 3b: aeroway lines — pistes (runway) et voies de circulation (taxiway),
-    // souvent en LINESTRING (non couvertes par la passe polygone). z>=12 (firmware).
+    // Pass 3b: aeroway lines — runways and taxiways are usually LINESTRING and are
+    // not covered by the polygon pass. Drawn from z12 up.
     if (z >= 12) {
         StyledLineCollector lc;
         lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z;
         lc.table=nullptr; lc.tableLen=0; lc.roadTable=nullptr;
-        lc.r=0xB2; lc.g=0xB5; lc.b=0xD1;   // #b2b5d1 (firmware aeroway=runway/taxiway)
+        lc.r=0xB2; lc.g=0xB5; lc.b=0xD1;   // #b2b5d1
         vtzero::vector_tile t{mvt};
         while (auto lay = t.next_layer()) {
             if (std::string(lay.name()) != "aeroway") continue;
@@ -808,8 +808,8 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
     const int sz = TILE_SIZE;
     auto push = [&](int px, int py, const std::string &t, int prio,
                     const lv_font_t *f, uint8_t r, uint8_t g, uint8_t b,
-                    int angle = 0, bool followLine = false) {
-        if (px>4 && px<sz-4 && py>4 && py<sz-4) out.push_back({px,py,prio,t,r,g,b,f,angle,followLine});
+                    int angle = 0, bool followLine = false, bool shield = false) {
+        if (px>4 && px<sz-4 && py>4 && py<sz-4) out.push_back({px,py,prio,t,r,g,b,f,angle,followLine,shield});
     };
     // Milieu d'une polyligne (waterway / transportation_name) en coords tuile-locales.
     struct LineMid { int ts; std::vector<int> px,py;
@@ -821,11 +821,9 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
     vtzero::vector_tile tv{mvt};
     while (auto lay = tv.next_layer()) {
         std::string name(lay.name());
-        // Le firmware (Tile-Generator-Pack) labellise : lieux (text_features),
-        // cours d'eau (create_waterway_label) et refs de route majeure
-        // (create_road_label : le numéro A/N/D, PAS le nom de rue).
-        // Source (process-aprs.lua) : noms d'eau dans water_name (rivières) et
-        // water_name_detail (canaux + lacs). La densité/min_zoom est gérée à la source.
+        // Labels: places, waterways and major road refs (the A/N/D number, not the
+        // street name). Water names live in water_name (rivers) and water_name_detail
+        // (canals + lakes); min_zoom is handled when the tiles are built.
         bool isPlace = (name == "place");
         bool isWaterName = (name == "water_name");
         bool isWaterDetail = (name == "water_name_detail");
@@ -844,7 +842,7 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
             auto geom = feat.geometry_type();
             bool isLake = isWaterDetail && cls == "lake";
 
-            // --- Lieux + lac : centroïde du polygone/point ---
+            // --- Places + lake: polygon/point centroid ---
             if ((isPlace || isLake) && (geom == vtzero::GeomType::POLYGON || geom == vtzero::GeomType::POINT)) {
                 if (labelText.empty()) labelText = nameLatin;
                 if (labelText.empty()) continue;
@@ -865,8 +863,8 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                     } else push(cx,cy,labelText,70,rtFont(&lv_font_montserrat_12),0x4A,0x7A,0xB0);
                 }
             }
-            // --- Cours d'eau (rivière=water_name, canal=water_name_detail) : nom le
-            // long du tracé, sans fond. min_zoom géré par la source.
+            // --- Waterways (river in water_name, canal in water_name_detail): name
+            // oriented along the path, no background. min_zoom handled by the tiles.
             else if ((isWaterName || (isWaterDetail && cls == "canal"))
                      && geom == vtzero::GeomType::LINESTRING) {
                 if (labelText.empty()) labelText = nameLatin;
@@ -877,29 +875,30 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                     int m=(int)lm.px.size()/2;
                     int a=(m>0)?m-1:m, c=(m<(int)lm.px.size()-1)?m+1:m;
                     double ang = atan2((double)(lm.py[c]-lm.py[a]), (double)(lm.px[c]-lm.px[a])) * 180.0/M_PI;
-                    if (ang > 90.0) ang -= 180.0; else if (ang < -90.0) ang += 180.0; // texte droit
+                    if (ang > 90.0) ang -= 180.0; else if (ang < -90.0) ang += 180.0; // keep upright
                     push(lm.px[m],lm.py[m],labelText,60,rtFont(&lv_font_montserrat_12),0x4A,0x7A,0xB0,(int)ang,true);
                 }
             }
-            // --- Refs de route majeure : numéro A/N/D, pas le nom de rue ---
+            // --- Major road refs: the A/N/D number, not the street name ---
             else if (isRoadName && geom == vtzero::GeomType::LINESTRING) {
                 if (ref.empty()) continue;
                 if (cls!="motorway"&&cls!="trunk"&&cls!="primary"&&cls!="secondary") continue;
                 bool wanted = (ref[0]=='A' || ref[0]=='N');
-                if (!wanted && ref[0]=='D') {        // D ex-nationale réutilise la plage 1000-1999
+                if (!wanted && ref[0]=='D') {        // reclassified D roads reuse the 1000-1999 range
                     try { int n=std::stoi(ref.substr(1)); wanted = (n>=1000 && n<=1999); } catch(...) {}
                 }
                 if (!wanted) continue;
                 int minZ = (cls=="motorway"||cls=="trunk") ? 10 : (cls=="primary" ? 11 : 12);
                 if (z < minZ) continue;
                 int prio = (cls=="motorway"||cls=="trunk") ? 25 : (cls=="primary" ? 35 : 45);
-                // Couleur du ref = couleur de la route, assombrie (OSM / firmware darken).
+                // Pass the road BASE color; the shield (light bg + dark text + border)
+                // is built at display time.
                 const RoadStyle *rd = findRoad(cls);
-                uint8_t rr=0x33,rg=0x33,rb=0x33;
-                if (rd) { rr=(uint8_t)(rd->r*0.55f); rg=(uint8_t)(rd->g*0.55f); rb=(uint8_t)(rd->b*0.55f); }
+                uint8_t rr=0x88,rg=0x88,rb=0x88;
+                if (rd) { rr=rd->r; rg=rd->g; rb=rd->b; }
                 LineMid lm; lm.ts=sz;
                 vtzero::decode_linestring_geometry(feat.geometry(),lm);
-                if (lm.px.size()>=2){int m=(int)lm.px.size()/2; push(lm.px[m],lm.py[m],ref,prio,rtFont(&lv_font_montserrat_12),rr,rg,rb);}
+                if (lm.px.size()>=2){int m=(int)lm.px.size()/2; push(lm.px[m],lm.py[m],ref,prio,rtFont(&lv_font_montserrat_12),rr,rg,rb,0,false,true);}
             }
         }
     }
