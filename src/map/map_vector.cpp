@@ -677,6 +677,27 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
         }
     }
 
+    // Pass 3b: aeroway lines — pistes (runway) et voies de circulation (taxiway),
+    // souvent en LINESTRING (non couvertes par la passe polygone). z>=12 (firmware).
+    if (z >= 12) {
+        StyledLineCollector lc;
+        lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z;
+        lc.table=nullptr; lc.tableLen=0; lc.roadTable=nullptr;
+        lc.r=0xB2; lc.g=0xB5; lc.b=0xD1;   // #b2b5d1 (firmware aeroway=runway/taxiway)
+        vtzero::vector_tile t{mvt};
+        while (auto lay = t.next_layer()) {
+            if (std::string(lay.name()) != "aeroway") continue;
+            while (auto feat = lay.next_feature()) {
+                if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
+                std::string cls = readClass(feat);
+                if (cls == "runway")       lc.width = (z>=14)?7:5;
+                else if (cls == "taxiway") lc.width = (z>=14)?3:2;
+                else continue;
+                vtzero::decode_linestring_geometry(feat.geometry(), lc);
+            }
+        }
+    }
+
     // Pass 4: railway lines
     {
         StyledLineCollector lc;
