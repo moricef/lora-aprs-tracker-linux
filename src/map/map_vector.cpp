@@ -32,6 +32,7 @@ extern const lv_font_t lv_font_montserrat_14;
 // après sous-échantillonnage (lissées).
 extern const lv_font_t lv_font_montserrat_24;
 extern const lv_font_t lv_font_montserrat_28;
+extern const lv_font_t lv_font_montserrat_32;
 
 namespace MapVector {
 
@@ -73,18 +74,23 @@ static void drawTextLabel(uint8_t *buf, int bufW, int bufH,
         int gx = penX + gd.ofs_x;
         // y = haut de ligne. Formule LVGL (lv_draw_label.c:626) :
         int gy = y + (font->line_height - font->base_line) - (int)gd.box_h - gd.ofs_y;
-        for (int row = 0; row < (int)gd.box_h; row++) {
-            for (int col = 0; col < (int)gd.box_w; col++) {
-                int px = gx + col, py = gy + row;
-                if (px < 0 || px >= bufW || py < 0 || py >= bufH) continue;
-                uint8_t alpha = src[row * stride + col]; // A8 décodé
-                if (alpha == 0) continue;
-                uint8_t *p = buf + (py * bufW + px) * 4;
-                p[0] = ((int)b * alpha + (int)p[0] * (255 - alpha)) / 255;
-                p[1] = ((int)g * alpha + (int)p[1] * (255 - alpha)) / 255;
-                p[2] = ((int)r * alpha + (int)p[2] * (255 - alpha)) / 255;
-            }
-        }
+        auto blit = [&](int ox, int oy, uint8_t cr, uint8_t cg, uint8_t cb) {
+            for (int row = 0; row < (int)gd.box_h; row++)
+                for (int col = 0; col < (int)gd.box_w; col++) {
+                    uint8_t alpha = src[row * stride + col];
+                    if (alpha == 0) continue;
+                    int px = gx + col + ox, py = gy + row + oy;
+                    if (px < 0 || px >= bufW || py < 0 || py >= bufH) continue;
+                    uint8_t *p = buf + (py * bufW + px) * 4;
+                    p[0] = (cb*alpha + p[0]*(255-alpha))/255;
+                    p[1] = (cg*alpha + p[1]*(255-alpha))/255;
+                    p[2] = (cr*alpha + p[2]*(255-alpha))/255;
+                }
+        };
+        // Halo blanc (contour fin) pour la lisibilité sur fonds variés, puis le texte.
+        for (int oy=-1; oy<=1; oy++) for (int ox=-1; ox<=1; ox++)
+            if (ox||oy) blit(ox, oy, 0xFF, 0xFF, 0xFF);
+        blit(0, 0, r, g, b);
         penX += gd.adv_w;
         text++;
     }
@@ -513,14 +519,16 @@ static const AdminStyle kAdmin[] = {
 // Place label styling: class → {minZoom, priority, font, r, g, b}
 struct PlaceStyle { const char *cls; int minZ; int prio; const lv_font_t *font; uint8_t r,g,b; };
 // Polices en taille 2× (24/28) : le SSAA rend en 2× puis réduit → effectif 12/14.
+// Tailles 2× (SSAA → effectif moitié). min_zoom relevés pour désencombrer le bas
+// zoom (la donnée n'a pas de population pour filtrer plus finement).
 static const PlaceStyle kPlaces[] = {
-    {"city",    5,  10, &lv_font_montserrat_28, 0x33,0x22,0x21},
-    {"town",    8,  20, &lv_font_montserrat_28, 0x33,0x22,0x21},
-    {"village", 10, 30, &lv_font_montserrat_24, 0x44,0x33,0x32},
-    {"hamlet",  12, 40, &lv_font_montserrat_24, 0x55,0x44,0x43},
-    {"suburb",  11, 45, &lv_font_montserrat_24, 0x55,0x44,0x43},
-    {"state",   4,  50, &lv_font_montserrat_28, 0x55,0x44,0x43},
-    {"country", 2,   5, &lv_font_montserrat_28, 0x33,0x22,0x21},
+    {"city",    5,  10, &lv_font_montserrat_32, 0x33,0x22,0x21}, // ~16px
+    {"town",    9,  20, &lv_font_montserrat_32, 0x33,0x22,0x21}, // 8→9
+    {"village", 12, 30, &lv_font_montserrat_28, 0x44,0x33,0x32}, // 10→12, ~14px
+    {"hamlet",  14, 40, &lv_font_montserrat_28, 0x55,0x44,0x43}, // 12→14
+    {"suburb",  13, 45, &lv_font_montserrat_28, 0x55,0x44,0x43}, // 11→13
+    {"state",   4,  50, &lv_font_montserrat_32, 0x55,0x44,0x43},
+    {"country", 2,   5, &lv_font_montserrat_32, 0x33,0x22,0x21},
 };
 
 // ---- Path drawing with width ------------------------------------------------
@@ -617,6 +625,23 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
         if (cls == "minor") return sub.empty() ? std::string("residential") : sub;
         if (cls == "path")  return (sub == "pedestrian") ? std::string("pedestrian") : std::string();
         return cls;
+    };
+    // Lit class, subclass et ramp (les bretelles = ramp=1, repliées dans la classe
+    // parente). Pour une bretelle on prend la largeur du variant _link (plus fin).
+    auto readRoad = [](vtzero::feature &f, std::string &cls, std::string &sub, bool &ramp) {
+        cls.clear(); sub.clear(); ramp = false;
+        while (auto p = f.next_property()) {
+            auto t = p.value().type();
+            if (p.key() == "ramp") { ramp = true; continue; }
+            if (t != vtzero::property_value_type::string_value) continue;
+            auto v = p.value().string_value();
+            if (p.key() == "class")    cls.assign(v.data(), v.size());
+            else if (p.key() == "subclass") sub.assign(v.data(), v.size());
+        }
+    };
+    auto widthKey = [](const std::string &key, bool ramp) -> std::string {
+        return (ramp && (key=="motorway"||key=="trunk"||key=="primary"||
+                         key=="secondary"||key=="tertiary")) ? key + "_link" : key;
     };
 
     // Couleurs fines landcover par subclass (features.json) — override la couleur
@@ -755,13 +780,13 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
             if (std::string(lay.name()) != "transportation") continue;
             while (auto feat = lay.next_feature()) {
                 if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
-                std::string cls, sub; readClassSub(feat, cls, sub);
+                std::string cls, sub; bool ramp; readRoad(feat, cls, sub, ramp);
                 std::string key = roadKey(cls, sub);
                 if (key.empty()) continue;
                 auto *rd = findRoad(key);
                 if (!rd) continue;
                 if (rd->wMul < 1.5f) continue;   // pas de liseré sur tertiary et en dessous
-                int fw = roadWidthForZoom(key, z);
+                int fw = roadWidthForZoom(widthKey(key, ramp), z);
                 if (fw < 3) continue;            // ni si trop fine à ce zoom
                 // Liseré = couleur de la voie légèrement assombrie (×0.85, même teinte),
                 // pas du noir — discret sur le 7" 1024x600.
@@ -776,12 +801,12 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
             if (std::string(lay.name()) != "transportation") continue;
             while (auto feat = lay.next_feature()) {
                 if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
-                std::string cls, sub; readClassSub(feat, cls, sub);
+                std::string cls, sub; bool ramp; readRoad(feat, cls, sub, ramp);
                 std::string key = roadKey(cls, sub);
                 if (key.empty()) continue;       // chemins non-pedestrian non rendus
                 auto *rd = findRoad(key);
                 if (!rd) continue;
-                int fw = roadWidthForZoom(key, z);
+                int fw = roadWidthForZoom(widthKey(key, ramp), z);
                 if (fw < 0) continue;            // route pas visible à ce zoom
                 lc.r=rd->r; lc.g=rd->g; lc.b=rd->b;
                 lc.width = fw;
@@ -837,8 +862,8 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
                                 if (cls==ps.cls && z>=ps.minZ) { ps_match=&ps; break; }
                             if (!ps_match) continue;
                             addLabel(cx,cy,labelText.c_str(),ps_match->prio,ps_match->font,ps_match->r,ps_match->g,ps_match->b);
-                        } else {
-                            addLabel(cx,cy,labelText.c_str(),70,&lv_font_montserrat_24,0x4A,0x7A,0xB0);
+                        } else if (z >= 12) { // noms de lacs : seulement à partir de z12
+                            addLabel(cx,cy,labelText.c_str(),70,&lv_font_montserrat_28,0x4A,0x7A,0xB0);
                         }
                     }
                 }
@@ -852,10 +877,10 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
                     void ring_begin(uint32_t){}void ring_point(vtzero::point){}void ring_end(vtzero::ring_type){}
                 } lm; lm.tileSz=sz;
                 vtzero::decode_linestring_geometry(feat.geometry(),lm);
-                if (lm.px.size()>=2) {
+                if (z >= 11 && lm.px.size()>=2) { // noms de rivières : à partir de z11
                     int mid=(int)lm.px.size()/2, cx=lm.px[mid], cy=lm.py[mid];
                     if (cx>4&&cx<sz-4&&cy>4&&cy<sz-4)
-                        addLabel(cx,cy,labelText.c_str(),60,&lv_font_montserrat_24,0x4A,0x7A,0xB0);
+                        addLabel(cx,cy,labelText.c_str(),60,&lv_font_montserrat_28,0x4A,0x7A,0xB0);
                 }
             } else if (isTransport && geom == vtzero::GeomType::LINESTRING && z >= 13) {
                 struct LineMid {
@@ -870,7 +895,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
                 if (lm.px.size()>=2) {
                     int mid=(int)lm.px.size()/2, cx=lm.px[mid], cy=lm.py[mid];
                     if (cx>4&&cx<sz-4&&cy>4&&cy<sz-4)
-                        addLabel(cx,cy,labelText.c_str(),80,&lv_font_montserrat_24,0x40,0x40,0x40);
+                        addLabel(cx,cy,labelText.c_str(),80,&lv_font_montserrat_28,0x40,0x40,0x40);
                 }
             }
         }
