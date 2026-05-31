@@ -453,7 +453,7 @@ struct PlaceStyle { const char *cls; int minZ; int prio; const lv_font_t *font; 
 static const PlaceStyle kPlaces[] = {
     {"city",    5,  10, &lv_font_montserrat_14, 0x33,0x22,0x21},
     {"town",    9,  20, &lv_font_montserrat_14, 0x33,0x22,0x21},
-    {"village", 12, 30, &lv_font_montserrat_12, 0x44,0x33,0x32},
+    {"village", 13, 30, &lv_font_montserrat_12, 0x44,0x33,0x32},
     {"hamlet",  14, 40, &lv_font_montserrat_12, 0x55,0x44,0x43},
     {"suburb",  13, 45, &lv_font_montserrat_12, 0x55,0x44,0x43},
     {"state",   4,  50, &lv_font_montserrat_14, 0x55,0x44,0x43},
@@ -803,10 +803,13 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
         // Le firmware (Tile-Generator-Pack) labellise : lieux (text_features),
         // cours d'eau (create_waterway_label) et refs de route majeure
         // (create_road_label : le numéro A/N/D, PAS le nom de rue).
-        bool isPlace = (name == "place"), isWater = (name == "water");
-        bool isWaterway = (name == "waterway");
+        // Source (process-aprs.lua) : noms d'eau dans water_name (rivières) et
+        // water_name_detail (canaux + lacs). La densité/min_zoom est gérée à la source.
+        bool isPlace = (name == "place");
+        bool isWaterName = (name == "water_name");
+        bool isWaterDetail = (name == "water_name_detail");
         bool isRoadName = (name == "transportation_name");
-        if (!isPlace && !isWater && !isWaterway && !isRoadName) continue;
+        if (!isPlace && !isWaterName && !isWaterDetail && !isRoadName) continue;
         while (auto feat = lay.next_feature()) {
             std::string labelText, nameLatin, cls, ref;
             while (auto prop = feat.next_property()) {
@@ -818,9 +821,10 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                 else if (prop.key() == "ref")        ref = val;
             }
             auto geom = feat.geometry_type();
+            bool isLake = isWaterDetail && cls == "lake";
 
             // --- Lieux + lac : centroïde du polygone/point ---
-            if ((isPlace || isWater) && (geom == vtzero::GeomType::POLYGON || geom == vtzero::GeomType::POINT)) {
+            if ((isPlace || isLake) && (geom == vtzero::GeomType::POLYGON || geom == vtzero::GeomType::POINT)) {
                 if (labelText.empty()) labelText = nameLatin;
                 if (labelText.empty()) continue;
                 struct LabelPos { int minX=99999,minY=99999,maxX=-99999,maxY=-99999,n=0,ts=0;
@@ -837,19 +841,15 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                     if (isPlace) {
                         for (auto &ps : kPlaces) if (cls==ps.cls && z>=ps.minZ) {
                             push(cx,cy,labelText,ps.prio,rtFont(ps.font),ps.r,ps.g,ps.b); break; }
-                    } else if (z >= 12) push(cx,cy,labelText,70,rtFont(&lv_font_montserrat_12),0x4A,0x7A,0xB0);
+                    } else push(cx,cy,labelText,70,rtFont(&lv_font_montserrat_12),0x4A,0x7A,0xB0);
                 }
             }
-            // --- Cours d'eau : nom le long de la ligne (sans fond), river=10/canal=12 ---
-            // Les ruisseaux (stream) et filets d'eau (ditch/drain) ne sont pas labellisés.
-            else if (isWaterway && geom == vtzero::GeomType::LINESTRING) {
+            // --- Cours d'eau (rivière=water_name, canal=water_name_detail) : nom le
+            // long du tracé, sans fond. min_zoom géré par la source.
+            else if ((isWaterName || (isWaterDetail && cls == "canal"))
+                     && geom == vtzero::GeomType::LINESTRING) {
                 if (labelText.empty()) labelText = nameLatin;
                 if (labelText.empty()) continue;
-                int minZ;
-                if      (cls == "river")  minZ = 10;
-                else if (cls == "canal")  minZ = 12;
-                else continue;
-                if (z < minZ) continue;
                 LineMid lm; lm.ts=sz;
                 vtzero::decode_linestring_geometry(feat.geometry(),lm);
                 if (lm.px.size()>=2) {
