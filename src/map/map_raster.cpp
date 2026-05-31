@@ -586,8 +586,10 @@ static void refreshMapLabels() {
   std::sort(all.begin(), all.end(), [](const SL &a, const SL &b) { return a.prio < b.prio; });
   struct Box { int x, y, w, h; };
   std::vector<Box> placed;
+  std::vector<std::string> seenText; // 1 seule étiquette par nom/ref à l'écran (anti-répétition inter-tuiles)
   for (auto &l : all) {
     if (mapLabelCount >= MAX_MAP_LABELS) break;
+    if (std::find(seenText.begin(), seenText.end(), l.text) != seenText.end()) continue;
     int h = l.font->line_height;
     int w = (int)(l.text.size() * h * 0.52f); // estimation largeur (évite l'API texte v8)
     int lx = l.x - w / 2, ly = l.y - h / 2;
@@ -618,6 +620,7 @@ static void refreshMapLabels() {
     mapLabelSry[mapLabelCount] = ly - oy0;
     mapLabels[mapLabelCount++] = lbl;
     placed.push_back({lx, ly, w, h});
+    seenText.push_back(l.text);
   }
 }
 
