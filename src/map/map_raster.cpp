@@ -589,11 +589,45 @@ static void refreshMapLabels() {
       int sx = dx * TILE_SIZE, sy = dy * TILE_SIZE;   // sprite coords, aligned with the tiles
       for (auto &l : tl) all.push_back({sx + l.px, sy + l.py, l.priority, l.text, l.r, l.g, l.b, l.font, l.angle, l.followLine, l.shield});
     }
+  // A river/road spans many tiles, producing one label per tile. Merge labels with the
+  // same name into a single stable one at the centroid of all its points; for waterways
+  // the orientation is the points' principal direction (PCA) so it doesn't jump or swap
+  // with a nearby river while panning.
+  {
+    std::vector<std::string> names;
+    std::vector<std::vector<lv_point_t>> groups;
+    std::vector<SL> metas;
+    for (auto &l : all) {
+      int idx = -1;
+      for (size_t i = 0; i < names.size(); i++) if (names[i] == l.text) { idx = (int)i; break; }
+      if (idx < 0) { names.push_back(l.text); groups.push_back({}); metas.push_back(l); idx = (int)names.size() - 1; }
+      lv_point_t p; p.x = l.x; p.y = l.y;
+      groups[idx].push_back(p);
+      if (l.prio < metas[idx].prio) metas[idx] = l;
+    }
+    std::vector<SL> mg;
+    for (size_t i = 0; i < names.size(); i++) {
+      auto &pts = groups[i];
+      double cx = 0, cy = 0;
+      for (auto &p : pts) { cx += p.x; cy += p.y; }
+      cx /= pts.size(); cy /= pts.size();
+      SL s = metas[i];
+      s.x = (int)cx; s.y = (int)cy;
+      if (s.followLine && pts.size() >= 2) {
+        double sxx = 0, syy = 0, sxy = 0;
+        for (auto &p : pts) { double dx = p.x - cx, dy = p.y - cy; sxx += dx*dx; syy += dy*dy; sxy += dx*dy; }
+        double ang = 0.5 * atan2(2.0 * sxy, sxx - syy) * 57.2957795;  // rad -> deg
+        if (ang > 90) ang -= 180; else if (ang < -90) ang += 180;
+        s.angle = (int)ang;
+      }
+      mg.push_back(s);
+    }
+    all.swap(mg);
+  }
   std::sort(all.begin(), all.end(), [](const SL &a, const SL &b) { return a.prio < b.prio; });
 
   struct Box { int x, y, w, h; };
   std::vector<Box> placed;
-  std::vector<std::string> seenText; // one label per name/ref on screen (avoids cross-tile repeats)
 
   lv_layer_t layer;
   lv_canvas_init_layer(labelCanvas, &layer);
@@ -612,7 +646,6 @@ static void refreshMapLabels() {
   };
 
   for (auto &l : all) {
-    if (std::find(seenText.begin(), seenText.end(), l.text) != seenText.end()) continue;
     int h = l.font->line_height;
     int w = (int)(l.text.size() * h * 0.55f) + 6;
     int lx = l.x - w / 2, ly = l.y - h / 2;
@@ -656,7 +689,6 @@ static void refreshMapLabels() {
       drawHalo(&layer, l.text.c_str(), l.font, lx, ly, w, h, l.r, l.g, l.b);
     }
     placed.push_back({lx, ly, w, h});
-    seenText.push_back(l.text);
   }
 
   lv_canvas_finish_layer(labelCanvas, &layer);
