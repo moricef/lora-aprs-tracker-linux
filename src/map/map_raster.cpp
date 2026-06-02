@@ -8,6 +8,7 @@
 #include "map/map_io.h"
 #include "map/map_markers.h"
 #include "map/map_state.h"
+#include "map/map_traces.h"
 #include "map_vector.h"
 #include "gps_utils.h"
 #include "station_utils.h"
@@ -37,12 +38,6 @@ static bool panActive = false;
 static float velX = 0.0f, velY = 0.0f;
 static uint32_t dragLastMs = 0;
 static lv_timer_t *mapTimer = nullptr;
-
-// Own trace ring buffer (same as firmware TracePoint)
-#define OWN_TRACE_MAX 200
-static TracePoint ownTrace[OWN_TRACE_MAX];
-static int ownTraceCount = 0;
-static int ownTraceHead = 0;
 
 // LVGL objects
 static lv_obj_t *titleLabel = nullptr;
@@ -214,124 +209,8 @@ static void refreshMapLabels() {
   lv_obj_invalidate(labelCanvas);
 }
 
-// Trace canvas overlay for station movement lines
-static lv_obj_t *traceCanvas = nullptr;
-static uint8_t *traceBuf = nullptr;
-#define TRACE_CANVAS_W SPRITE_SIZE
-#define TRACE_CANVAS_H 600
-
-static inline void traceSetPx(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
-    if (x < 0 || x >= TRACE_CANVAS_W || y < 0 || y >= TRACE_CANVAS_H) return;
-    uint8_t *p = traceBuf + (y * TRACE_CANVAS_W + x) * 4;
-    p[0] = b; p[1] = g; p[2] = r; p[3] = 0xFF;
-}
-
-static void traceDrawLine(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b) {
-    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy;
-    while (true) {
-        traceSetPx(x0, y0, r, g, b);
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
-        if (e2 >= dy) { err += dy; x0 += sx; }
-        if (e2 <= dx) { err += dx; y0 += sy; }
-    }
-}
-
-static void drawTraces() {
-    if (!traceBuf) return;
-    // Clear buffer (transparent)
-    memset(traceBuf, 0, TRACE_CANVAS_W * TRACE_CANVAS_H * 4);
-
-    uint32_t now = millis();
-    for (int s = 0; s < MAP_STATIONS_MAX; s++) {
-        MapStation *st = STATION_Utils::getMapStation(s);
-        if (!st || !st->valid || st->traceCount < 2) continue;
-
-        int prevSX = INT_MIN, prevSY = INT_MIN;
-        bool firstPt = true;
-        for (int i = 0; i < st->traceCount; i++) {
-            int idx = (st->traceHead - st->traceCount + i + TRACE_MAX_POINTS) % TRACE_MAX_POINTS;
-            uint32_t age = now - st->trace[idx].time;
-            if (age > 3600000) continue; // TTL 1h
-            int sx, sy;
-            MapMath::latLonToPixel(st->trace[idx].lat, st->trace[idx].lon,
-                                   centerLat, centerLon, zoom, true,
-                                   centerTX, centerTY, &sx, &sy);
-            if (!firstPt)
-                traceDrawLine(prevSX, prevSY, sx, sy, 0x00, 0x55, 0xFF);
-            prevSX = sx; prevSY = sy;
-            firstPt = false;
-        }
-        // Line to current position
-        int cx, cy;
-        MapMath::latLonToPixel(st->latitude, st->longitude,
-                               centerLat, centerLon, zoom, true,
-                               centerTX, centerTY, &cx, &cy);
-        if (!firstPt)
-            traceDrawLine(prevSX, prevSY, cx, cy, 0x00, 0x55, 0xFF);
-    }
-    if (traceCanvas && lv_obj_is_valid(traceCanvas))
-        lv_obj_invalidate(traceCanvas);
-}
-
-// Own trace rendering — purple, same as firmware (0x9933FF)
-static void drawOwnTrace() {
-    if (!traceBuf || ownTraceCount < 2) return;
-    uint32_t now = millis();
-    int prevSX = INT_MIN, prevSY = INT_MIN;
-    bool firstPt = true;
-    // Pixel skip threshold (same as firmware)
-    int minDist2 = 0;
-    if (zoom <= 10)      minDist2 = 144;
-    else if (zoom <= 12) minDist2 = 36;
-    else if (zoom <= 14) minDist2 = 9;
-
-    for (int i = 0; i < ownTraceCount; i++) {
-        int idx = (ownTraceHead - ownTraceCount + i + OWN_TRACE_MAX) % OWN_TRACE_MAX;
-        if (now - ownTrace[idx].time > 3600000) continue; // 1h TTL
-        int sx, sy;
-        MapMath::latLonToPixel(ownTrace[idx].lat, ownTrace[idx].lon,
-                               centerLat, centerLon, zoom, true,
-                               centerTX, centerTY, &sx, &sy);
-        if (!firstPt) {
-            int dx = sx - prevSX, dy = sy - prevSY;
-            if (minDist2 == 0 || dx*dx + dy*dy >= minDist2)
-                traceDrawLine(prevSX, prevSY, sx, sy, 0x99, 0x33, 0xFF);
-        }
-        prevSX = sx; prevSY = sy;
-        firstPt = false;
-    }
-    // Line to current GPS position
-    if (gpsLat != 0.0 || gpsLon != 0.0) {
-        int cx, cy;
-        MapMath::latLonToPixel((float)gpsLat, (float)gpsLon,
-                               centerLat, centerLon, zoom, true,
-                               centerTX, centerTY, &cx, &cy);
-        if (!firstPt)
-            traceDrawLine(prevSX, prevSY, cx, cy, 0x99, 0x33, 0xFF);
-    }
-    if (traceCanvas && lv_obj_is_valid(traceCanvas))
-        lv_obj_invalidate(traceCanvas);
-}
-
-// Record own GPS position in ring buffer (threshold ~10m)
-static void recordOwnTrace() {
-    if (gpsLat == 0.0 && gpsLon == 0.0) return;
-    if (ownTraceCount > 0) {
-        int lastIdx = (ownTraceHead - 1 + OWN_TRACE_MAX) % OWN_TRACE_MAX;
-        float dlat = (float)(gpsLat - ownTrace[lastIdx].lat);
-        float dlon = (float)(gpsLon - ownTrace[lastIdx].lon);
-        if (dlat*dlat + dlon*dlon < 0.000001f) return; // ~10m threshold
-    }
-    ownTrace[ownTraceHead] = {(float)gpsLat, (float)gpsLon, millis()};
-    ownTraceHead = (ownTraceHead + 1) % OWN_TRACE_MAX;
-    if (ownTraceCount < OWN_TRACE_MAX) ownTraceCount++;
-}
 
 static void reloadTiles();  // fwd
-static void reposTraceCanvas(); // fwd
 static void repositionAll();  // fwd, defined after fullscreenMap
 
 // 50ms timer — inertia, GPS follow, periodic station refresh (firmware: map_refresh_timer_cb)
@@ -400,7 +279,6 @@ static void mapTimerCb(lv_timer_t *) {
     }
 }
 
-static void reposTraceCanvas(); // fwd
 
 static void reloadTiles() {
   for (int dy = 0; dy < GRID; dy++) {
@@ -461,12 +339,11 @@ static void reloadTiles() {
              mapStationsCount);
     lv_label_set_text(infoLabel, ib);
   }
-  drawTraces();
-  drawOwnTrace();
-  reposTraceCanvas();
+  MapTraces::redraw();
+  MapTraces::reposition();
   refreshMapLabels();
   // Keep overlays above the (re)created vector tile canvases; markers go on top next.
-  if (traceCanvas) lv_obj_move_foreground(traceCanvas);
+  MapTraces::moveToForeground();
   if (labelCanvas) lv_obj_move_foreground(labelCanvas);
   MapMarkers::createMarkers();
   setPosition(gpsLat, gpsLon);
@@ -478,7 +355,7 @@ static void reloadTiles() {
 void setPosition(double lat, double lon) {
   gpsLat = lat;
   gpsLon = lon;
-  recordOwnTrace();
+  MapTraces::recordOwnPosition();
   if (!mapActive || !mapCont)
     return;
   // Cheap path: move the existing own-marker in place. Fall back to a full
@@ -550,10 +427,7 @@ static void backCb(lv_event_t *) {
   if (tmpLabelCanvas && lv_obj_is_valid(tmpLabelCanvas)) lv_obj_del(tmpLabelCanvas);
   tmpLabelCanvas = nullptr;
   if (tmpLabelBuf) { lv_free(tmpLabelBuf); tmpLabelBuf = nullptr; }
-  // Free trace canvas
-  if (traceCanvas && lv_obj_is_valid(traceCanvas)) lv_obj_del(traceCanvas);
-  traceCanvas = nullptr;
-  if (traceBuf) { lv_free(traceBuf); traceBuf = nullptr; }
+  MapTraces::destroy();
   // Free vector canvases
   for (int dy = 0; dy < GRID; dy++)
     for (int dx = 0; dx < GRID; dx++) {
@@ -575,15 +449,6 @@ static void zoomCb(lv_event_t *e) {
   if (d > 0) zoomIn(); else zoomOut();
 }
 
-static void reposTraceCanvas() {
-    if (!traceCanvas || !lv_obj_is_valid(traceCanvas)) return;
-    int mapH = fullscreenMap ? 600 : MAP_H;
-    lv_obj_set_pos(traceCanvas,
-                   (CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
-                   (mapH - SPRITE_SIZE) / 2 + dragAccumY);
-    lv_obj_set_size(traceCanvas, TRACE_CANVAS_W, mapH);
-}
-
 // Reposition tile grid + trace canvas + markers without reloading tiles
 static void repositionAll() {
     int mapH = fullscreenMap ? 600 : MAP_H;
@@ -594,7 +459,7 @@ static void repositionAll() {
             lv_obj_set_pos(tileImg[dy2][dx2], tx, ty);
             if (vecCanvas[dy2][dx2]) lv_obj_set_pos(vecCanvas[dy2][dx2], tx, ty);
         }
-    reposTraceCanvas();
+    MapTraces::reposition();
     MapMarkers::updateMarkerPositions();
     repositionMapLabels((CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
                         (mapH - SPRITE_SIZE) / 2 + dragAccumY);
@@ -624,7 +489,7 @@ static void toggleMapFullscreen() {
                      (fullscreenMap ? (600 - SPRITE_SIZE) / 2
                                     : (MAP_H - SPRITE_SIZE) / 2) +
                          dy * TILE_SIZE + dragAccumY);
-  reposTraceCanvas();
+  MapTraces::reposition();
   MapMarkers::updateMarkerPositions();
 }
 
@@ -711,7 +576,7 @@ static void mapTouchCB(lv_event_t *e) {
       }
 
     MapMarkers::updateMarkerPositions();
-    reposTraceCanvas();
+    MapTraces::reposition();
     // Labels use the same offset as the tiles, otherwise they lag during pan.
     repositionMapLabels((CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
                         (MAP_H - SPRITE_SIZE) / 2 + dragAccumY);
@@ -935,12 +800,7 @@ lv_obj_t *create(lv_obj_t *) {
     }
 
   // Trace canvas overlay for station movement lines
-  traceBuf = (uint8_t *)lv_malloc(LV_CANVAS_BUF_SIZE(TRACE_CANVAS_W, TRACE_CANVAS_H, 32, LV_DRAW_BUF_STRIDE_ALIGN));
-  traceCanvas = lv_canvas_create(mapCont);
-  lv_canvas_set_buffer(traceCanvas, traceBuf, TRACE_CANVAS_W, TRACE_CANVAS_H, LV_COLOR_FORMAT_ARGB8888);
-  lv_obj_set_pos(traceCanvas, (CONT_W - SPRITE_SIZE) / 2, (MAP_H - SPRITE_SIZE) / 2);
-  lv_obj_set_size(traceCanvas, TRACE_CANVAS_W, MAP_H);
-  lv_obj_clear_flag(traceCanvas, LV_OBJ_FLAG_CLICKABLE);
+  MapTraces::create(mapCont);
 
   // Label overlay (single sprite-sized canvas, panned with the tiles)
   labelBuf = (uint8_t *)lv_malloc(LV_CANVAS_BUF_SIZE(LABEL_CANVAS_W, LABEL_CANVAS_H, 32, LV_DRAW_BUF_STRIDE_ALIGN));
