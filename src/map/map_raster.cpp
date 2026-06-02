@@ -5,6 +5,7 @@
 #include "configuration.h"
 #include "gps_math.h"
 #include "map_coordinate_math.h"
+#include "map/map_io.h"
 #include "map/map_state.h"
 #include "map_vector.h"
 #include "gps_utils.h"
@@ -66,151 +67,7 @@ static int markerCount = 0;
 // Station info popup
 static lv_obj_t *stationPopup = nullptr;
 
-// ============================================================
-// Region / zoom discovery (same logic as ESP32 map_tiles)
-// ============================================================
-static const char *mapsRoot() {
-  static char root[256];
-  if (root[0])
-    return root;
-  const char *candidates[] = {
-      "/home/fab2/Developpement/LoRa_APRS/SDCARD/TILES/LoRa_Tracker/Maps",
-      "/media/fab2/TILES/LoRa_Tracker/Maps", "/data/LoRa_Tracker/Maps", NULL};
-  for (int i = 0; candidates[i]; i++) {
-    struct stat st;
-    if (stat(candidates[i], &st) == 0) {
-      strncpy(root, candidates[i], sizeof(root) - 1);
-      return root;
-    }
-  }
-  return NULL;
-}
-
-static void discoverRegion() {
-  if (mapRegion[0])
-    return;
-  const char *root = mapsRoot();
-  if (!root)
-    return;
-  DIR *d = opendir(root);
-  if (!d)
-    return;
-  struct dirent *e;
-  while ((e = readdir(d))) {
-    if (e->d_type == DT_DIR && e->d_name[0] != '.') {
-      strncpy(mapRegion, e->d_name, sizeof(mapRegion) - 1);
-      break;
-    }
-  }
-  closedir(d);
-}
-
-static void discoverZooms() {
-  if (!mapRegion[0]) {
-    discoverRegion();
-    if (!mapRegion[0])
-      return;
-  }
-  char zpath[512];
-  snprintf(zpath, sizeof(zpath), "%s/%s", mapsRoot(), mapRegion);
-  DIR *d = opendir(zpath);
-  if (!d)
-    return;
-  struct dirent *e;
-  int zMin = INT_MAX, zMax = INT_MIN;
-  while ((e = readdir(d))) {
-    if (e->d_type == DT_DIR && e->d_name[0] != '.') {
-      int z = atoi(e->d_name);
-      if (z > 0 && z < 20) {
-        if (z < zMin)
-          zMin = z;
-        if (z > zMax)
-          zMax = z;
-      }
-    }
-  }
-  closedir(d);
-  if (zMin <= zMax) {
-    zoomMin = (zMin < 7) ? 7 : zMin;
-    zoomMax = zMax;
-    zoom = zMax;
-  }
-  // Extend max zoom to include vector tiles if available
-  if (MapVector::isOpen()) {
-    int vMax = MapVector::maxZoom();
-    int vMin = MapVector::minZoom();
-    if (vMax > zoomMax)
-      zoomMax = vMax;
-    if (vMin < zoomMin || zoomMin == INT_MAX)
-      zoomMin = vMin;
-  }
-}
-
-static void discoverDefaultPosition() {
-  if (!mapRegion[0])
-    return;
-  char zpath[512];
-  snprintf(zpath, sizeof(zpath), "%s/%s/%d", mapsRoot(), mapRegion, 6);
-  DIR *zd = opendir(zpath);
-  if (!zd)
-    return;
-  int xMin = INT_MAX, xMax = INT_MIN, yMin = INT_MAX, yMax = INT_MIN;
-  struct dirent *xe;
-  while ((xe = readdir(zd))) {
-    if (xe->d_type != DT_DIR || xe->d_name[0] == '.')
-      continue;
-    int tx = atoi(xe->d_name);
-    char xpath[600];
-    snprintf(xpath, sizeof(xpath), "%s/%s", zpath, xe->d_name);
-    DIR *xd = opendir(xpath);
-    if (!xd)
-      continue;
-    struct dirent *ye;
-    while ((ye = readdir(xd))) {
-      if (ye->d_type != DT_REG)
-        continue;
-      char base[64];
-      strncpy(base, ye->d_name, sizeof(base) - 1);
-      base[sizeof(base) - 1] = 0;
-      char *dot = strrchr(base, '.');
-      if (dot)
-        *dot = 0;
-      int ty = atoi(base);
-      if (tx < xMin)
-        xMin = tx;
-      if (tx > xMax)
-        xMax = tx;
-      if (ty < yMin)
-        yMin = ty;
-      if (ty > yMax)
-        yMax = ty;
-    }
-    closedir(xd);
-  }
-  closedir(zd);
-  if (xMin <= xMax && yMin <= yMax)
-    MapMath::tileToLatLon((xMin + xMax) / 2, (yMin + yMax) / 2, 6,
-                          (float *)&centerLat, (float *)&centerLon);
-}
-
-// ---- Tuiles ----
-static uint32_t notFoundCache[128];
-static int notFoundIdx = 0;
-static bool tileExists(int tx, int ty, int z) {
-  uint32_t key = ((uint32_t)z << 24) | ((uint32_t)(tx & 0xFFF) << 12) |
-                 (uint32_t)(ty & 0xFFF);
-  for (int i = 0; i < 128; i++)
-    if (notFoundCache[i] == key)
-      return false;
-  char p[512];
-  snprintf(p, sizeof(p), "%s/%s/%d/%d/%d.jpg", mapsRoot(), mapRegion, z, tx,
-           ty);
-  struct stat st;
-  if (stat(p, &st) == 0)
-    return true;
-  notFoundCache[notFoundIdx++ % 128] = key;
-  return false;
-}
+// Region / zoom discovery + tile existence lookup live in map_io.cpp.
 
 // ============================================================
 // Sprite to container coordinate conversion (for marker placement)
@@ -332,39 +189,6 @@ static void show_station_popup(int stationIdx) {
 static void deleteMarkers(); // forward decl
 
 // ============================================================
-// APRS icons — loaded from split PNG files (sd_card)
-// ============================================================
-static const char *symbolsRoot() {
-  static char root[256];
-  if (root[0])
-    return root;
-  const char *candidates[] = {"/home/fab2/Developpement/LoRa_APRS/aprs-symbols/"
-                              "sd_card/LoRa_Tracker/Symbols",
-                              "/media/fab2/TILES/LoRa_Tracker/Symbols",
-                              "/data/LoRa_Tracker/Symbols", NULL};
-  for (int i = 0; candidates[i]; i++) {
-    struct stat st;
-    if (stat(candidates[i], &st) == 0) {
-      strncpy(root, candidates[i], sizeof(root) - 1);
-      return root;
-    }
-  }
-  return NULL;
-}
-
-// Remplit `path` (taille pathsz) avec le chemin LVGL "A:/..." vers le PNG du
-// symbole table = '/' (primary) ou '\\' (alternate), symbol = char APRS (ex:
-// '-', '>', '[')
-static bool getSymbolPath(char table, char symbol, char *path, size_t pathsz) {
-  const char *root = symbolsRoot();
-  if (!root)
-    return false;
-  const char *tableName = (table == '/') ? "primary" : "alternate";
-  snprintf(path, pathsz, "A:%s/%s/%02X.png", root, tableName, (uint8_t)symbol);
-  return true;
-}
-
-// ============================================================
 // Gestion des marqueurs stations (LVGL objects dans mapCont)
 // ============================================================
 
@@ -401,7 +225,7 @@ static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
 
   // APRS icon or fallback disc
   char iconPath[320];
-  if (sym != '\0' && getSymbolPath(table, sym, iconPath, sizeof(iconPath))) {
+  if (sym != '\0' && MapIO::getSymbolPath(table, sym, iconPath, sizeof(iconPath))) {
     lv_obj_t *img = lv_image_create(m);
     lv_image_set_src(img, iconPath);
     lv_obj_align(img, LV_ALIGN_TOP_MID, 0, 0);
@@ -917,9 +741,9 @@ static void reloadTiles() {
                        (CONT_W - SPRITE_SIZE) / 2 + dx * TILE_SIZE + dragAccumX,
                        (MAP_H - SPRITE_SIZE) / 2 + dy * TILE_SIZE + dragAccumY);
         char p[512];
-        snprintf(p, sizeof(p), "A:%s/%s/%d/%d/%d.jpg", mapsRoot(), mapRegion,
-                 zoom, tx, ty);
-        if (tileExists(tx, ty, zoom))
+        snprintf(p, sizeof(p), "A:%s/%s/%d/%d/%d.jpg", MapIO::mapsRoot(),
+                 mapRegion, zoom, tx, ty);
+        if (MapIO::tileExists(tx, ty, zoom))
           lv_image_set_src(tileImg[dy][dx], p);
         else
           lv_image_set_src(tileImg[dy][dx], LV_SYMBOL_IMAGE);
@@ -1251,9 +1075,9 @@ static void mapTouchCB(lv_event_t *e) {
 // Create map screen
 // ============================================================
 lv_obj_t *create(lv_obj_t *) {
-  discoverRegion();
-  discoverZooms();
-  discoverDefaultPosition();
+  MapIO::discoverRegion();
+  MapIO::discoverZooms();
+  MapIO::discoverDefaultPosition();
   MapVector::initLabelFonts();   // accented label font (OpenSans-Bold)
 
   lv_obj_t *scr = lv_obj_create(NULL);
