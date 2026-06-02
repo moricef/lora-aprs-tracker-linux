@@ -5,6 +5,7 @@
 #include "configuration.h"
 #include "gps_math.h"
 #include "map_coordinate_math.h"
+#include "map/map_state.h"
 #include "map_vector.h"
 #include "gps_utils.h"
 #include "station_utils.h"
@@ -23,26 +24,20 @@ extern uint8_t myBeaconsIndex;
 
 namespace MapRaster {
 
+using namespace MapState;
+
 #define TILE_SIZE 256
 #define GRID 5 // 5x5: covers map area with margin for preloading
 #define SPRITE_SIZE (GRID * TILE_SIZE) // 1280
 #define CONT_W 1024
-#define MAP_H (600 - 45 - 30) // 530  (below 45px titlebar, above 30px infobar)
+#define MAP_H (600 - 45 - 30) // 525  (below 45px titlebar, above 30px infobar)
 
 // ---- Tile state ----
 static lv_obj_t *tileImg[GRID][GRID];
-static char tileDir[256] = "", mapRegion[64] = "";
-static double centerLat = 42.96, centerLon = 1.37;
-static double gpsLat = 0.0, gpsLon = 0.0; // 0,0 = pas de fix GPS
-static int zoom = 7, centerTX = 0, centerTY = 0;
-static int zoomMin = 6, zoomMax = 8;
-static bool mapActive = false;
 
-// Pan state + inertia
+// Pan state + inertia (touch-specific, will move to map_input later)
 static lv_point_t dragLast;
-static int dragAccumX = 0, dragAccumY = 0;
 static bool panActive = false;
-static bool mapFollowGps = true;  // firmware default: follow GPS on map open
 static float velX = 0.0f, velY = 0.0f;
 static uint32_t dragLastMs = 0;
 static lv_timer_t *mapTimer = nullptr;
@@ -548,7 +543,6 @@ static uint8_t *vecBuf[GRID][GRID];
 #include <vector>
 #include <algorithm>
 #include <cstring>
-static bool fullscreenMap = false;
 static lv_obj_t *labelCanvas = nullptr;
 static uint8_t *labelBuf = nullptr;
 #define LABEL_CANVAS_W SPRITE_SIZE
