@@ -52,7 +52,7 @@ ifdef WITH_DISPLAY
   SRCS += src/map/map_raster.cpp src/map/map_vector.cpp
   SRCS += src/map/map_coordinate_math.cpp src/map/map_state.cpp
   SRCS += src/map/map_io.cpp src/map/map_markers.cpp src/map/map_traces.cpp
-  SRCS += src/map/map_labels.cpp
+  SRCS += src/map/map_labels.cpp src/map/map_engine.cpp
   SRCS += src/lora_aprs_logo.c
   SRCS += src/lv_font_mono_16.c src/lv_font_mono_18.c src/lv_font_mono_20.c src/lv_font_mono_22.c src/lv_font_mono_24.c src/mouse_cursor_icon.c
 

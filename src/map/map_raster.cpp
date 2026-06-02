@@ -8,6 +8,7 @@
 #include "map/map_io.h"
 #include "map/map_markers.h"
 #include "map/map_state.h"
+#include "map/map_engine.h"
 #include "map/map_labels.h"
 #include "map/map_traces.h"
 #include "map_vector.h"
@@ -30,13 +31,8 @@ namespace MapRaster {
 
 using namespace MapState;
 
-// ---- Tile state ----
-static lv_obj_t *tileImg[GRID][GRID];
-
-// Pan state + inertia (touch-specific, will move to map_input later)
+// Tile grid / inertia state lives in map_engine.cpp.
 static lv_point_t dragLast;
-static bool panActive = false;
-static float velX = 0.0f, velY = 0.0f;
 static uint32_t dragLastMs = 0;
 static lv_timer_t *mapTimer = nullptr;
 
@@ -50,154 +46,8 @@ static lv_obj_t *btnRecenter = nullptr;
 // Region / zoom discovery + tile existence lookup live in map_io.cpp.
 
 
-// ============================================================
-// Rechargement des tuiles + marqueurs
-// ============================================================
-// Canvas pour le rendu vectoriel (taille = TILE_SIZE)
-static lv_obj_t *vecCanvas[GRID][GRID];
-static int vecLastZ[GRID][GRID], vecLastTX[GRID][GRID], vecLastTY[GRID][GRID];
-static uint8_t *vecBuf[GRID][GRID];
-
+// Tile reload + zoom + inertia/follow timer live in map_engine.cpp.
 // Label overlay lives in map_labels.cpp.
-
-static void reloadTiles();  // fwd
-static void repositionAll();  // fwd, defined after fullscreenMap
-
-// 50ms timer — inertia, GPS follow, periodic station refresh (firmware: map_refresh_timer_cb)
-static void mapTimerCb(lv_timer_t *) {
-    if (!mapActive || !mapCont) return;
-
-    // Inertia — apply momentum when finger is off screen
-    if (!panActive && (velX != 0.0f || velY != 0.0f)) {
-        static uint32_t lastInertiaMs = 0;
-        uint32_t now = millis();
-        uint32_t dt = (lastInertiaMs > 0) ? (now - lastInertiaMs) : 0;
-        lastInertiaMs = now;
-        if (dt > 0 && dt < 100) {
-            float friction = 0.85f;
-            int dx = (int)(velX * (float)dt);
-            int dy = (int)(velY * (float)dt);
-            dragAccumX += dx;
-            dragAccumY += dy;
-
-            static int lastCTx = 0, lastCTy = 0;
-            while (dragAccumX >= TILE_SIZE) { dragAccumX -= TILE_SIZE; centerTX--; }
-            while (dragAccumX <= -TILE_SIZE) { dragAccumX += TILE_SIZE; centerTX++; }
-            while (dragAccumY >= TILE_SIZE) { dragAccumY -= TILE_SIZE; centerTY--; }
-            while (dragAccumY <= -TILE_SIZE) { dragAccumY += TILE_SIZE; centerTY++; }
-            repositionAll();
-
-            if (centerTX != lastCTx || centerTY != lastCTy) {
-                lastCTx = centerTX; lastCTy = centerTY;
-                MapMath::tileToLatLon(centerTX, centerTY, zoom, (float *)&centerLat, (float *)&centerLon);
-                reloadTiles();
-            }
-
-            velX *= friction;
-            velY *= friction;
-            if (fabsf(velX) < 0.01f) velX = 0.0f;
-            if (fabsf(velY) < 0.01f) velY = 0.0f;
-        }
-    }
-
-    // GPS follow — recenter if following and GPS moved
-    static int lastCenterTxGPS = 0, lastCenterTyGPS = 0;
-    if (mapFollowGps && (gpsLat != 0.0 || gpsLon != 0.0)) {
-        int gpsTX, gpsTY;
-        MapMath::latLonToTile((float)gpsLat, (float)gpsLon, zoom, &gpsTX, &gpsTY);
-        if (gpsTX != lastCenterTxGPS || gpsTY != lastCenterTyGPS) {
-            centerTX = lastCenterTxGPS = gpsTX;
-            centerTY = lastCenterTyGPS = gpsTY;
-            centerLat = gpsLat; centerLon = gpsLon;
-            int spriteX, spriteY;
-            MapMath::latLonToPixel((float)gpsLat, (float)gpsLon,
-                                   (float)gpsLat, (float)gpsLon,
-                                   zoom, true, centerTX, centerTY, &spriteX, &spriteY);
-            dragAccumX = SPRITE_SIZE / 2 - spriteX;
-            dragAccumY = SPRITE_SIZE / 2 - spriteY;
-            velX = velY = 0.0f;
-            reloadTiles();
-        }
-    }
-
-    // Periodic station refresh (~10s)
-    static uint16_t tickCounter = 0;
-    if (++tickCounter >= 200) {
-        tickCounter = 0;
-        STATION_Utils::cleanOldMapStations();
-        if (!panActive) MapMarkers::createMarkers();
-    }
-}
-
-
-static void reloadTiles() {
-  for (int dy = 0; dy < GRID; dy++) {
-    for (int dx = 0; dx < GRID; dx++) {
-      int tx = centerTX + dx - GRID / 2, ty = centerTY + dy - GRID / 2;
-      // Vector tile if zoom >= 9, raster otherwise
-      if (zoom >= 9 && MapVector::isOpen()) {
-        // Hide raster, show vector canvas
-        lv_obj_add_flag(tileImg[dy][dx], LV_OBJ_FLAG_HIDDEN);
-        if (!vecCanvas[dy][dx]) {
-          vecCanvas[dy][dx] = lv_canvas_create(mapCont);
-          vecBuf[dy][dx] = (uint8_t *)lv_malloc(LV_CANVAS_BUF_SIZE(
-              TILE_SIZE, TILE_SIZE, 32, LV_DRAW_BUF_STRIDE_ALIGN));
-          lv_canvas_set_buffer(vecCanvas[dy][dx], vecBuf[dy][dx], TILE_SIZE,
-                               TILE_SIZE, LV_COLOR_FORMAT_ARGB8888);
-        }
-        lv_obj_clear_flag(vecCanvas[dy][dx], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(vecCanvas[dy][dx],
-                       (CONT_W - SPRITE_SIZE) / 2 + dx * TILE_SIZE + dragAccumX,
-                       (MAP_H - SPRITE_SIZE) / 2 + dy * TILE_SIZE + dragAccumY);
-        lv_obj_set_size(vecCanvas[dy][dx], TILE_SIZE, TILE_SIZE);
-        // Cache: skip re-render if same tile as last time
-        if (vecLastZ[dy][dx] != zoom || vecLastTX[dy][dx] != tx || vecLastTY[dy][dx] != ty) {
-          if (!MapVector::renderTile(vecCanvas[dy][dx], zoom, tx, ty, TILE_SIZE)) {
-            // Tile not in cache — queue async render for next time
-            MapVector::requestTile(zoom, tx, ty);
-          }
-          vecLastZ[dy][dx]  = zoom;
-          vecLastTX[dy][dx] = tx;
-          vecLastTY[dy][dx] = ty;
-        }
-      } else {
-        // Raster fallback
-        if (vecCanvas[dy][dx])
-          lv_obj_add_flag(vecCanvas[dy][dx], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(tileImg[dy][dx], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(tileImg[dy][dx],
-                       (CONT_W - SPRITE_SIZE) / 2 + dx * TILE_SIZE + dragAccumX,
-                       (MAP_H - SPRITE_SIZE) / 2 + dy * TILE_SIZE + dragAccumY);
-        char p[512];
-        snprintf(p, sizeof(p), "A:%s/%s/%d/%d/%d.jpg", MapIO::mapsRoot(),
-                 mapRegion, zoom, tx, ty);
-        if (MapIO::tileExists(tx, ty, zoom))
-          lv_image_set_src(tileImg[dy][dx], p);
-        else
-          lv_image_set_src(tileImg[dy][dx], LV_SYMBOL_IMAGE);
-      }
-    }
-  }
-  if (titleLabel) {
-    char z[16];
-    snprintf(z, sizeof(z), "MAP (Z%d)", zoom);
-    lv_label_set_text(titleLabel, z);
-  }
-  if (infoLabel) {
-    char ib[128];
-    snprintf(ib, sizeof(ib), "Lat:%.4f  Lon:%.4f  Stn:%d", centerLat, centerLon,
-             mapStationsCount);
-    lv_label_set_text(infoLabel, ib);
-  }
-  MapTraces::redraw();
-  MapTraces::reposition();
-  MapLabels::refresh();
-  // Keep overlays above the (re)created vector tile canvases; markers go on top next.
-  MapTraces::moveToForeground();
-  MapLabels::moveToForeground();
-  MapMarkers::createMarkers();
-  setPosition(gpsLat, gpsLon);
-}
 
 // ============================================================
 // API publique
@@ -215,50 +65,19 @@ void setPosition(double lat, double lon) {
     MapMarkers::createMarkers();
 }
 
-static void recenterForZoom(int newZoom) {
-    int spriteCX = MAP_SPRITE_SIZE / 2 - dragAccumX;
-    int spriteCY = MAP_SPRITE_SIZE / 2 - dragAccumY;
-    float lat, lon;
-    MapMath::pixelToLatLon(spriteCX, spriteCY, zoom, true,
-                           centerTX, centerTY, 0, 0, &lat, &lon);
-
-    MapMath::latLonToTile(lat, lon, newZoom, &centerTX, &centerTY);
-    centerLat = lat;
-    centerLon = lon;
-
-    // Sub-tile correction: lat/lon may not land at sprite pixel 640 (screen
-    // centre) after the tile index is truncated.  Absorb the offset into
-    // dragAccumX/Y so markers and tiles stay aligned.
-    int spriteX, spriteY;
-    MapMath::latLonToPixel(lat, lon, lat, lon, newZoom, true,
-                           centerTX, centerTY, &spriteX, &spriteY);
-    dragAccumX = MAP_SPRITE_SIZE / 2 - spriteX;
-    dragAccumY = MAP_SPRITE_SIZE / 2 - spriteY;
+void zoomIn() {
+  if (btnRecenter) lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), 0);
+  MapEngine::zoomIn();
 }
 
-void zoomIn() {
-  if (zoom < zoomMax) {
-    mapFollowGps = false;
-    if (btnRecenter) lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), 0);
-    recenterForZoom(zoom + 1);
-    zoom++;
-    if (mapActive) reloadTiles();
-  }
+void zoomOut() {
+  if (btnRecenter) lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), 0);
+  MapEngine::zoomOut();
 }
 
 void refreshStations() {
   if (mapActive && mapCont)
     MapMarkers::createMarkers();
-}
-
-void zoomOut() {
-  if (zoom > zoomMin) {
-    mapFollowGps = false;
-    if (btnRecenter) lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), 0);
-    recenterForZoom(zoom - 1);
-    zoom--;
-    if (mapActive) reloadTiles();
-  }
 }
 
 // ============================================================
@@ -271,18 +90,7 @@ static void backCb(lv_event_t *) {
   MapMarkers::deleteMarkers();
   MapLabels::destroy();
   MapTraces::destroy();
-  // Free vector canvases
-  for (int dy = 0; dy < GRID; dy++)
-    for (int dx = 0; dx < GRID; dx++) {
-      if (vecCanvas[dy][dx]) {
-        lv_obj_del(vecCanvas[dy][dx]);
-        vecCanvas[dy][dx] = nullptr;
-      }
-      if (vecBuf[dy][dx]) {
-        lv_free(vecBuf[dy][dx]);
-        vecBuf[dy][dx] = nullptr;
-      }
-    }
+  MapEngine::destroy();
   UIDashboard::returnToDashboard();
 }
 
@@ -292,21 +100,7 @@ static void zoomCb(lv_event_t *e) {
   if (d > 0) zoomIn(); else zoomOut();
 }
 
-// Reposition tile grid + trace canvas + markers without reloading tiles
-static void repositionAll() {
-    int mapH = fullscreenMap ? 600 : MAP_H;
-    for (int dy2 = 0; dy2 < GRID; dy2++)
-        for (int dx2 = 0; dx2 < GRID; dx2++) {
-            int tx = (CONT_W - SPRITE_SIZE) / 2 + dx2 * TILE_SIZE + dragAccumX;
-            int ty = (mapH - SPRITE_SIZE) / 2 + dy2 * TILE_SIZE + dragAccumY;
-            lv_obj_set_pos(tileImg[dy2][dx2], tx, ty);
-            if (vecCanvas[dy2][dx2]) lv_obj_set_pos(vecCanvas[dy2][dx2], tx, ty);
-        }
-    MapTraces::reposition();
-    MapMarkers::updateMarkerPositions();
-    MapLabels::reposition((CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
-                        (mapH - SPRITE_SIZE) / 2 + dragAccumY);
-}
+// Tile reposition lives in MapEngine::repositionAll().
 
 static lv_obj_t *tbarMap = nullptr;
 static lv_obj_t *ibarMap = nullptr;
@@ -324,16 +118,7 @@ static void toggleMapFullscreen() {
     lv_obj_set_size(mapCont, CONT_W, MAP_H);
     lv_obj_set_pos(mapCont, 0, 45);
   }
-  // Reposition tiles and markers
-  for (int dy = 0; dy < GRID; dy++)
-    for (int dx = 0; dx < GRID; dx++)
-      lv_obj_set_pos(tileImg[dy][dx],
-                     (CONT_W - SPRITE_SIZE) / 2 + dx * TILE_SIZE + dragAccumX,
-                     (fullscreenMap ? (600 - SPRITE_SIZE) / 2
-                                    : (MAP_H - SPRITE_SIZE) / 2) +
-                         dy * TILE_SIZE + dragAccumY);
-  MapTraces::reposition();
-  MapMarkers::updateMarkerPositions();
+  MapEngine::repositionAll();
 }
 
 static void mapTouchCB(lv_event_t *e) {
@@ -357,10 +142,10 @@ static void mapTouchCB(lv_event_t *e) {
     pressMs = millis();
     dragLast = p;
     dragLastMs = millis();
-    panActive = true;
-    velX = velY = 0.0f;
+    MapEngine::panActive = true;
+    MapEngine::velX = MapEngine::velY = 0.0f;
     MapMarkers::closeStationPopup();
-  } else if (code == LV_EVENT_PRESSING && panActive) {
+  } else if (code == LV_EVENT_PRESSING && MapEngine::panActive) {
     int dx = p.x - dragLast.x, dy = p.y - dragLast.y;
     uint32_t now = millis();
     uint32_t dt = now - dragLastMs;
@@ -380,8 +165,8 @@ static void mapTouchCB(lv_event_t *e) {
       float weight = 0.7f;
       float instVelX = (float)dx / (float)dt;
       float instVelY = (float)dy / (float)dt;
-      velX = velX * (1.0f - weight) + instVelX * weight;
-      velY = velY * (1.0f - weight) + instVelY * weight;
+      MapEngine::velX = MapEngine::velX * (1.0f - weight) + instVelX * weight;
+      MapEngine::velY = MapEngine::velY * (1.0f - weight) + instVelY * weight;
     }
 
     // Central tile offset
@@ -403,38 +188,20 @@ static void mapTouchCB(lv_event_t *e) {
       centerTY++;
     }
 
-    // Reposition tiles
-    for (int dy2 = 0; dy2 < GRID; dy2++)
-      for (int dx2 = 0; dx2 < GRID; dx2++) {
-        lv_obj_set_pos(
-            tileImg[dy2][dx2],
-            (CONT_W - SPRITE_SIZE) / 2 + dx2 * TILE_SIZE + dragAccumX,
-            (MAP_H - SPRITE_SIZE) / 2 + dy2 * TILE_SIZE + dragAccumY);
-        // Vector canvases follow the same position
-        if (vecCanvas[dy2][dx2])
-          lv_obj_set_pos(
-              vecCanvas[dy2][dx2],
-              (CONT_W - SPRITE_SIZE) / 2 + dx2 * TILE_SIZE + dragAccumX,
-              (MAP_H - SPRITE_SIZE) / 2 + dy2 * TILE_SIZE + dragAccumY);
-      }
-
-    MapMarkers::updateMarkerPositions();
-    MapTraces::reposition();
-    // Labels use the same offset as the tiles, otherwise they lag during pan.
-    MapLabels::reposition((CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
-                        (MAP_H - SPRITE_SIZE) / 2 + dragAccumY);
+    // Reposition tile grid + every overlay (engine knows the layout).
+    MapEngine::repositionAll();
 
     if (centerTX != lctx || centerTY != lcty) {
       lctx = centerTX;
       lcty = centerTY;
       MapMath::tileToLatLon(centerTX, centerTY, zoom, (float *)&centerLat,
                             (float *)&centerLon);
-      reloadTiles();
+      MapEngine::reloadTiles();
     }
   } else if (code == LV_EVENT_RELEASED) {
     int dx = p.x - pressPt.x, dy = p.y - pressPt.y;
-    bool wasPan = panActive && (abs(dx) > 10 || abs(dy) > 10);
-    panActive = false;
+    bool wasPan = MapEngine::panActive && (abs(dx) > 10 || abs(dy) > 10);
+    MapEngine::panActive = false;
 
     if (wasPan) {
       if (infoLabel) {
@@ -516,8 +283,8 @@ lv_obj_t *create(lv_obj_t *) {
                              zoom, true, centerTX, centerTY, &spriteX, &spriteY);
       dragAccumX = SPRITE_SIZE / 2 - spriteX;
       dragAccumY = SPRITE_SIZE / 2 - spriteY;
-      velX = velY = 0.0f;
-      reloadTiles();
+      MapEngine::velX = MapEngine::velY = 0.0f;
+      MapEngine::reloadTiles();
     }
   }, LV_EVENT_RELEASED, NULL);
   lv_obj_t *lblRec = lv_label_create(btnRecenter);
@@ -604,9 +371,9 @@ lv_obj_t *create(lv_obj_t *) {
 
   // Reset pan state
   dragAccumX = dragAccumY = 0;
-  panActive = false;
+  MapEngine::panActive = false;
   // Marker / popup state is reset implicitly by createMarkers() called from
-  // reloadTiles() at the end of this function.
+  // MapEngine::reloadTiles() at the end of this function.
 
   MapMath::latLonToTile(centerLat, centerLon, zoom, &centerTX, &centerTY);
 
@@ -632,15 +399,9 @@ lv_obj_t *create(lv_obj_t *) {
   lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_PRESSING, NULL);
   lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_RELEASED, NULL);
 
-  // Grille 3×3 de tuiles
-  for (int dy = 0; dy < GRID; dy++)
-    for (int dx = 0; dx < GRID; dx++) {
-      tileImg[dy][dx] = lv_image_create(mapCont);
-      lv_obj_set_size(tileImg[dy][dx], TILE_SIZE, TILE_SIZE);
-      lv_obj_set_pos(tileImg[dy][dx],
-                     (CONT_W - SPRITE_SIZE) / 2 + dx * TILE_SIZE,
-                     (MAP_H - SPRITE_SIZE) / 2 + dy * TILE_SIZE);
-    }
+  // Tile grid (5×5 raster + lazy vector canvases) owned by map_engine.
+  MapEngine::init(mapCont);
+  MapEngine::setLabels(titleLabel, infoLabel);
 
   // Trace canvas overlay for station movement lines
   MapTraces::create(mapCont);
@@ -649,10 +410,10 @@ lv_obj_t *create(lv_obj_t *) {
   MapLabels::create(mapCont);
 
   mapActive = true;
-  reloadTiles(); // load tiles + create station markers
+  MapEngine::reloadTiles(); // load tiles + create station markers
 
   // Start 50ms periodic timer (inertia, GPS follow, station refresh)
-  if (!mapTimer) mapTimer = lv_timer_create(mapTimerCb, 50, NULL);
+  if (!mapTimer) mapTimer = lv_timer_create([](lv_timer_t *) { MapEngine::timerTick(); }, 50, NULL);
 
   return scr;
 }
