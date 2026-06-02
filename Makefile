@@ -50,7 +50,7 @@ ifdef WITH_DISPLAY
   SRCS += src/ui_dashboard.cpp src/ui_messaging.cpp src/ui_settings.cpp
   SRCS += src/ui_popups.cpp src/thorvg_stubs.cpp
   SRCS += src/map/map_raster.cpp src/map/map_vector.cpp
-  SRCS += src/map/map_coordinate_math.cpp
+  SRCS += src/map/map_coordinate_math.cpp src/map/map_state.cpp
   SRCS += src/lora_aprs_logo.c
   SRCS += src/lv_font_mono_16.c src/lv_font_mono_18.c src/lv_font_mono_20.c src/lv_font_mono_22.c src/lv_font_mono_24.c src/mouse_cursor_icon.c
 
