@@ -9,6 +9,7 @@
 #include "map/map_markers.h"
 #include "map/map_state.h"
 #include "map/map_engine.h"
+#include "map/map_input.h"
 #include "map/map_labels.h"
 #include "map/map_traces.h"
 #include "map_vector.h"
@@ -31,9 +32,7 @@ namespace MapRaster {
 
 using namespace MapState;
 
-// Tile grid / inertia state lives in map_engine.cpp.
-static lv_point_t dragLast;
-static uint32_t dragLastMs = 0;
+// Tile grid + inertia in map_engine.cpp ; touch handler in map_input.cpp.
 static lv_timer_t *mapTimer = nullptr;
 
 // LVGL objects
@@ -105,7 +104,18 @@ static void zoomCb(lv_event_t *e) {
 static lv_obj_t *tbarMap = nullptr;
 static lv_obj_t *ibarMap = nullptr;
 
-static void toggleMapFullscreen() {
+} // namespace MapRaster
+
+namespace MapView {
+
+using namespace MapState;
+using MapRaster::tbarMap;
+using MapRaster::ibarMap;
+using MapRaster::mapCont;
+using MapRaster::btnRecenter;
+using MapRaster::infoLabel;
+
+void toggleFullscreen() {
   fullscreenMap = !fullscreenMap;
   if (fullscreenMap) {
     lv_obj_add_flag(tbarMap, LV_OBJ_FLAG_HIDDEN);
@@ -121,116 +131,23 @@ static void toggleMapFullscreen() {
   MapEngine::repositionAll();
 }
 
-static void mapTouchCB(lv_event_t *e) {
-  lv_event_code_t code = lv_event_get_code(e);
-  lv_indev_t *indev = lv_indev_get_act();
-  if (!indev) return;
-  lv_point_t p;
-  lv_indev_get_point(indev, &p);
-
-  // Track press start for manual hit-test on release
-  static lv_point_t pressPt;
-  static uint32_t  pressMs;
-
-  if (code == LV_EVENT_DOUBLE_CLICKED) {
-    toggleMapFullscreen();
-    return;
-  }
-
-  if (code == LV_EVENT_PRESSED) {
-    pressPt = p;
-    pressMs = millis();
-    dragLast = p;
-    dragLastMs = millis();
-    MapEngine::panActive = true;
-    MapEngine::velX = MapEngine::velY = 0.0f;
-    MapMarkers::closeStationPopup();
-  } else if (code == LV_EVENT_PRESSING && MapEngine::panActive) {
-    int dx = p.x - dragLast.x, dy = p.y - dragLast.y;
-    uint32_t now = millis();
-    uint32_t dt = now - dragLastMs;
-    dragLast = p;
-    dragLastMs = now;
-    dragAccumX += dx;
-    dragAccumY += dy;
-
-    // Disable GPS follow on drag (firmware behaviour)
-    if ((dx != 0 || dy != 0) && mapFollowGps) {
-      mapFollowGps = false;
-      if (btnRecenter) lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), 0);
-    }
-
-    // Track velocity for inertia — same sign convention as dragAccum (+dx = move right)
-    if (dt > 0) {
-      float weight = 0.7f;
-      float instVelX = (float)dx / (float)dt;
-      float instVelY = (float)dy / (float)dt;
-      MapEngine::velX = MapEngine::velX * (1.0f - weight) + instVelX * weight;
-      MapEngine::velY = MapEngine::velY * (1.0f - weight) + instVelY * weight;
-    }
-
-    // Central tile offset
-    static int lctx = 0, lcty = 0;
-    if (dragAccumX >= TILE_SIZE) {
-      dragAccumX -= TILE_SIZE;
-      centerTX--;
-    }
-    if (dragAccumX <= -TILE_SIZE) {
-      dragAccumX += TILE_SIZE;
-      centerTX++;
-    }
-    if (dragAccumY >= TILE_SIZE) {
-      dragAccumY -= TILE_SIZE;
-      centerTY--;
-    }
-    if (dragAccumY <= -TILE_SIZE) {
-      dragAccumY += TILE_SIZE;
-      centerTY++;
-    }
-
-    // Reposition tile grid + every overlay (engine knows the layout).
-    MapEngine::repositionAll();
-
-    if (centerTX != lctx || centerTY != lcty) {
-      lctx = centerTX;
-      lcty = centerTY;
-      MapMath::tileToLatLon(centerTX, centerTY, zoom, (float *)&centerLat,
-                            (float *)&centerLon);
-      MapEngine::reloadTiles();
-    }
-  } else if (code == LV_EVENT_RELEASED) {
-    int dx = p.x - pressPt.x, dy = p.y - pressPt.y;
-    bool wasPan = MapEngine::panActive && (abs(dx) > 10 || abs(dy) > 10);
-    MapEngine::panActive = false;
-
-    if (wasPan) {
-      if (infoLabel) {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "Lat:%.4f  Lon:%.4f  Stn:%d", centerLat, centerLon, mapStationsCount);
-        lv_label_set_text(infoLabel, buf);
-      }
-      return;
-    }
-
-    // No significant drag — check manual hit-test on markers.
-    // Long-press on a known station → open compose; short tap → info popup.
-    uint32_t held = millis() - pressMs;
-    int hitIdx = -2;
-    if (MapMarkers::hitTest(pressPt, &hitIdx)) {
-      if (held > 400) {
-        if (hitIdx >= 0) {
-          MapStation *st = STATION_Utils::getMapStation(hitIdx);
-          if (st && st->valid) {
-            MapMarkers::closeStationPopup();
-            UIMessaging::openComposeWithCallsign(st->callsign);
-          }
-        }
-      } else {
-        MapMarkers::showStationPopup(hitIdx);
-      }
-    }
-  }
+void markFollowGpsDisabled() {
+  if (btnRecenter)
+    lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), 0);
 }
+
+void refreshInfoBar() {
+  if (!infoLabel) return;
+  char buf[128];
+  snprintf(buf, sizeof(buf), "Lat:%.4f  Lon:%.4f  Stn:%d",
+           centerLat, centerLon, mapStationsCount);
+  lv_label_set_text(infoLabel, buf);
+}
+
+} // namespace MapView
+
+namespace MapRaster {
+
 
 // ============================================================
 // Create map screen
@@ -394,10 +311,7 @@ lv_obj_t *create(lv_obj_t *) {
   lv_obj_remove_flag(mapCont, LV_OBJ_FLAG_PRESS_LOCK);
   lv_obj_remove_flag(mapCont, LV_OBJ_FLAG_GESTURE_BUBBLE);
   lv_obj_add_flag(mapCont, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_DOUBLE_CLICKED, NULL);
-  lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_PRESSED, NULL);
-  lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_PRESSING, NULL);
-  lv_obj_add_event_cb(mapCont, mapTouchCB, LV_EVENT_RELEASED, NULL);
+  MapInput::install(mapCont);
 
   // Tile grid (5×5 raster + lazy vector canvases) owned by map_engine.
   MapEngine::init(mapCont);
