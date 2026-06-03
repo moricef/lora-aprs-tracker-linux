@@ -6,7 +6,7 @@
 
 namespace MapVector {
     // Un label extrait d'une tuile, en coords tuile-locales (0..tileSz).
-    // Le placement/collision se fait au niveau écran (map_raster), pas dans la tuile.
+    // Le placement/collision se fait au niveau écran (map_view), pas dans la tuile.
     struct Label {
         int px, py;                 // position dans la tuile (px, à tileSz=256)
         int priority;               // plus petit = plus important (placé en premier)
@@ -16,6 +16,10 @@ namespace MapVector {
         int angle = 0;              // orientation (degrés) si followLine ; 0 = panneau droit
         bool followLine = false;    // true = texte le long de la ligne, sans fond (waterway)
         bool shield = false;        // true = ref de route : cartouche couleur de route (r,g,b = couleur de base)
+        bool isPlace = false;       // true = city/town/village (rendered plain black, no halo)
+        // Tile-local waterway polyline (empty for other label types). Walked
+        // glyph by glyph by the text-along-path renderer (firmware model).
+        std::vector<lv_point_t> path;
     };
 
     // Ouvre le fichier .pmtiles (mmap) et garde une référence globale.
