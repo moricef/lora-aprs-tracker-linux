@@ -49,7 +49,7 @@ ifdef WITH_DISPLAY
   # UI sources
   SRCS += src/ui_dashboard.cpp src/ui_messaging.cpp src/ui_settings.cpp
   SRCS += src/ui_popups.cpp src/thorvg_stubs.cpp
-  SRCS += src/map/map_raster.cpp src/map/map_vector.cpp
+  SRCS += src/map/map_view.cpp src/map/map_vector.cpp
   SRCS += src/map/map_coordinate_math.cpp src/map/map_state.cpp
   SRCS += src/map/map_io.cpp src/map/map_markers.cpp src/map/map_traces.cpp
   SRCS += src/map/map_labels.cpp src/map/map_engine.cpp src/map/map_input.cpp

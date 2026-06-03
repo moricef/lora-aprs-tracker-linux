@@ -1,7 +1,9 @@
-/* Raster tile map — ESP32 create_map_screen() + region discovery ported to
- * Linux APRS Stations: icons positioned on tiles, tap → info popup
+/* Map screen — owns the LVGL screen widgets (title bar, info bar, buttons,
+ * container) + lifecycle (back, zoom, GPS recenter, fullscreen, GPX toggle).
+ * Tile rendering, overlays and gestures live in their dedicated modules
+ * (map_engine, map_traces, map_labels, map_markers, map_input).
  */
-#include "map_raster.h"
+#include "map/map_view.h"
 #include "configuration.h"
 #include "gps_math.h"
 #include "map_coordinate_math.h"
@@ -28,7 +30,7 @@
 extern Configuration Config;
 extern uint8_t myBeaconsIndex;
 
-namespace MapRaster {
+namespace MapView {
 
 using namespace MapState;
 
@@ -104,17 +106,6 @@ static void zoomCb(lv_event_t *e) {
 static lv_obj_t *tbarMap = nullptr;
 static lv_obj_t *ibarMap = nullptr;
 
-} // namespace MapRaster
-
-namespace MapView {
-
-using namespace MapState;
-using MapRaster::tbarMap;
-using MapRaster::ibarMap;
-using MapRaster::mapCont;
-using MapRaster::btnRecenter;
-using MapRaster::infoLabel;
-
 void toggleFullscreen() {
   fullscreenMap = !fullscreenMap;
   if (fullscreenMap) {
@@ -143,11 +134,6 @@ void refreshInfoBar() {
            centerLat, centerLon, mapStationsCount);
   lv_label_set_text(infoLabel, buf);
 }
-
-} // namespace MapView
-
-namespace MapRaster {
-
 
 // ============================================================
 // Create map screen
@@ -332,4 +318,4 @@ lv_obj_t *create(lv_obj_t *) {
   return scr;
 }
 
-} // namespace MapRaster
+} // namespace MapView
