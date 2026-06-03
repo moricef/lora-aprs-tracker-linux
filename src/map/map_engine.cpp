@@ -141,6 +141,14 @@ void reloadTiles() {
     MapTraces::redraw();
     MapTraces::reposition();
     MapLabels::refresh();
+    // reloadTiles places each tile canvas using the current dragAccum
+    // (sub-tile correction after a zoom). The label overlay carries the
+    // labels in sprite-local coords, so it has to follow the same origin
+    // — without this call, labels stay glued to the no-drag origin and
+    // appear shifted by dragAccum at first paint after a zoom switch.
+    int mapH = fullscreenMap ? 600 : MAP_H;
+    MapLabels::reposition((CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
+                          (mapH - SPRITE_SIZE) / 2 + dragAccumY);
     // Keep overlays above the (re)created vector tile canvases; markers go on top next.
     MapTraces::moveToForeground();
     MapLabels::moveToForeground();

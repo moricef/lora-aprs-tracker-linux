@@ -469,17 +469,25 @@ static const AdminStyle kAdmin[] = {
 
 // Place label styling: class → {minZoom, priority, font, r, g, b}
 struct PlaceStyle { const char *cls; int minZ; int prio; const lv_font_t *font; uint8_t r,g,b; };
-// Polices en taille 2× (24/28) : le SSAA rend en 2× puis réduit → effectif 12/14.
-// Polices normales (labels dessinés par LVGL au niveau écran, pas de SSAA).
-// min_zoom relevés pour désencombrer le bas zoom (pas de population dans la donnée).
+// Style transposed from firmware features.json (priority + color + font_size).
+// minZ kept at 0 here — filtering by zoom is done upstream by tilemaker
+// (process-aprs.lua, brackets identical to firmware text_features).
+// Priority: lower = drawn first / wins collision.
+// Colors: #555555 for city/town, #666666 for village/suburb, #777777 hamlet.
+// Render-time floor : zoom minimum at which a class is allowed on screen,
+// independent of (and stricter than) the mz emitted by the Lua. Used to
+// thin out Z12-Z13 which were getting saturated by suburbs/villages.
 static const PlaceStyle kPlaces[] = {
-    {"city",    5,  10, &lv_font_montserrat_14, 0x33,0x22,0x21},
-    {"town",    9,  20, &lv_font_montserrat_14, 0x33,0x22,0x21},
-    {"village", 13, 30, &lv_font_montserrat_12, 0x44,0x33,0x32},
-    {"hamlet",  14, 40, &lv_font_montserrat_12, 0x55,0x44,0x43},
-    {"suburb",  13, 45, &lv_font_montserrat_12, 0x55,0x44,0x43},
-    {"state",   4,  50, &lv_font_montserrat_14, 0x55,0x44,0x43},
-    {"country", 2,   5, &lv_font_montserrat_14, 0x33,0x22,0x21},
+    {"city",    0,  10, &lv_font_montserrat_14, 0x55,0x55,0x55},
+    {"town",    0,  20, &lv_font_montserrat_14, 0x55,0x55,0x55},
+    {"village", 13, 30, &lv_font_montserrat_12, 0x66,0x66,0x66},
+    {"suburb",  13, 35, &lv_font_montserrat_12, 0x66,0x66,0x66},
+    {"borough", 13, 35, &lv_font_montserrat_12, 0x66,0x66,0x66},
+    {"hamlet",  14, 40, &lv_font_montserrat_12, 0x77,0x77,0x77},
+    {"quarter", 14, 45, &lv_font_montserrat_12, 0x77,0x77,0x77},
+    {"locality",14, 45, &lv_font_montserrat_12, 0x77,0x77,0x77},
+    {"state",   0,   5, &lv_font_montserrat_14, 0x55,0x44,0x43},
+    {"country", 0,   1, &lv_font_montserrat_14, 0x33,0x22,0x21},
 };
 
 // ---- Path drawing with width ------------------------------------------------
@@ -638,9 +646,13 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
         {"wood",    8, 0xAD,0xD1,0x9E},
         {"wetland", 9, 0xAC,0xD2,0xBF},
     };
+    // Draw order matters: a park / hippodrome lawn is often INSIDE a larger
+    // landuse=residential polygon. If landuse painted after landcover, the
+    // residential gray hid the inner grass. Paint landuse FIRST (urban
+    // background), then landcover (grass / farmland) ON TOP.
     renderPolyLayer("park",      kPark,         STYLE_LEN(kPark));       // national_park, nature_reserve
-    renderPolyLayer("landcover", kLandcoverBg,  STYLE_LEN(kLandcoverBg)); // farmland/grass background
-    renderPolyLayer("landuse",   kLanduse,      STYLE_LEN(kLanduse));     // urban areas on top of farmland
+    renderPolyLayer("landuse",   kLanduse,      STYLE_LEN(kLanduse));     // residential / commercial / industrial background
+    renderPolyLayer("landcover", kLandcoverBg,  STYLE_LEN(kLandcoverBg)); // grass / farmland on top of urban
     renderPolyLayer("aeroway",   kAeroway,      STYLE_LEN(kAeroway));
     renderPolyLayer("landcover", kLandcoverFg,  STYLE_LEN(kLandcoverFg)); // forest/wetland on top
     if (z >= 13) {
@@ -870,7 +882,11 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
     auto push = [&](int px, int py, const std::string &t, int prio,
                     const lv_font_t *f, uint8_t r, uint8_t g, uint8_t b,
                     int angle = 0, bool followLine = false, bool shield = false) {
-        if (px>4 && px<sz-4 && py>4 && py<sz-4) out.push_back({px,py,prio,t,r,g,b,f,angle,followLine,shield});
+        // Keep labels whose anchor lies in the (sub-)tile. Margin tightened
+        // to zero so labels near a sub-tile boundary aren't dropped from
+        // every sibling sub-tile under overzoom — global collision in
+        // map_labels handles the actual edge clipping.
+        if (px>=0 && px<sz && py>=0 && py<sz) out.push_back({px,py,prio,t,r,g,b,f,angle,followLine,shield});
     };
     // Milieu d'une polyligne (waterway / transportation_name) en coords tuile-locales.
     struct LineMid { int ts; std::vector<int> px,py;
@@ -933,11 +949,30 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                 LineMid lm; lm.ts=sz;
                 vtzero::decode_linestring_geometry(feat.geometry(),lm);
                 if (lm.px.size()>=2) {
-                    int m=(int)lm.px.size()/2;
-                    int a=(m>0)?m-1:m, c=(m<(int)lm.px.size()-1)?m+1:m;
-                    double ang = atan2((double)(lm.py[c]-lm.py[a]), (double)(lm.px[c]-lm.px[a])) * 180.0/M_PI;
-                    if (ang > 90.0) ang -= 180.0; else if (ang < -90.0) ang += 180.0; // keep upright
-                    push(lm.px[m],lm.py[m],labelText,60,rtFont(&lv_font_montserrat_12),0x4A,0x7A,0xB0,(int)ang,true);
+                    // Anchor at the polyline mid-index — same as before, used
+                    // for dedup/hysteresis. The actual rendering walks the
+                    // full path glyph by glyph (firmware-style) thanks to
+                    // Label::path populated below.
+                    int m = (int)lm.px.size() / 2;
+                    int px = lm.px[m], py = lm.py[m];
+                    if (px>=0 && px<sz && py>=0 && py<sz) {
+                        Label lab;
+                        lab.px = px; lab.py = py;
+                        lab.priority = 60;
+                        lab.text = labelText;
+                        lab.r = 0x4A; lab.g = 0x7A; lab.b = 0xB0;
+                        lab.font = rtFont(&lv_font_montserrat_12);
+                        lab.angle = 0;             // unused once path is set
+                        lab.followLine = true;
+                        lab.shield = false;
+                        lab.isPlace = false;
+                        lab.path.reserve(lm.px.size());
+                        for (size_t i = 0; i < lm.px.size(); i++) {
+                            lv_point_t p; p.x = lm.px[i]; p.y = lm.py[i];
+                            lab.path.push_back(p);
+                        }
+                        out.push_back(std::move(lab));
+                    }
                 }
             }
             // --- Major road refs: the A/N/D number, not the street name ---
