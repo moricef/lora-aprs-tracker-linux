@@ -19,7 +19,6 @@ using namespace MapState;
 // in MapEngine (read by timerTick to roll out inertia).
 static lv_point_t dragLast;
 static uint32_t   dragLastMs = 0;
-static bool       installed  = false;
 
 static void touchCb(lv_event_t *e) {
     lv_event_code_t code = lv_event_get_code(e);
@@ -118,12 +117,16 @@ static void touchCb(lv_event_t *e) {
 }
 
 void install(lv_obj_t *target) {
-    if (installed || !target) return;
+    if (!target) return;
+    // Attach unconditionally : every map open recreates the container, so
+    // the previous registration died with it. The caller is expected to
+    // invoke install() exactly once per create() — no idempotency guard
+    // here because that guard outlived the destroyed mapCont and silently
+    // dropped pan after the second map open.
     lv_obj_add_event_cb(target, touchCb, LV_EVENT_DOUBLE_CLICKED, NULL);
     lv_obj_add_event_cb(target, touchCb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(target, touchCb, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(target, touchCb, LV_EVENT_RELEASED, NULL);
-    installed = true;
 }
 
 } // namespace MapInput
