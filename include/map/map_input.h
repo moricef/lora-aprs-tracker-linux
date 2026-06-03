@@ -14,8 +14,9 @@ void install(lv_obj_t *target);
 
 } // namespace MapInput
 
-// View hooks implemented by map_view (currently map_raster.cpp). MapInput
-// calls them when the gesture state transitions require UI side-effects.
+// View hooks implemented by map_view.cpp. MapInput calls them when the
+// gesture state transitions require UI side-effects (button color,
+// fullscreen toggle, info bar).
 namespace MapView {
 
 // Double-tap on the map → expand/restore the map container.

@@ -37,7 +37,7 @@
 #include "ui_settings.h"
 #include "ui_popups.h"
 #include "map_state.h"
-#include "map/map_raster.h"
+#include "map/map_view.h"
 #include "map/map_vector.h"
 #include "lora_aprs_logo.h"
 #include <sys/stat.h>
@@ -443,7 +443,7 @@ static void loop() {
     STATION_Utils::checkListenedStationsByTimeAndDelete();
     STATION_Utils::cleanOldMapStations();
 #ifdef USE_LVGL_UI
-    MapRaster::refreshStations();
+    MapView::refreshStations();
     UIMessaging::refreshConversationIfActive();
 #endif
 
@@ -483,7 +483,7 @@ static void loop() {
                 UIDashboard::updateGPS(gpsFix.lat, gpsFix.lon, gpsFix.alt,
                                        gpsFix.speed_kph, gpsFix.satellites, gpsFix.hdop);
                 UIDashboard::updateCallsign(currentBeacon->callsign.c_str());
-                MapRaster::setPosition(gpsFix.lat, gpsFix.lon);
+                MapView::setPosition(gpsFix.lat, gpsFix.lon);
 #endif
             }
 #ifdef USE_LVGL_UI
@@ -527,7 +527,7 @@ static void loop() {
 #endif
 }
 
-// MapState global members (needed by ui_settings / map_raster)
+// MapState global members (needed by ui_settings / map_view)
 lv_obj_t* MapState::screen_map = nullptr;
 bool MapState::blePausedForMap = false;
 

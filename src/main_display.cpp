@@ -31,7 +31,7 @@
 #include "notification_utils.h"
 #include "msg_utils.h"
 #include "lora_utils.h"
-#include "map/map_raster.h"
+#include "map/map_view.h"
 #include "map/map_vector.h"
 
 // Globals needed by ui_dashboard and ui_messaging
@@ -147,7 +147,7 @@ static void stdinTimerCallback(lv_timer_t *) {
                 pkt.snr  = snr;
                 pkt.freqError = 0;
                 MSG_Utils::checkReceivedMessage(pkt);
-                MapRaster::refreshStations();
+                MapView::refreshStations();
             }
             UIDashboard::addRxLine(p);
         }
