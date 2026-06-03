@@ -98,9 +98,13 @@ void discoverZooms() {
     MapState::zoomMax = zMax;
     MapState::zoom = zMax;
   }
-  // Extend max zoom to include vector tiles if available
+  // Extend max zoom to include vector tiles + 3 overzoom levels. The
+  // pmtiles file stops at maxZoom, but MapVector::ozSetup fetches the
+  // z=maxZoom tile and re-rasterizes its sub-region at the screen zoom —
+  // sharp because geometry is redrawn, not bitmap-stretched.
   if (MapVector::isOpen()) {
-    int vMax = MapVector::maxZoom();
+    constexpr int OVERZOOM_LEVELS = 3;
+    int vMax = MapVector::maxZoom() + OVERZOOM_LEVELS;
     int vMin = MapVector::minZoom();
     if (vMax > MapState::zoomMax)
       MapState::zoomMax = vMax;

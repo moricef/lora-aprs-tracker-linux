@@ -257,8 +257,30 @@ static void fillPoly(uint8_t *buf, int w, int h,
     }
 }
 
-// VTzero → pixel coords
-static inline int toPx(int v, int sz) { return (int)((int64_t)v * sz / EXTENT); }
+// VTzero → pixel coords, with optional overzoom transform.
+// When rendering at a screen zoom higher than the pmtiles max zoom, the
+// source tile covers a 2^delta × 2^delta region of target tiles. We pick
+// one sub-tile (s_ozSubX, s_ozSubY) inside the source and scale its
+// portion of the MVT extent up to the full target sz.
+//
+// target_pixel = (mvt_coord * factor * sz / EXTENT) - sub_offset_in_target_pixels
+//
+// When no overzoom (factor=1, sub=0) the formulas collapse to the original
+// `v * sz / EXTENT`.
+static thread_local int s_ozFactor  = 1;
+static thread_local int s_ozSubX    = 0;
+static thread_local int s_ozSubY    = 0;
+// Screen zoom for style lookups under overzoom. 0 = no overzoom, the
+// renderer falls back to the pmtiles source zoom (line widths, MinZoom
+// gates, road styles all keyed off s_ozStyleZ when non-zero).
+static thread_local int s_ozStyleZ  = 0;
+
+static inline int toPxX(int v, int sz) {
+    return (int)((int64_t)v * sz * s_ozFactor / EXTENT) - s_ozSubX * sz;
+}
+static inline int toPxY(int v, int sz) {
+    return (int)((int64_t)v * sz * s_ozFactor / EXTENT) - s_ozSubY * sz;
+}
 
 // ---- Collecteurs geometrie -----------------------------------------------
 
@@ -269,7 +291,7 @@ struct LineCollector {
     uint8_t *buf;
     int w, h;
     void linestring_begin(uint32_t) { px.clear(); py.clear(); }
-    void linestring_point(vtzero::point p) { px.push_back(toPx(p.x, sz)); py.push_back(toPx(p.y, sz)); }
+    void linestring_point(vtzero::point p) { px.push_back(toPxX(p.x, sz)); py.push_back(toPxY(p.y, sz)); }
     void linestring_end() {
         for (size_t i = 1; i < px.size(); i++)
             drawLine(buf, w, h, px[i-1], py[i-1], px[i], py[i], r, g, b);
@@ -285,7 +307,7 @@ struct PolyCollector {
     uint8_t *buf;
     int w, h;
     void ring_begin(uint32_t) { px.clear(); py.clear(); }
-    void ring_point(vtzero::point p) { px.push_back(toPx(p.x, sz)); py.push_back(toPx(p.y, sz)); }
+    void ring_point(vtzero::point p) { px.push_back(toPxX(p.x, sz)); py.push_back(toPxY(p.y, sz)); }
     void ring_end(vtzero::ring_type rt) {
         // On remplit TOUS les rings (outer ET inner) en plein : le winding des
         // tuiles bas-zoom est peu fiable (gros polygones classés inner à tort).
@@ -490,7 +512,7 @@ struct StyledLineCollector {
     void setTable(const StyleRule *t, int n) { table = t; tableLen = n; roadTable = nullptr; }
     void setRoads() { table = nullptr; tableLen = 0; roadTable = kRoads; }
     void linestring_begin(uint32_t) { px.clear(); py.clear(); }
-    void linestring_point(vtzero::point p) { px.push_back(toPx(p.x,sz)); py.push_back(toPx(p.y,sz)); }
+    void linestring_point(vtzero::point p) { px.push_back(toPxX(p.x, sz)); py.push_back(toPxY(p.y, sz)); }
     void linestring_end() {
         for (size_t i = 1; i < px.size(); i++)
             drawWideLine(buf,w,h,px[i-1],py[i-1],px[i],py[i],width,r,g,b);
@@ -510,7 +532,11 @@ struct StyledLineCollector {
 };
 
 // ---- renderTileBufCore : rend la tuile à la taille sz (utilisé en 2x par le SSAA)
-static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
+// `srcZ/x/y` = source tile coords in the pmtiles. When overzoom is active
+// (s_ozStyleZ != 0), style decisions use the screen zoom instead of the
+// source zoom — road widths, MinZoom gates etc.
+static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
+    int z = s_ozStyleZ ? s_ozStyleZ : srcZ;
     int w = sz, h = sz;
 
     // Background — LAND_BG_COLOR du générateur (#f2efe9), octets B,G,R,A
@@ -519,7 +545,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int z, int x, int y) {
         p[0] = 0xE9; p[1] = 0xEF; p[2] = 0xF2; p[3] = 0xFF;
     }
 
-    auto [off, len] = pmtiles::get_tile(gunzip, (const char*)s_mapped, z, x, y);
+    auto [off, len] = pmtiles::get_tile(gunzip, (const char*)s_mapped, srcZ, x, y);
     if (len == 0) return;
     std::string raw((const char*)s_mapped + off, len);
     std::string mvt = (s_header.tile_compression == pmtiles::COMPRESSION_GZIP)
@@ -784,15 +810,37 @@ static void downsample2x(const uint8_t *src, int ssz, uint8_t *dst, int dsz) {
     }
 }
 
+// Resolve overzoom for a target tile (screen zoom may exceed pmtiles max).
+// Sets thread_local s_oz* and returns the source (srcZ, srcX, srcY) to fetch
+// from pmtiles. Caller must reset via ozReset() when done.
+struct OZResolved { int srcZ, srcX, srcY; };
+static OZResolved ozSetup(int z, int x, int y) {
+    if (!s_mapped) return {z, x, y};
+    int maxZ = s_header.max_zoom;
+    if (z <= maxZ) return {z, x, y};
+    int delta = z - maxZ;
+    int factor = 1 << delta;
+    s_ozFactor = factor;
+    s_ozSubX   = x & (factor - 1);
+    s_ozSubY   = y & (factor - 1);
+    s_ozStyleZ = z;
+    return { maxZ, x >> delta, y >> delta };
+}
+static inline void ozReset() {
+    s_ozFactor = 1; s_ozSubX = 0; s_ozSubY = 0; s_ozStyleZ = 0;
+}
+
 // ---- renderTileBuf : SSAA ×2 (rend en 2× puis réduit → bords lissés) ---------
 static void renderTileBuf(uint8_t *buf, int sz, int z, int x, int y) {
+    auto src = ozSetup(z, x, y);
     const int SS = 2;
     int ssz = sz * SS;
     uint8_t *big = (uint8_t *)malloc((size_t)ssz * ssz * 4);
-    if (!big) { renderTileBufCore(buf, sz, z, x, y); return; } // fallback sans AA
-    renderTileBufCore(big, ssz, z, x, y);
+    if (!big) { renderTileBufCore(buf, sz, src.srcZ, src.srcX, src.srcY); ozReset(); return; }
+    renderTileBufCore(big, ssz, src.srcZ, src.srcX, src.srcY);
     downsample2x(big, ssz, buf, sz);
     free(big);
+    ozReset();
 }
 
 // ---- Per-tile label cache. Tiles never change, so a (z,x,y)'s labels are decoded
@@ -805,18 +853,19 @@ static inline uint64_t labelKey(int z, int x, int y) {
 }
 
 // ---- getTileLabels: collect a tile's labels in tile-local coords (size sz) without
-// drawing. Global placement/collision is done by map_raster (LVGL widgets).
+// drawing. Global placement/collision is done by map_view (LVGL widgets).
 void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
     if (!s_mapped) return;
     uint64_t lk = labelKey(z, x, y);
     auto cit = s_labelCache.find(lk);
     if (cit != s_labelCache.end()) { out = cit->second; return; }
-    auto [off, len] = pmtiles::get_tile(gunzip, (const char*)s_mapped, z, x, y);
-    if (len == 0) return;
+    auto src = ozSetup(z, x, y);
+    auto [off, len] = pmtiles::get_tile(gunzip, (const char*)s_mapped, src.srcZ, src.srcX, src.srcY);
+    if (len == 0) { ozReset(); return; }
     std::string raw((const char*)s_mapped + off, len);
     std::string mvt = (s_header.tile_compression == pmtiles::COMPRESSION_GZIP)
                       ? gunzip(raw, 0) : raw;
-    if (mvt.empty()) return;
+    if (mvt.empty()) { ozReset(); return; }
     const int sz = TILE_SIZE;
     auto push = [&](int px, int py, const std::string &t, int prio,
                     const lv_font_t *f, uint8_t r, uint8_t g, uint8_t b,
@@ -826,7 +875,7 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
     // Milieu d'une polyligne (waterway / transportation_name) en coords tuile-locales.
     struct LineMid { int ts; std::vector<int> px,py;
         void linestring_begin(uint32_t){px.clear();py.clear();}
-        void linestring_point(vtzero::point p){px.push_back(toPx(p.x,ts));py.push_back(toPx(p.y,ts));}
+        void linestring_point(vtzero::point p){px.push_back(toPxX(p.x, ts));py.push_back(toPxY(p.y, ts));}
         void linestring_end(){} void points_begin(uint32_t){}void points_point(vtzero::point){}void points_end(){}
         void ring_begin(uint32_t){}void ring_point(vtzero::point){}void ring_end(vtzero::ring_type){}
     };
@@ -859,7 +908,7 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                 if (labelText.empty()) labelText = nameLatin;
                 if (labelText.empty()) continue;
                 struct LabelPos { int minX=99999,minY=99999,maxX=-99999,maxY=-99999,n=0,ts=0;
-                    void add(vtzero::point p){int px=toPx(p.x,ts),py=toPx(p.y,ts);
+                    void add(vtzero::point p){int px=toPxX(p.x, ts),py=toPxY(p.y, ts);
                         if(px<minX)minX=px;if(px>maxX)maxX=px;if(py<minY)minY=py;if(py>maxY)maxY=py;n++;}
                     void ring_begin(uint32_t){} void ring_point(vtzero::point p){add(p);} void ring_end(vtzero::ring_type){}
                     void points_begin(uint32_t){} void points_point(vtzero::point p){add(p);} void points_end(){}
@@ -920,6 +969,7 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
         s_labelCache.erase(s_labelCacheOrder.front());
         s_labelCacheOrder.pop_front();
     }
+    ozReset();
 }
 
 // ---- renderTileRaw : remplit un buffer ARGB8888 (B,G,R,A) sans cache ni LVGL
