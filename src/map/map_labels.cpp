@@ -213,20 +213,123 @@ void refresh() {
             continue;
         }
 
-        bool ov = false;
-        const char *ovBy = "";
-        for (auto &k : kept) {
-            if (!(lx + w + 3 <= k.x - k.text.size()*k.font->line_height*0.55f/2 ||
-                  k.x + k.text.size()*k.font->line_height*0.55f/2 + 3 <= lx)) {
-                // bbox collision approximated; only used to find offender name
+        // UTF-8 codepoint walker (used by waterway pre-pass and render).
+        auto utf8Next = [](const char *s, int &cp) -> int {
+            uint8_t c0 = (uint8_t)s[0];
+            if      (c0 < 0x80) { cp = c0; return 1; }
+            else if (c0 < 0xE0) { cp = ((c0 & 0x1F) << 6) | ((uint8_t)s[1] & 0x3F); return 2; }
+            else if (c0 < 0xF0) { cp = ((c0 & 0x0F) << 12) | (((uint8_t)s[1] & 0x3F) << 6) | ((uint8_t)s[2] & 0x3F); return 3; }
+            else                { cp = ((c0 & 0x07) << 18) | (((uint8_t)s[1] & 0x3F) << 12) | (((uint8_t)s[2] & 0x3F) << 6) | ((uint8_t)s[3] & 0x3F); return 4; }
+        };
+
+        // For followLine labels (rivers/canals), replace the upright
+        // midpoint bbox with the swept bbox of the chosen straight
+        // section. Otherwise the collision test sees a tiny box at the
+        // polyline midpoint and lets the curved text sweep through
+        // adjacent place labels.
+        std::vector<float> wwArc;
+        float wwStartDist = 0.0f;
+        bool wwReady = false;
+        int swX = lx, swY = ly, swW = w, swH = h;
+        if (l.followLine && tmpLabelBuf && l.path.size() >= 2) {
+            wwArc.assign(l.path.size(), 0.0f);
+            for (size_t j = 1; j < l.path.size(); j++) {
+                float ddx = (float)(l.path[j].x - l.path[j-1].x);
+                float ddy = (float)(l.path[j].y - l.path[j-1].y);
+                wwArc[j] = wwArc[j-1] + sqrtf(ddx*ddx + ddy*ddy);
+            }
+            float totalLen = wwArc.back();
+            float textW = 0.0f;
+            for (size_t i = 0; i < l.text.size(); ) {
+                int cp; int n = utf8Next(l.text.c_str() + i, cp);
+                textW += (float)lv_font_get_glyph_width(l.font, cp, 0);
+                i += n;
+            }
+            if (textW <= 0.0f || textW > totalLen) continue;
+
+            int nseg = (int)l.path.size() - 1;
+            float bestSpread = 1e9f;
+            float step = textW / 8.0f;
+            if (step < 4.0f) step = 4.0f;
+            for (float s = 0.0f; s + textW <= totalLen + 0.5f; s += step) {
+                float e = s + textW;
+                float aMin = 1e9f, aMax = -1e9f;
+                for (int j = 0; j < nseg; j++) {
+                    if (wwArc[j+1] < s) continue;
+                    if (wwArc[j]   > e) break;
+                    float ddx = (float)(l.path[j+1].x - l.path[j].x);
+                    float ddy = (float)(l.path[j+1].y - l.path[j].y);
+                    float a = atan2f(ddy, ddx);
+                    if (a < aMin) aMin = a;
+                    if (a > aMax) aMax = a;
+                }
+                float spread = aMax - aMin;
+                if (spread > (float)M_PI) spread = 2.0f * (float)M_PI - spread;
+                if (spread < bestSpread) { bestSpread = spread; wwStartDist = s; }
+            }
+            const float kMaxAngleSpread = 0.55f;
+            if (bestSpread > kMaxAngleSpread) {
+                printf("[lbl] DROP_curvy   z=%d \"%s\" sprite=(%d,%d)\n",
+                       zoom, l.text.c_str(), l.x, l.y);
+                continue;
+            }
+
+            // RTL decision (sample start/end of chosen window).
+            auto pointAt = [&](float d, float &px, float &py) {
+                int s = 0;
+                while (s < (int)l.path.size() - 2 && wwArc[s + 1] < d) s++;
+                float segLen = wwArc[s + 1] - wwArc[s];
+                float t = segLen > 0.001f ? (d - wwArc[s]) / segLen : 0.0f;
+                px = l.path[s].x + t * (l.path[s+1].x - l.path[s].x);
+                py = l.path[s].y + t * (l.path[s+1].y - l.path[s].y);
+            };
+            float sx_, sy_, ex_, ey_;
+            pointAt(wwStartDist,       sx_, sy_);
+            pointAt(wwStartDist+textW, ex_, ey_);
+            if (ex_ < sx_) {
+                std::reverse(l.path.begin(), l.path.end());
+                for (size_t j = 0; j < wwArc.size(); j++) wwArc[j] = 0.0f;
+                for (size_t j = 1; j < l.path.size(); j++) {
+                    float ddx = (float)(l.path[j].x - l.path[j-1].x);
+                    float ddy = (float)(l.path[j].y - l.path[j-1].y);
+                    wwArc[j] = wwArc[j-1] + sqrtf(ddx*ddx + ddy*ddy);
+                }
+                wwStartDist = totalLen - (wwStartDist + textW);
+            }
+
+            // Walk glyph centers once to compute the actual swept bbox.
+            int seg = 0;
+            float curDist = wwStartDist;
+            int wMinX = INT_MAX, wMinY = INT_MAX, wMaxX = INT_MIN, wMaxY = INT_MIN;
+            for (size_t i = 0; i < l.text.size(); ) {
+                int cp; int n = utf8Next(l.text.c_str() + i, cp);
+                int gW = lv_font_get_glyph_width(l.font, cp, 0);
+                float mid = curDist + gW * 0.5f;
+                while (seg < (int)l.path.size() - 2 && wwArc[seg + 1] < mid) seg++;
+                float segLen = wwArc[seg + 1] - wwArc[seg];
+                float t = segLen > 0.001f ? (mid - wwArc[seg]) / segLen : 0.0f;
+                float gx = l.path[seg].x + t * (l.path[seg+1].x - l.path[seg].x);
+                float gy = l.path[seg].y + t * (l.path[seg+1].y - l.path[seg].y);
+                if ((int)gx - h/2 < wMinX) wMinX = (int)gx - h/2;
+                if ((int)gy - h/2 < wMinY) wMinY = (int)gy - h/2;
+                if ((int)gx + h/2 > wMaxX) wMaxX = (int)gx + h/2;
+                if ((int)gy + h/2 > wMaxY) wMaxY = (int)gy + h/2;
+                curDist += gW;
+                i += n;
+            }
+            if (wMinX <= wMaxX) {
+                swX = wMinX; swY = wMinY;
+                swW = wMaxX - wMinX; swH = wMaxY - wMinY;
+                wwReady = true;
             }
         }
-        (void)ovBy;
+
+        bool ov = false;
         for (auto &p : placed)
-            if (!(lx + w + 3 <= p.x || p.x + p.w + 3 <= lx || ly + h + 2 <= p.y || p.y + p.h + 2 <= ly)) { ov = true; break; }
+            if (!(swX + swW + 3 <= p.x || p.x + p.w + 3 <= swX || swY + swH + 2 <= p.y || p.y + p.h + 2 <= swY)) { ov = true; break; }
         if (ov) {
             printf("[lbl] DROP_collide z=%d \"%s\" sprite=(%d,%d) box=(%d,%d,%d,%d)\n",
-                   zoom, l.text.c_str(), l.x, l.y, lx, ly, w, h);
+                   zoom, l.text.c_str(), l.x, l.y, swX, swY, swW, swH);
             continue;
         }
         printf("[lbl] KEEP        z=%d \"%s\" sprite=(%d,%d) prio=%d\n",
@@ -247,113 +350,23 @@ void refresh() {
             ld.color = lv_color_make((uint8_t)(l.r*0.55f), (uint8_t)(l.g*0.55f), (uint8_t)(l.b*0.55f));
             lv_draw_label(&layer, &ld, &a);
             placed.push_back({lx, ly, w, h});
-        } else if (l.followLine && tmpLabelBuf && l.path.size() >= 2) {
+        } else if (wwReady) {
             // Waterway: walk the polyline glyph by glyph (firmware model :
             // each glyph is rendered upright on the scratch canvas then
             // blitted rotated by the local segment angle, so the text
             // follows the curve instead of being one rigid rotated word).
-
-            // Cumulative arc length along the path.
-            std::vector<float> arc(l.path.size(), 0.0f);
-            for (size_t j = 1; j < l.path.size(); j++) {
-                float ddx = (float)(l.path[j].x - l.path[j-1].x);
-                float ddy = (float)(l.path[j].y - l.path[j-1].y);
-                arc[j] = arc[j-1] + sqrtf(ddx*ddx + ddy*ddy);
-            }
-            float totalLen = arc.back();
-
-            // Total text width (sum of glyph advances). UTF-8 codepoint walk.
-            auto utf8Next = [](const char *s, int &cp) -> int {
-                uint8_t c0 = (uint8_t)s[0];
-                if      (c0 < 0x80) { cp = c0; return 1; }
-                else if (c0 < 0xE0) { cp = ((c0 & 0x1F) << 6) | ((uint8_t)s[1] & 0x3F); return 2; }
-                else if (c0 < 0xF0) { cp = ((c0 & 0x0F) << 12) | (((uint8_t)s[1] & 0x3F) << 6) | ((uint8_t)s[2] & 0x3F); return 3; }
-                else                { cp = ((c0 & 0x07) << 18) | (((uint8_t)s[1] & 0x3F) << 12) | (((uint8_t)s[2] & 0x3F) << 6) | ((uint8_t)s[3] & 0x3F); return 4; }
-            };
-            float textW = 0.0f;
-            for (size_t i = 0; i < l.text.size(); ) {
-                int cp; int n = utf8Next(l.text.c_str() + i, cp);
-                textW += (float)lv_font_get_glyph_width(l.font, cp, 0);
-                i += n;
-            }
-            if (textW <= 0.0f || textW > totalLen) continue;
-
-            // Slide a window of length=textW along the polyline and pick the
-            // one whose segments span the smallest angular range. That's the
-            // "straightest" section of the river within reach — placing the
-            // label there avoids the S-curves where text would loop on itself
-            // (firmware does this exact search before drawing).
-            int nseg = (int)l.path.size() - 1;
-            float startDist = 0.0f;
-            float bestSpread = 1e9f;
-            float step = textW / 8.0f;
-            if (step < 4.0f) step = 4.0f;
-            for (float s = 0.0f; s + textW <= totalLen + 0.5f; s += step) {
-                float e = s + textW;
-                float aMin = 1e9f, aMax = -1e9f;
-                for (int j = 0; j < nseg; j++) {
-                    if (arc[j+1] < s) continue;
-                    if (arc[j]   > e) break;
-                    float ddx = (float)(l.path[j+1].x - l.path[j].x);
-                    float ddy = (float)(l.path[j+1].y - l.path[j].y);
-                    float a = atan2f(ddy, ddx);
-                    if (a < aMin) aMin = a;
-                    if (a > aMax) aMax = a;
-                }
-                float spread = aMax - aMin;
-                if (spread > (float)M_PI) spread = 2.0f * (float)M_PI - spread;
-                if (spread < bestSpread) { bestSpread = spread; startDist = s; }
-            }
-            // Last-resort curvature gate : if even the straightest window is
-            // too tortuous, drop the label rather than render an illegible
-            // S-curve.
-            const float kMaxAngleSpread = 0.55f;   // ~31°
-            if (bestSpread > kMaxAngleSpread) continue;
-            float endDist = startDist + textW;
-
-            // Decide reading direction ONCE for the whole word, based on
-            // the net start→end direction of the text window. Walking by
-            // per-glyph flip causes alternating orientations when the
-            // local segment angle crosses ±90° (e.g. a glyph at 89° stays
-            // upright while the next at 91° flips). Reversing the path
-            // upfront when the window reads RTL means every glyph then
-            // uses its raw segment angle with no further flip.
-            auto pointAt = [&](float d, float &px, float &py) {
-                int s = 0;
-                while (s < (int)l.path.size() - 2 && arc[s + 1] < d) s++;
-                float segLen = arc[s + 1] - arc[s];
-                float t = segLen > 0.001f ? (d - arc[s]) / segLen : 0.0f;
-                px = l.path[s].x + t * (l.path[s+1].x - l.path[s].x);
-                py = l.path[s].y + t * (l.path[s+1].y - l.path[s].y);
-            };
-            float sx_, sy_, ex_, ey_;
-            pointAt(startDist, sx_, sy_);
-            pointAt(endDist,   ex_, ey_);
-            if (ex_ < sx_) {
-                std::reverse(l.path.begin(), l.path.end());
-                std::vector<float> arc2(l.path.size(), 0.0f);
-                for (size_t j = 1; j < l.path.size(); j++) {
-                    float ddx = (float)(l.path[j].x - l.path[j-1].x);
-                    float ddy = (float)(l.path[j].y - l.path[j-1].y);
-                    arc2[j] = arc2[j-1] + sqrtf(ddx*ddx + ddy*ddy);
-                }
-                arc.swap(arc2);
-            }
-
-            // Walk the path glyph by glyph. Also track the actual on-canvas
-            // bounding box of the rendered glyphs : we'll use it instead of
-            // the upright bbox to feed `placed`, so future labels (place,
-            // shield, etc.) see where the curved text really sits.
+            // Sliding window + RTL decision were done in the pre-pass
+            // above; we reuse wwArc and wwStartDist here.
             int seg = 0;
-            float curDist = startDist;
+            float curDist = wwStartDist;
             int wMinX = INT_MAX, wMinY = INT_MAX, wMaxX = INT_MIN, wMaxY = INT_MIN;
             for (size_t i = 0; i < l.text.size(); ) {
                 int cp; int n = utf8Next(l.text.c_str() + i, cp);
                 int gW = lv_font_get_glyph_width(l.font, cp, 0);
                 float mid = curDist + gW * 0.5f;
-                while (seg < (int)l.path.size() - 2 && arc[seg + 1] < mid) seg++;
-                float segLen = arc[seg + 1] - arc[seg];
-                float t = segLen > 0.001f ? (mid - arc[seg]) / segLen : 0.0f;
+                while (seg < (int)l.path.size() - 2 && wwArc[seg + 1] < mid) seg++;
+                float segLen = wwArc[seg + 1] - wwArc[seg];
+                float t = segLen > 0.001f ? (mid - wwArc[seg]) / segLen : 0.0f;
                 float gx = l.path[seg].x + t * (l.path[seg+1].x - l.path[seg].x);
                 float gy = l.path[seg].y + t * (l.path[seg+1].y - l.path[seg].y);
                 if ((int)gx - h/2 < wMinX) wMinX = (int)gx - h/2;
