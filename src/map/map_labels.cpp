@@ -250,6 +250,33 @@ void refresh() {
             }
             if (textW <= 0.0f || textW > totalLen) continue;
 
+            float startDist = (totalLen - textW) * 0.5f;   // center text on path
+            float endDist   = startDist + textW;
+
+            // Curvature filter : if the segments inside the text window
+            // span more than kMaxAngleSpread, the text would loop around
+            // and become unreadable. Drop the label entirely — better
+            // missing than illegible (firmware does the same on the
+            // straightness check side of label placement).
+            {
+                int nseg = (int)l.path.size() - 1;
+                float aMin = 1e9f, aMax = -1e9f;
+                for (int j = 0; j < nseg; j++) {
+                    if (arc[j+1] < startDist) continue;
+                    if (arc[j]   > endDist)   break;
+                    float ddx = (float)(l.path[j+1].x - l.path[j].x);
+                    float ddy = (float)(l.path[j+1].y - l.path[j].y);
+                    float a = atan2f(ddy, ddx);
+                    if (a < aMin) aMin = a;
+                    if (a > aMax) aMax = a;
+                }
+                float spread = aMax - aMin;
+                // Wrap-around safety (rare for waterways but cheap).
+                if (spread > (float)M_PI) spread = 2.0f * (float)M_PI - spread;
+                const float kMaxAngleSpread = 0.55f;   // ~31°
+                if (spread > kMaxAngleSpread) continue;
+            }
+
             // Decide reading direction ONCE for the whole word, based on
             // the net start→end direction of the text window. Walking by
             // per-glyph flip causes alternating orientations when the
@@ -257,8 +284,6 @@ void refresh() {
             // upright while the next at 91° flips). Reversing the path
             // upfront when the window reads RTL means every glyph then
             // uses its raw segment angle with no further flip.
-            float startDist = (totalLen - textW) * 0.5f;   // center text on path
-            float endDist   = startDist + textW;
             auto pointAt = [&](float d, float &px, float &py) {
                 int s = 0;
                 while (s < (int)l.path.size() - 2 && arc[s + 1] < d) s++;
