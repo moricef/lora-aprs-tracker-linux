@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctime>
+#include <dirent.h>
 #include "configuration.h"
 #include "lora_utils.h"
 #include "gps_utils.h"
@@ -30,12 +31,15 @@
 #include "lvgl/lvgl.h"
 #include "lvgl/src/drivers/display/drm/lv_linux_drm.h"
 #include "lvgl/src/drivers/evdev/lv_evdev.h"
+#include "ui_common.h"
 #include "ui_dashboard.h"
 #include "ui_messaging.h"
 #include "ui_settings.h"
 #include "ui_popups.h"
 #include "map_state.h"
-#include "map/map_raster.h"
+#include "map/map_view.h"
+#include "map/map_vector.h"
+#include "lora_aprs_logo.h"
 #include <sys/stat.h>
 #endif
 
@@ -174,6 +178,52 @@ static void* txBridgeThread(void*) {
     return nullptr;
 }
 
+// ─── Splash overlay (mirrors firmware showSplashScreen) ────────────────────────
+#ifdef USE_LVGL_UI
+static lv_obj_t *showSplashScreen() {
+    lv_obj_t *parent = lv_screen_active();
+    lv_obj_t *scr = lv_obj_create(parent);
+    lv_obj_set_size(scr, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_border_width(scr, 0, 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Logo scaled 2x (280x76 → 560x152)
+    lv_obj_t *logo = lv_img_create(scr);
+    lv_img_set_src(logo, &lora_aprs_logo);
+    lv_image_set_scale(logo, 512);
+    lv_obj_align(logo, LV_ALIGN_TOP_MID, 0, 40);
+
+    // Title with full frequency
+    char buf[64];
+    snprintf(buf, sizeof(buf), "LoRa APRS Tracker %.3fMHz",
+             (float)currentLoRaType->frequency / 1000000.0f);
+    lv_obj_t *title = lv_label_create(scr);
+    lv_label_set_text(title, buf);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x0066cc), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 205);
+
+    // Version
+    snprintf(buf, sizeof(buf), "F4MLV Linux Edition  v" UI_VERSION);
+    lv_obj_t *ver = lv_label_create(scr);
+    lv_label_set_text(ver, buf);
+    lv_obj_set_style_text_color(ver, lv_color_hex(0xcc0000), 0);
+    lv_obj_set_style_text_font(ver, &lv_font_montserrat_24, 0);
+    lv_obj_align(ver, LV_ALIGN_BOTTOM_MID, 0, -50);
+
+    // Based on credit
+    lv_obj_t *ui = lv_label_create(scr);
+    lv_label_set_text(ui, "(based on CA2RXU ESP32 firmware)");
+    lv_obj_set_style_text_color(ui, lv_color_hex(0x0066cc), 0);
+    lv_obj_set_style_text_font(ui, &lv_font_montserrat_18, 0);
+    lv_obj_align(ui, LV_ALIGN_BOTTOM_MID, 0, -32);
+
+    lv_refr_now(NULL);
+    return scr;
+}
+#endif // USE_LVGL_UI
+
 // ─── setup() ─────────────────────────────────────────────────────────────────
 static void setup() {
     signal(SIGINT,  sigHandler);
@@ -201,6 +251,28 @@ static void setup() {
 
     STORAGE_Utils::loadStats();
     MSG_Utils::loadNumMessages();
+
+#ifdef USE_LVGL_UI
+    // Vector tiles (optional — fails silently if file absent)
+    {
+        const char *vecDir = "/data/LoRa_Tracker/VectMaps";
+        DIR *d = opendir(vecDir);
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d))) {
+                if (e->d_type != DT_DIR || e->d_name[0] == '.') continue;
+                std::string path = std::string(vecDir) + "/" + e->d_name + "/" + e->d_name + ".pmtiles";
+                struct stat st;
+                if (stat(path.c_str(), &st) == 0) {
+                    MapVector::open(path.c_str());
+                    if (MapVector::isOpen()) MapVector::startWorker();
+                    break;
+                }
+            }
+            closedir(d);
+        }
+    }
+#endif
 
     GPS_Utils::setup();
     LoRa_Utils::setup();
@@ -230,10 +302,12 @@ static void setup() {
         lv_indev_t *touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, touchPath);
         if (touch) {
             lv_indev_set_display(touch, disp);
-            lv_indev_set_group(touch, lv_group_get_default());
             lv_evdev_set_calibration(touch, 0, 0, 1023, 599);
         }
         UIDashboard::createDashboard();
+        lv_obj_t *splash = showSplashScreen();
+        for (int i = 0; i < 60; i++) { lv_timer_handler(); usleep(50000); }
+        lv_obj_del(splash);
         { FILE *f = fopen("/tmp/ui_ok.txt", "w"); if (f) { fprintf(f, "DASH OK\n"); fclose(f); } }
         ESP_LOGI(TAG, "Display: fbdev 1024x600, touch=%s", touch ? "OK" : "none");
     }
@@ -369,7 +443,8 @@ static void loop() {
     STATION_Utils::checkListenedStationsByTimeAndDelete();
     STATION_Utils::cleanOldMapStations();
 #ifdef USE_LVGL_UI
-    MapRaster::refreshStations();
+    MapView::refreshStations();
+    UIMessaging::refreshConversationIfActive();
 #endif
 
     // ── GPS / SmartBeacon ────────────────────────────────────────────────────
@@ -390,14 +465,7 @@ static void loop() {
         }
         SMARTBEACON_Utils::checkFixedBeaconTime();
 
-        // GPS quality gate (mirrors ESP32 logic)
-        bool gpsQualityOk = false;
-        if (Config.gpsConfig.strict3DFix)
-            gpsQualityOk = (gpsFix.satellites >= 6) && (gpsPdop() <= 5.0f);
-        else
-            gpsQualityOk = (gpsFix.satellites >= 6) && (gpsHdop() <= 5.0f);
-
-        if (sendUpdate && gps_loc_update && gpsQualityOk) {
+        if (sendUpdate && gps_loc_update) {
             STATION_Utils::sendBeacon();
         }
 
@@ -415,6 +483,7 @@ static void loop() {
                 UIDashboard::updateGPS(gpsFix.lat, gpsFix.lon, gpsFix.alt,
                                        gpsFix.speed_kph, gpsFix.satellites, gpsFix.hdop);
                 UIDashboard::updateCallsign(currentBeacon->callsign.c_str());
+                MapView::setPosition(gpsFix.lat, gpsFix.lon);
 #endif
             }
 #ifdef USE_LVGL_UI
@@ -458,7 +527,7 @@ static void loop() {
 #endif
 }
 
-// MapState global members (needed by ui_settings / map_raster)
+// MapState global members (needed by ui_settings / map_view)
 lv_obj_t* MapState::screen_map = nullptr;
 bool MapState::blePausedForMap = false;
 

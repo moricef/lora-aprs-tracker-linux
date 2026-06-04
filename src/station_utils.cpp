@@ -8,8 +8,12 @@
 #include "lora_utils.h"
 #include "aprs_is_utils.h"
 #include "storage_utils.h"
+#include "gpx_writer.h"
 #include "smartbeacon_utils.h"
 #include "linux_stubs.h"
+#ifndef ARDUINO
+#include "ui_popups.h"
+#endif
 
 static const char* TAG = "Station";
 
@@ -280,6 +284,9 @@ namespace STATION_Utils {
 
         ESP_LOGI(TAG, "TX: %s", packet.c_str());
         printf("TX:%s\n", packet.c_str()); fflush(stdout);
+#ifndef ARDUINO
+        UIPopups::showTxPacket(packet.c_str());
+#endif
         LoRa_Utils::sendNewPacket(packet);
 
         if (APRS_IS_Utils::isConnected()) APRS_IS_Utils::upload(packet);
@@ -293,6 +300,13 @@ namespace STATION_Utils {
         lastTxTime  = millis();
         sendUpdate  = false;
         if (currentBeacon->gpsEcoMode) gpsShouldSleep = true;
+
+        GPXWriter::addPoint((float)gpsFix.lat, (float)gpsFix.lon,
+                            gpsFix.valid_altitude ? (float)gpsFix.alt : 0.0f,
+                            gpsFix.valid_location ? (float)gpsFix.hdop : 99.0f,
+                            gpsFix.valid_speed ? (float)gpsFix.speed_kph : 0.0f,
+                            gpsFix.year, gpsFix.month, gpsFix.date,
+                            gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
     }
 
     void saveIndex(uint8_t type, uint8_t index) {

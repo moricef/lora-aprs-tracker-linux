@@ -108,4 +108,7 @@ namespace STORAGE_Utils {
     void clearFramesDirty();
     bool isStatsDirty();
     void clearStatsDirty();
+    bool isMessagesDirty();
+    void clearMessagesDirty();
+    void markMessagesDirty();
 }

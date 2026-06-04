@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 #include <sys/stat.h>
+#include <ctime>
 #include "storage_utils.h"
 #include "configuration.h"
 #include "lora_utils.h"
@@ -12,6 +13,9 @@
 #include "station_utils.h"
 #include "gps_utils.h"
 #include "linux_stubs.h"
+#ifdef USE_LVGL_UI
+#include "ui_popups.h"
+#endif
 
 extern Beacon*        currentBeacon;
 extern Configuration  Config;
@@ -96,11 +100,12 @@ namespace MSG_Utils {
             }
         }
 
-        uint32_t ts = millis() / 1000;
+        uint32_t ts = (uint32_t)time(nullptr);
         String dir = outgoing ? "OUT" : "IN";
         String line = String(ts) + "," + dir + "," + message;
         File wf = STORAGE_Utils::openFile(filename, "a");
         if (wf) { wf.println(line); wf.close(); }
+        STORAGE_Utils::markMessagesDirty();
         ESP_LOGI(TAG, "Saved %s message to %s", dir.c_str(), filename.c_str());
     }
 
@@ -325,7 +330,7 @@ namespace MSG_Utils {
         }
 
         // Handle APRS messages addressed to us
-        if (aprs.type == 5 && !aprs.addressee.isEmpty()) {
+        if (aprs.type == 1 && !aprs.addressee.isEmpty()) {
             String myCall = currentBeacon->callsign;
             myCall.trim();
             String addr = aprs.addressee;
@@ -365,6 +370,9 @@ namespace MSG_Utils {
                 saveNewMessage(0, aprs.sender, message);
                 NOTIFICATION_Utils::messageBeep();
                 printf("MSG:%s:%s\n", aprs.sender.c_str(), message.c_str()); fflush(stdout);
+#ifdef USE_LVGL_UI
+                UIPopups::showRxPacket("De: " + std::string(aprs.sender.c_str()) + "\n" + std::string(message.c_str()));
+#endif
             }
         }
     }

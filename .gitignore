@@ -3,3 +3,9 @@ lora_rx
 lora_aprs_tracker
 lib/RadioLib/
 CLAUDE.md
+# Outils de debug carto : on garde les sources .cpp, pas les binaires ni les PNG
+tools/render_tile
+tools/inspect_tile
+tools/preview/
+# Docs de travail / scratch (non suivies)
+VECTOR_TODO.md
