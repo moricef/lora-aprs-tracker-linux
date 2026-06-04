@@ -17,6 +17,7 @@ namespace MapVector {
         bool followLine = false;    // true = texte le long de la ligne, sans fond (waterway)
         bool shield = false;        // true = ref de route : cartouche couleur de route (r,g,b = couleur de base)
         bool isPlace = false;       // true = city/town/village (rendered plain black, no halo)
+        int population = 0;         // raw OSM population (places only); tiebreak between same-priority candidates
         // Tile-local waterway polyline (empty for other label types). Walked
         // glyph by glyph by the text-along-path renderer (firmware model).
         std::vector<lv_point_t> path;

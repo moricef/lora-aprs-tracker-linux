@@ -199,6 +199,9 @@ function node_function()
 		MinZoom(mz)
 		if rank then AttributeInteger("rank", rank) end
 		if capital then AttributeInteger("capital", capital) end
+		-- Raw population: tiebreak between two same-rank, same-priority towns
+		-- on the renderer side (Cugnaux 17.5k beats Fonsorbes 12.8k both rank 9).
+		if pop > 0 then AttributeInteger("population", pop) end
 		if place=="country" then
 			local iso_a2 = Find("ISO3166-1:alpha2")
 			while iso_a2 == "" do

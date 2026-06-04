@@ -89,6 +89,7 @@ void refresh() {
     struct SL { int x, y, prio; std::string text; uint8_t r, g, b; const lv_font_t *font;
                 int angle; bool followLine; bool shield;
                 int worldX, worldY;
+                int population;
                 std::vector<lv_point_t> path; };  // sprite-local polyline for waterway
     const int worldOriginX = (centerTX - GRID / 2) * TILE_SIZE;
     const int worldOriginY = (centerTY - GRID / 2) * TILE_SIZE;
@@ -108,6 +109,7 @@ void refresh() {
                 s.followLine = l.followLine; s.shield = l.shield;
                 s.worldX = worldOriginX + sx + l.px;
                 s.worldY = worldOriginY + sy + l.py;
+                s.population = l.population;
                 if (l.followLine && !l.path.empty()) {
                     s.path.reserve(l.path.size());
                     for (auto &p : l.path) {
@@ -150,6 +152,9 @@ void refresh() {
               [&](const SL &a, const SL &b) {
                   int sa = scoreOf(a), sb = scoreOf(b);
                   if (sa != sb) return sa < sb;
+                  // Same score: larger population wins (Cugnaux 17.5k beats
+                  // Fonsorbes 12.8k, both town/prio=20/rank=9).
+                  if (a.population != b.population) return a.population > b.population;
                   if (a.worldX != b.worldX) return a.worldX < b.worldX;
                   return a.worldY < b.worldY;
               });
@@ -186,7 +191,11 @@ void refresh() {
         int h = l.font->line_height;
         int w = (int)(l.text.size() * h * 0.55f) + 6;
         int lx = l.x - w / 2, ly = l.y - h / 2;
-        if (lx < 0 || lx + w > LABEL_CANVAS_W || ly < 0 || ly + h > LABEL_CANVAS_H) continue;
+        if (lx < 0 || lx + w > LABEL_CANVAS_W || ly < 0 || ly + h > LABEL_CANVAS_H) {
+            printf("[lbl] DROP_bounds  z=%d \"%s\" sprite=(%d,%d) w=%d\n",
+                   zoom, l.text.c_str(), l.x, l.y, w);
+            continue;
+        }
 
         // Per-name dedup : if we already kept a label with the same text
         // within the dedup radius, this is a duplicate from another tile.
@@ -198,12 +207,30 @@ void refresh() {
             int ddx = k.x - l.x, ddy = k.y - l.y;
             if (ddx*ddx + ddy*ddy < dr2) { sameNameNear = true; break; }
         }
-        if (sameNameNear) continue;
+        if (sameNameNear) {
+            printf("[lbl] DROP_dedup   z=%d \"%s\" sprite=(%d,%d)\n",
+                   zoom, l.text.c_str(), l.x, l.y);
+            continue;
+        }
 
         bool ov = false;
+        const char *ovBy = "";
+        for (auto &k : kept) {
+            if (!(lx + w + 3 <= k.x - k.text.size()*k.font->line_height*0.55f/2 ||
+                  k.x + k.text.size()*k.font->line_height*0.55f/2 + 3 <= lx)) {
+                // bbox collision approximated; only used to find offender name
+            }
+        }
+        (void)ovBy;
         for (auto &p : placed)
             if (!(lx + w + 3 <= p.x || p.x + p.w + 3 <= lx || ly + h + 2 <= p.y || p.y + p.h + 2 <= ly)) { ov = true; break; }
-        if (ov) continue;
+        if (ov) {
+            printf("[lbl] DROP_collide z=%d \"%s\" sprite=(%d,%d) box=(%d,%d,%d,%d)\n",
+                   zoom, l.text.c_str(), l.x, l.y, lx, ly, w, h);
+            continue;
+        }
+        printf("[lbl] KEEP        z=%d \"%s\" sprite=(%d,%d) prio=%d\n",
+               zoom, l.text.c_str(), l.x, l.y, l.prio);
 
         lv_area_t a = { lx, ly, lx + w - 1, ly + h - 1 };
         if (l.shield) {
@@ -219,6 +246,7 @@ void refresh() {
             ld.text = l.text.c_str(); ld.font = l.font; ld.align = LV_TEXT_ALIGN_CENTER;
             ld.color = lv_color_make((uint8_t)(l.r*0.55f), (uint8_t)(l.g*0.55f), (uint8_t)(l.b*0.55f));
             lv_draw_label(&layer, &ld, &a);
+            placed.push_back({lx, ly, w, h});
         } else if (l.followLine && tmpLabelBuf && l.path.size() >= 2) {
             // Waterway: walk the polyline glyph by glyph (firmware model :
             // each glyph is rendered upright on the scratch canvas then
@@ -250,20 +278,22 @@ void refresh() {
             }
             if (textW <= 0.0f || textW > totalLen) continue;
 
-            float startDist = (totalLen - textW) * 0.5f;   // center text on path
-            float endDist   = startDist + textW;
-
-            // Curvature filter : if the segments inside the text window
-            // span more than kMaxAngleSpread, the text would loop around
-            // and become unreadable. Drop the label entirely — better
-            // missing than illegible (firmware does the same on the
-            // straightness check side of label placement).
-            {
-                int nseg = (int)l.path.size() - 1;
+            // Slide a window of length=textW along the polyline and pick the
+            // one whose segments span the smallest angular range. That's the
+            // "straightest" section of the river within reach — placing the
+            // label there avoids the S-curves where text would loop on itself
+            // (firmware does this exact search before drawing).
+            int nseg = (int)l.path.size() - 1;
+            float startDist = 0.0f;
+            float bestSpread = 1e9f;
+            float step = textW / 8.0f;
+            if (step < 4.0f) step = 4.0f;
+            for (float s = 0.0f; s + textW <= totalLen + 0.5f; s += step) {
+                float e = s + textW;
                 float aMin = 1e9f, aMax = -1e9f;
                 for (int j = 0; j < nseg; j++) {
-                    if (arc[j+1] < startDist) continue;
-                    if (arc[j]   > endDist)   break;
+                    if (arc[j+1] < s) continue;
+                    if (arc[j]   > e) break;
                     float ddx = (float)(l.path[j+1].x - l.path[j].x);
                     float ddy = (float)(l.path[j+1].y - l.path[j].y);
                     float a = atan2f(ddy, ddx);
@@ -271,11 +301,15 @@ void refresh() {
                     if (a > aMax) aMax = a;
                 }
                 float spread = aMax - aMin;
-                // Wrap-around safety (rare for waterways but cheap).
                 if (spread > (float)M_PI) spread = 2.0f * (float)M_PI - spread;
-                const float kMaxAngleSpread = 0.55f;   // ~31°
-                if (spread > kMaxAngleSpread) continue;
+                if (spread < bestSpread) { bestSpread = spread; startDist = s; }
             }
+            // Last-resort curvature gate : if even the straightest window is
+            // too tortuous, drop the label rather than render an illegible
+            // S-curve.
+            const float kMaxAngleSpread = 0.55f;   // ~31°
+            if (bestSpread > kMaxAngleSpread) continue;
+            float endDist = startDist + textW;
 
             // Decide reading direction ONCE for the whole word, based on
             // the net start→end direction of the text window. Walking by
@@ -306,9 +340,13 @@ void refresh() {
                 arc.swap(arc2);
             }
 
-            // Walk the path glyph by glyph.
+            // Walk the path glyph by glyph. Also track the actual on-canvas
+            // bounding box of the rendered glyphs : we'll use it instead of
+            // the upright bbox to feed `placed`, so future labels (place,
+            // shield, etc.) see where the curved text really sits.
             int seg = 0;
             float curDist = startDist;
+            int wMinX = INT_MAX, wMinY = INT_MAX, wMaxX = INT_MIN, wMaxY = INT_MIN;
             for (size_t i = 0; i < l.text.size(); ) {
                 int cp; int n = utf8Next(l.text.c_str() + i, cp);
                 int gW = lv_font_get_glyph_width(l.font, cp, 0);
@@ -318,6 +356,10 @@ void refresh() {
                 float t = segLen > 0.001f ? (mid - arc[seg]) / segLen : 0.0f;
                 float gx = l.path[seg].x + t * (l.path[seg+1].x - l.path[seg].x);
                 float gy = l.path[seg].y + t * (l.path[seg+1].y - l.path[seg].y);
+                if ((int)gx - h/2 < wMinX) wMinX = (int)gx - h/2;
+                if ((int)gy - h/2 < wMinY) wMinY = (int)gy - h/2;
+                if ((int)gx + h/2 > wMaxX) wMaxX = (int)gx + h/2;
+                if ((int)gy + h/2 > wMaxY) wMaxY = (int)gy + h/2;
                 float dxs = l.path[seg+1].x - l.path[seg].x;
                 float dys = l.path[seg+1].y - l.path[seg].y;
                 float angRad = atan2f(dys, dxs);
@@ -357,10 +399,17 @@ void refresh() {
                 curDist += gW;
                 i += n;
             }
+            // Use the actual on-curve bbox so future labels (place, shield)
+            // see the real footprint of the waterway text.
+            if (wMinX <= wMaxX) {
+                placed.push_back({wMinX, wMinY, wMaxX - wMinX, wMaxY - wMinY});
+            } else {
+                placed.push_back({lx, ly, w, h});
+            }
         } else {
             drawHalo(&layer, l.text.c_str(), l.font, lx, ly, w, h, l.r, l.g, l.b);
+            placed.push_back({lx, ly, w, h});
         }
-        placed.push_back({lx, ly, w, h});
         kept.push_back(l);
         // First kept label for a name wins the anchor slot ; later same-name
         // candidates have already been filtered by the dedup check above, so

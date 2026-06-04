@@ -887,12 +887,20 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
     const int sz = TILE_SIZE;
     auto push = [&](int px, int py, const std::string &t, int prio,
                     const lv_font_t *f, uint8_t r, uint8_t g, uint8_t b,
-                    int angle = 0, bool followLine = false, bool shield = false) {
+                    int angle = 0, bool followLine = false, bool shield = false,
+                    int population = 0) {
         // Keep labels whose anchor lies in the (sub-)tile. Margin tightened
         // to zero so labels near a sub-tile boundary aren't dropped from
         // every sibling sub-tile under overzoom — global collision in
         // map_labels handles the actual edge clipping.
-        if (px>=0 && px<sz && py>=0 && py<sz) out.push_back({px,py,prio,t,r,g,b,f,angle,followLine,shield});
+        if (px>=0 && px<sz && py>=0 && py<sz) {
+            MapVector::Label lab;
+            lab.px = px; lab.py = py; lab.priority = prio; lab.text = t;
+            lab.r = r; lab.g = g; lab.b = b; lab.font = f;
+            lab.angle = angle; lab.followLine = followLine; lab.shield = shield;
+            lab.population = population;
+            out.push_back(std::move(lab));
+        }
     };
     // Milieu d'une polyligne (waterway / transportation_name) en coords tuile-locales.
     struct LineMid { int ts; std::vector<int> px,py;
@@ -914,13 +922,20 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
         if (!isPlace && !isWaterName && !isWaterDetail && !isRoadName) continue;
         while (auto feat = lay.next_feature()) {
             std::string labelText, nameLatin, cls, ref;
+            int pop = 0;
             while (auto prop = feat.next_property()) {
-                if (prop.value().type() != vtzero::property_value_type::string_value) continue;
-                auto v = prop.value().string_value(); std::string val(v.data(), v.size());
-                if (prop.key() == "name")            labelText = val;
-                else if (prop.key() == "name:latin") nameLatin = val;
-                else if (prop.key() == "class")      cls = val;
-                else if (prop.key() == "ref")        ref = val;
+                auto pt = prop.value().type();
+                if (pt == vtzero::property_value_type::string_value) {
+                    auto v = prop.value().string_value(); std::string val(v.data(), v.size());
+                    if (prop.key() == "name")            labelText = val;
+                    else if (prop.key() == "name:latin") nameLatin = val;
+                    else if (prop.key() == "class")      cls = val;
+                    else if (prop.key() == "ref")        ref = val;
+                } else if (prop.key() == "population") {
+                    if (pt == vtzero::property_value_type::int_value)       pop = (int)prop.value().int_value();
+                    else if (pt == vtzero::property_value_type::sint_value) pop = (int)prop.value().sint_value();
+                    else if (pt == vtzero::property_value_type::uint_value) pop = (int)prop.value().uint_value();
+                }
             }
             auto geom = feat.geometry_type();
             bool isLake = isWaterDetail && cls == "lake";
@@ -942,7 +957,7 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                     int cx=(lp.minX+lp.maxX)/2, cy=(lp.minY+lp.maxY)/2;
                     if (isPlace) {
                         for (auto &ps : kPlaces) if (cls==ps.cls && z>=ps.minZ) {
-                            push(cx,cy,labelText,ps.prio,rtFont(ps.font),ps.r,ps.g,ps.b); break; }
+                            push(cx,cy,labelText,ps.prio,rtFont(ps.font),ps.r,ps.g,ps.b,0,false,false,pop); break; }
                     } else push(cx,cy,labelText,70,rtFont(&lv_font_montserrat_12),0x4A,0x7A,0xB0);
                 }
             }
