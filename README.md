@@ -1,118 +1,123 @@
-# LoRa APRS Tracker - Port Linux
+# LoRa APRS Tracker — Linux port
 
-Port du firmware ESP32 vers Linux (Odroid C2 / aarch64) pour tablette véhicule 7".
+*[Lire en français](README.fr.md)*
 
-## État au 2026-05-13
+Offline LoRa APRS tracker for ARM single-board computers (Raspberry Pi 4B,
+Odroid C2). Adapts a proven APRS / SmartBeacon / messaging stack to a
+Linux + LVGL desktop on HDMI displays (tested at 1024×600).
 
-### Fonctionnel
-- **SPI LoRa** : HT-RA62 (SX1262, 433 MHz) sur Odroid C2 via `spi-gpio` kernel driver
-- **RadioLib** : port Linux avec `LinuxHal` (GPIO sysfs, SPI spidev, IRQ thread)
-- **RX/TX APRS** : réception et émission de trames LoRa APRS via RadioLib
-- **Dashboard LVGL** : compilation native du vrai `ui_dashboard.cpp` ESP32 dans le simulateur v9
+## Highlights
 
-### En cours
-- Écrans Messages, Settings, Map non portés
-- GPS : pas encore branché (thread NMEA à faire)
+- **LoRa SX1262** via RadioLib on Linux (SPI through `spidev`, GPIO/IRQ via
+  sysfs, see `LinuxHal`). RX/TX, digipeating, MicE & Base91 packet encoding.
+- **Offline vector map renderer** : PMTiles + MVT decoded with `vtzero`,
+  rendered directly into an ARGB8888 LVGL canvas. Pure software, no GPU
+  required. Includes labels with along-path glyph rotation for waterways
+  and population-ladder progressive thinning for places.
+- **Overzoom** : the PMTiles file stops at z14 ; the renderer re-rasterizes
+  any sub-region at screen zooms up to z17 — sharp because geometry is
+  redrawn, not bitmap-stretched.
+- **gpsd** integration for position / speed / track, plus full SmartBeacon.
+- **APRS-IS** TCP uplink.
+- **Conversations & messaging** (ACK, dedup, persistent storage in
+  `/data/LoRa_Tracker/`).
+- **LVGL 9** UI : dashboard, messaging screen, settings, map screen with
+  pan/zoom/inertia, marker hit-test, GPS recenter, GPX recording.
 
-## Architecture
+## Hardware targets
 
-```
-linux_tracker/          ← projet RadioLib Linux (Odroid)
-├── src/
-│   ├── linux_hal.cpp   ← implémentation RadioLibHal (GPIO sysfs, SPI spidev)
-│   ├── linux_hal.h
-│   └── main.cpp        ← test RX/TX LoRa APRS
-├── lib/RadioLib/       ← RadioLib 7.1.0 (depuis .pio/libdeps)
-├── Makefile
-└── README.md
+| Board | Notes |
+|---|---|
+| Raspberry Pi 4B (1 GB) | Primary target. v3d / Vulkan available but unused. |
+| Odroid C2 (2 GB) | Mali-450 unused — SW renderer only. Slower but works. |
 
-lv_port_pc_eclipse/     ← simulateur LVGL v9 SDL2 (PC)
-├── main.cpp            ← point d'entrée : SDL2 + UIDashboard::createDashboard()
-├── ui_dashboard.cpp    ← vrai code ESP32 (copié), modifié pour v9
-├── stubs/              ← stubs pour dépendances ESP32
-│   ├── Arduino.h       ← millis(), delay(), String
-│   ├── esp_log.h       ← ESP_LOGI/D/W/E
-│   ├── configuration.h ← struct Configuration
-│   ├── thorvg_stubs.cpp← stubs ThorVG (LVGL v9 vector graphics)
-│   └── ...             ← 40+ autres stubs
-├── lvgl → .pio/libdeps/ttgo_t_deck_plus_433/lvgl  ← LVGL v9
-├── build.sh            ← script de build
-└── lv_conf.h           ← config LVGL v9 (ThorVG/Lottie désactivés)
-```
-
-## Pinout Odroid C2 J2 → HT-RA62
-
-| HT-RA62 | Signal | J2 Pin | GPIO Linux |
-|---------|--------|--------|------------|
-| 12 | SCK | 23 | 621 |
-| 13 | MISO | 21 | 623 |
-| 14 | MOSI | 19 | 626 |
-| 15 | NSS | 22 | 622 |
-| 6 | DIO1 | 35 | 605 |
-| 4 | RST | 36 | 609 |
-| 10 | BUSY | 31 | 610 |
-| 3 | 3V3 | 1 | - |
-
-## Activation SPI sur Odroid
-
-```bash
-# Compiler l'overlay
-dtc -@ -I dts -O dtb -o /tmp/spi-gpio.dtbo odroid_spi_gpio_overlay.dts
-sudo cp /tmp/spi-gpio.dtbo /boot/overlay-user/
-echo "user_overlays=spi-gpio" | sudo tee -a /boot/armbianEnv.txt
-sudo reboot
-```
-
-Overlay minimal :
-```dts
-/dts-v1/;
-/plugin/;
-/ { compatible = "hardkernel,odroid-c2", "amlogic,meson-gxbb"; };
-&{/spi-gpio} { status = "okay"; };
-```
-
-## Points techniques critiques
-
-### SetDio3AsTcxoCtrl obligatoire
-La commande SX1262 `SetDio3AsTcxoCtrl` (0x97) est requise même si DIO3 non câblé. Elle déclenche la calibration interne XOSC.
-
-### Pipeline SPI SX1262
-- Commandes sans adresse (GetIrqStatus) : données à rx[2] (pipeline 1 byte)
-- Commandes avec adresse (ReadRegister) : données à rx[offset_cmd] (pas de pipeline)
+LoRa radio : any SX1262 module wired to SPI + DIO1/RESET/BUSY GPIOs. Tested
+with HT-RA62 (433 MHz).
 
 ## Build
 
-### lora_rx (Odroid C2)
 ```bash
-cd linux_tracker
-# Copier RadioLib depuis .pio
-cp -r ../CA2RXU/LoRa_APRS_Tracker-devel/.pio/libdeps/ttgo_t_deck_plus_433/RadioLib/src lib/RadioLib/
-make
-sudo ./lora_rx [callsign]
+sudo apt install build-essential libgps-dev nlohmann-json3-dev \
+                 libdrm-dev libfreetype-dev libmicrohttpd-dev libpng-dev
+make WITH_DISPLAY=1 -j$(nproc)
 ```
 
-### Dashboard simulateur (PC)
+`WITH_DISPLAY=0` produces a headless tracker (LoRa + gpsd + APRS-IS, no UI).
+
+## Run
+
 ```bash
-cd lv_port_pc_eclipse
-# Compiler LVGL + real ESP32 code
-bash build.sh
-# Lancer avec données live Odroid
-ssh odroid 'sudo ./lora_rx 2>/dev/null' | ./demo
+./lora_aprs_tracker [callsign]
 ```
 
-## Modifications v8→v9 sur ui_dashboard.cpp
+The first launch creates `/data/LoRa_Tracker/tracker_conf.json`. Edit the
+callsign / beacon symbol / paths / radio profile there. The display backend
+uses DRM/KMS by default (fbdev fallback) ; pointing devices via evdev.
 
-| Original (v8) | Modifié (v9) |
-|---|---|
-| `lv_canvas_set_px_color(c, x, y, color)` | `lv_canvas_set_px(c, x, y, color, LV_OPA_COVER)` |
-| `LV_IMG_CF_TRUE_COLOR` | `LV_COLOR_FORMAT_NATIVE` |
-| `&lv_font_mono_16` | `&lv_font_montserrat_16` |
-| `SCREEN_WIDTH/HEIGHT` 320x240 | Ajout `#elif defined(LINUX_SIM)` → 1024x600 |
+PMTiles file path is read from the config ; generate one with `tilemaker`
+using the bundled scripts (see below).
 
-## À faire
+## Vector tiles
 
-1. **GPS** : lire `/dev/ttyACM0` sur Odroid, thread NMEA → `UIDashboard::updateGPS()`
-2. **Écrans** : porter ui_messaging.cpp, ui_settings.cpp (même méthode : copier + fixes v9 + stubs)
-3. **Framebuffer** : remplacer SDL2 par `/dev/fb0` pour déploiement Odroid
-4. **TX beacon** : bouton BCN → `sendUpdate = true` → pipe ou socket vers lora_rx
-5. **Carte** : brancher le placeholder map à des tuiles réelles (MBTiles ou online)
+Place data, road names and waterway names follow a population-ladder
+discipline (cities, towns and villages appear at zooms tied to their
+`population` tag rather than just their `place=*` class). POIs, footpaths,
+housenumbers and other web-map noise are stripped at generation time.
+
+The two source files for the generator pipeline are kept in `tilemaker/`
+in this repo :
+
+- `tilemaker/process-aprs.lua` — feature selector / population brackets
+- `tilemaker/config-aprs.json` — tile layout (z6-14)
+
+Typical run :
+
+```bash
+tilemaker --input region.osm.pbf \
+          --output region.pmtiles \
+          --config tilemaker/config-aprs.json \
+          --process tilemaker/process-aprs.lua
+```
+
+A region the size of southern France fits in ~1.3 GB at z6-14 with these
+files. Screen zooms 15-17 come for free via vector overzoom.
+
+## Architecture (map subsystem)
+
+```
+src/map/
+├── map_state.{h,cpp}      shared viewport / GPS / flags
+├── map_io.{h,cpp}         filesystem discovery (tiles + symbols)
+├── map_engine.{h,cpp}     5×5 tile grid, reloadTiles, zoom, inertia tick
+├── map_input.{h,cpp}      touch handler (pan, hit-test, double-tap)
+├── map_traces.{h,cpp}     station trails + own GPS trail overlay
+├── map_labels.{h,cpp}     label overlay : collision, hysteresis, glyphs
+├── map_markers.{h,cpp}    station markers + info popup
+├── map_view.{h,cpp}       LVGL screen (titlebar, buttons, lifecycle)
+├── map_vector.{h,cpp}     PMTiles + MVT decoding, vector rasterization
+└── map_coordinate_math.{h,cpp}  lat/lon ↔ tile/pixel
+```
+
+The rest of the project (APRS, LoRa, gpsd, messaging, configuration,
+storage, UI screens) sits at the top of `src/`.
+
+## Status
+
+Functional end-to-end on Raspberry Pi 4B :
+
+- LoRa RX/TX, digipeating, SmartBeacon, MicE
+- gpsd position with thread-safe access
+- APRS-IS uplink + reconnect
+- Persistent storage for stations, contacts, GPX
+- LVGL UI : dashboard, messaging, settings, map (vector + overzoom)
+- Map: pan/zoom/inertia, station markers, info popup, GPX recording
+
+Not ported (irrelevant to the Linux target) :
+BLE, WiFi AP + web configuration, battery monitoring, deep sleep, native
+buzzer GPIO, hardware keyboards / touch panels of handheld devices.
+
+## License
+
+Provided as-is for amateur radio experimentation. See individual sources
+for upstream license attributions (RadioLib, LVGL, vtzero, PMTiles,
+nlohmann/json, tilemaker schemas).
