@@ -474,20 +474,26 @@ struct PlaceStyle { const char *cls; int minZ; int prio; const lv_font_t *font; 
 // (process-aprs.lua, brackets identical to firmware text_features).
 // Priority: lower = drawn first / wins collision.
 // Colors: #555555 for city/town, #666666 for village/suburb, #777777 hamlet.
-// Render-time floor : zoom minimum at which a class is allowed on screen,
-// independent of (and stricter than) the mz emitted by the Lua. Used to
-// thin out Z12-Z13 which were getting saturated by suburbs/villages.
+// kPlaces : style + priorité par classe. minZ=0 partout — le filtre par
+// zoom est délégué à tilemaker (process-aprs.lua) qui réplique fidèlement
+// firmware text_features() (ladder population + type). Reproduire le
+// filtre ici en double aboutissait à des paliers vides ou à des sauts
+// abrupts au lieu d'une progression fine zoom-par-zoom.
 static const PlaceStyle kPlaces[] = {
-    {"city",    0,  10, &lv_font_montserrat_14, 0x55,0x55,0x55},
-    {"town",    0,  20, &lv_font_montserrat_14, 0x55,0x55,0x55},
-    {"village", 13, 30, &lv_font_montserrat_12, 0x66,0x66,0x66},
-    {"suburb",  13, 35, &lv_font_montserrat_12, 0x66,0x66,0x66},
-    {"borough", 13, 35, &lv_font_montserrat_12, 0x66,0x66,0x66},
-    {"hamlet",  14, 40, &lv_font_montserrat_12, 0x77,0x77,0x77},
-    {"quarter", 14, 45, &lv_font_montserrat_12, 0x77,0x77,0x77},
-    {"locality",14, 45, &lv_font_montserrat_12, 0x77,0x77,0x77},
-    {"state",   0,   5, &lv_font_montserrat_14, 0x55,0x44,0x43},
-    {"country", 0,   1, &lv_font_montserrat_14, 0x33,0x22,0x21},
+    {"city",      0, 10, &lv_font_montserrat_14, 0x55,0x55,0x55},
+    {"town",      0, 20, &lv_font_montserrat_14, 0x55,0x55,0x55},
+    {"village",   0, 30, &lv_font_montserrat_12, 0x66,0x66,0x66},
+    {"borough",   0, 33, &lv_font_montserrat_12, 0x66,0x66,0x66},
+    {"suburb",    0, 35, &lv_font_montserrat_12, 0x66,0x66,0x66},
+    {"neighbourhood",0,38,&lv_font_montserrat_12,0x66,0x66,0x66},
+    {"hamlet",    0, 40, &lv_font_montserrat_12, 0x77,0x77,0x77},
+    {"quarter",   0, 45, &lv_font_montserrat_12, 0x77,0x77,0x77},
+    {"locality",  0, 45, &lv_font_montserrat_12, 0x77,0x77,0x77},
+    {"islet",     0, 50, &lv_font_montserrat_12, 0x77,0x77,0x77},
+    {"isolated_dwelling",0,55,&lv_font_montserrat_12,0x77,0x77,0x77},
+    {"farm",      0, 55, &lv_font_montserrat_12, 0x77,0x77,0x77},
+    {"state",     0,  5, &lv_font_montserrat_14, 0x55,0x44,0x43},
+    {"country",   0,  1, &lv_font_montserrat_14, 0x33,0x22,0x21},
 };
 
 // ---- Path drawing with width ------------------------------------------------
