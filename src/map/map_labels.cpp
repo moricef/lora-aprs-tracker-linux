@@ -192,8 +192,6 @@ void refresh() {
         int w = (int)(l.text.size() * h * 0.55f) + 6;
         int lx = l.x - w / 2, ly = l.y - h / 2;
         if (lx < 0 || lx + w > LABEL_CANVAS_W || ly < 0 || ly + h > LABEL_CANVAS_H) {
-            printf("[lbl] DROP_bounds  z=%d \"%s\" sprite=(%d,%d) w=%d\n",
-                   zoom, l.text.c_str(), l.x, l.y, w);
             continue;
         }
 
@@ -207,11 +205,7 @@ void refresh() {
             int ddx = k.x - l.x, ddy = k.y - l.y;
             if (ddx*ddx + ddy*ddy < dr2) { sameNameNear = true; break; }
         }
-        if (sameNameNear) {
-            printf("[lbl] DROP_dedup   z=%d \"%s\" sprite=(%d,%d)\n",
-                   zoom, l.text.c_str(), l.x, l.y);
-            continue;
-        }
+        if (sameNameNear) continue;
 
         // UTF-8 codepoint walker (used by waterway pre-pass and render).
         auto utf8Next = [](const char *s, int &cp) -> int {
@@ -268,11 +262,7 @@ void refresh() {
                 if (spread < bestSpread) { bestSpread = spread; wwStartDist = s; }
             }
             const float kMaxAngleSpread = 0.55f;
-            if (bestSpread > kMaxAngleSpread) {
-                printf("[lbl] DROP_curvy   z=%d \"%s\" sprite=(%d,%d)\n",
-                       zoom, l.text.c_str(), l.x, l.y);
-                continue;
-            }
+            if (bestSpread > kMaxAngleSpread) continue;
 
             // RTL decision (sample start/end of chosen window).
             auto pointAt = [&](float d, float &px, float &py) {
@@ -327,13 +317,7 @@ void refresh() {
         bool ov = false;
         for (auto &p : placed)
             if (!(swX + swW + 3 <= p.x || p.x + p.w + 3 <= swX || swY + swH + 2 <= p.y || p.y + p.h + 2 <= swY)) { ov = true; break; }
-        if (ov) {
-            printf("[lbl] DROP_collide z=%d \"%s\" sprite=(%d,%d) box=(%d,%d,%d,%d)\n",
-                   zoom, l.text.c_str(), l.x, l.y, swX, swY, swW, swH);
-            continue;
-        }
-        printf("[lbl] KEEP        z=%d \"%s\" sprite=(%d,%d) prio=%d\n",
-               zoom, l.text.c_str(), l.x, l.y, l.prio);
+        if (ov) continue;
 
         lv_area_t a = { lx, ly, lx + w - 1, ly + h - 1 };
         if (l.shield) {

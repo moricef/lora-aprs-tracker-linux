@@ -19,7 +19,7 @@ using namespace MapState;
 
 lv_obj_t *parent = nullptr;
 
-#define MAX_MARKERS (MAP_STATIONS_MAX + 1) // 15 stations + own
+#define MAX_MARKERS (MAP_STATIONS_MAX + 1) // stations + own
 struct MarkerInfo {
     lv_obj_t *obj;
     int stationIdx; // -1 = own station, >=0 = mapStations index

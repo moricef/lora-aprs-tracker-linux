@@ -143,9 +143,18 @@ void markFollowGpsDisabled() {
 
 void refreshInfoBar() {
   if (!infoLabel) return;
+  // centerLat/centerLon only snap to tile origin (updated when a tile
+  // boundary is crossed during pan). Compute the actual lat/lon under
+  // the screen center from the current dragAccum offset — same pattern
+  // as MapEngine::recenterForZoom().
+  int spriteCX = SPRITE_SIZE / 2 - dragAccumX;
+  int spriteCY = SPRITE_SIZE / 2 - dragAccumY;
+  float lat = centerLat, lon = centerLon;
+  MapMath::pixelToLatLon(spriteCX, spriteCY, zoom, true,
+                         centerTX, centerTY, 0, 0, &lat, &lon);
   char buf[128];
   snprintf(buf, sizeof(buf), "Lat:%.4f  Lon:%.4f  Stn:%d",
-           centerLat, centerLon, mapStationsCount);
+           lat, lon, mapStationsCount);
   lv_label_set_text(infoLabel, buf);
 }
 
@@ -189,9 +198,13 @@ lv_obj_t *create(lv_obj_t *) {
   lv_obj_set_style_bg_color(btnRecenter, mapFollowGps ? lv_color_hex(0x16213e) : lv_color_hex(0xff6600), 0);
   lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), LV_STATE_PRESSED);
   lv_obj_add_event_cb(btnRecenter, [](lv_event_t *) {
+    // Visual feedback while reloadTiles is blocking (same pattern as Z+/Z-).
+    lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0xff6600), 0);
+    lv_obj_invalidate(btnRecenter);
+    lv_refr_now(NULL);
     mapFollowGps = true;
-    lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0x16213e), 0);
     if (gpsLat != 0.0 || gpsLon != 0.0) {
+      printf("[map] recenter -> GPS %.5f,%.5f\n", gpsLat, gpsLon);
       MapMath::latLonToTile((float)gpsLat, (float)gpsLon, zoom, &centerTX, &centerTY);
       centerLat = gpsLat; centerLon = gpsLon;
       int spriteX, spriteY;
@@ -202,7 +215,12 @@ lv_obj_t *create(lv_obj_t *) {
       dragAccumY = SPRITE_SIZE / 2 - spriteY;
       MapEngine::velX = MapEngine::velY = 0.0f;
       MapEngine::reloadTiles();
+    } else {
+      printf("[map] recenter : no GPS fix (gpsLat=gpsLon=0), follow=ON but no jump\n");
     }
+    // Back to "following GPS" colour (blue).
+    lv_obj_set_style_bg_color(btnRecenter, lv_color_hex(0x16213e), 0);
+    lv_obj_invalidate(btnRecenter);
   }, LV_EVENT_RELEASED, NULL);
   lv_obj_t *lblRec = lv_label_create(btnRecenter);
   lv_label_set_text(lblRec, LV_SYMBOL_GPS);

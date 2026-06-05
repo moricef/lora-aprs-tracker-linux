@@ -133,8 +133,13 @@ void reloadTiles() {
         lv_label_set_text(titleLabel, z);
     }
     if (infoLabel) {
+        int spriteCX = SPRITE_SIZE / 2 - dragAccumX;
+        int spriteCY = SPRITE_SIZE / 2 - dragAccumY;
+        float lat = centerLat, lon = centerLon;
+        MapMath::pixelToLatLon(spriteCX, spriteCY, zoom, true,
+                               centerTX, centerTY, 0, 0, &lat, &lon);
         char ib[128];
-        snprintf(ib, sizeof(ib), "Lat:%.4f  Lon:%.4f  Stn:%d", centerLat, centerLon,
+        snprintf(ib, sizeof(ib), "Lat:%.4f  Lon:%.4f  Stn:%d", lat, lon,
                  mapStationsCount);
         lv_label_set_text(infoLabel, ib);
     }
@@ -271,6 +276,17 @@ void timerTick() {
         tickCounter = 0;
         STATION_Utils::cleanOldMapStations();
         if (!panActive) MapMarkers::createMarkers();
+        if (infoLabel) {
+            int spriteCX = SPRITE_SIZE / 2 - dragAccumX;
+            int spriteCY = SPRITE_SIZE / 2 - dragAccumY;
+            float lat = centerLat, lon = centerLon;
+            MapMath::pixelToLatLon(spriteCX, spriteCY, zoom, true,
+                                   centerTX, centerTY, 0, 0, &lat, &lon);
+            char ib[128];
+            snprintf(ib, sizeof(ib), "Lat:%.4f  Lon:%.4f  Stations:%d",
+                     lat, lon, mapStationsCount);
+            lv_label_set_text(infoLabel, ib);
+        }
     }
 }
 
