@@ -97,8 +97,17 @@ static void backCb(lv_event_t *) {
 
 static void zoomCb(lv_event_t *e) {
   MapMarkers::closeStationPopup();
+  // Paint the pressed button orange, flush a frame so the user sees it,
+  // then run the (synchronous, slow) zoom which blocks the UI thread
+  // while tiles re-render. When zoom returns, restore the dark bg.
+  lv_obj_t *btn = (lv_obj_t *)lv_event_get_target(e);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0xff6600), 0);
+  lv_obj_invalidate(btn);
+  lv_refr_now(NULL);
   int d = (int)(intptr_t)lv_event_get_user_data(e);
   if (d > 0) zoomIn(); else zoomOut();
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x16213e), 0);
+  lv_obj_invalidate(btn);
 }
 
 // Tile reposition lives in MapEngine::repositionAll().
@@ -120,6 +129,11 @@ void toggleFullscreen() {
     lv_obj_set_pos(mapCont, 0, 45);
   }
   MapEngine::repositionAll();
+  // Same reason as the Z+/Z- buttons: under tile-render load the next
+  // refresh may not happen for a while, making the toggle feel laggy.
+  // Flush a frame synchronously so the new layout is on screen before
+  // we return from the double-click handler.
+  lv_refr_now(NULL);
 }
 
 void markFollowGpsDisabled() {
@@ -194,23 +208,26 @@ lv_obj_t *create(lv_obj_t *) {
   lv_label_set_text(lblRec, LV_SYMBOL_GPS);
   lv_obj_center(lblRec);
 
-  // Zoom +  (firmware: LV_EVENT_RELEASED, orange on press)
+  // Orange feedback during zoom: zoomCb paints the button orange,
+  // flushes a frame, runs the (blocking) zoom, then restores the dark
+  // bg. The orange stays on screen for the whole reload duration —
+  // exactly what the user sees as "the button works".
+
+  // Zoom +
   lv_obj_t *zp = lv_btn_create(tbar);
   lv_obj_set_size(zp, 50, 32);
   lv_obj_align(zp, LV_ALIGN_RIGHT_MID, -140, 0);
   lv_obj_set_style_bg_color(zp, lv_color_hex(0x16213e), 0);
-  lv_obj_set_style_bg_color(zp, lv_color_hex(0xff6600), LV_STATE_PRESSED);
   lv_obj_add_event_cb(zp, zoomCb, LV_EVENT_RELEASED, (void *)1);
   lv_obj_t *zlp = lv_label_create(zp);
   lv_label_set_text(zlp, "+");
   lv_obj_center(zlp);
 
-  // Zoom -  (firmware: LV_EVENT_RELEASED, orange on press)
+  // Zoom -
   lv_obj_t *zm = lv_btn_create(tbar);
   lv_obj_set_size(zm, 50, 32);
   lv_obj_align(zm, LV_ALIGN_RIGHT_MID, -85, 0);
   lv_obj_set_style_bg_color(zm, lv_color_hex(0x16213e), 0);
-  lv_obj_set_style_bg_color(zm, lv_color_hex(0xff6600), LV_STATE_PRESSED);
   lv_obj_add_event_cb(zm, zoomCb, LV_EVENT_RELEASED, (void *)-1);
   lv_obj_t *zlm = lv_label_create(zm);
   lv_label_set_text(zlm, "-");
