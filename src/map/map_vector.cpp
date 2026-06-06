@@ -469,16 +469,11 @@ static const AdminStyle kAdmin[] = {
 
 // Place label styling: class → {minZoom, priority, font, r, g, b}
 struct PlaceStyle { const char *cls; int minZ; int prio; const lv_font_t *font; uint8_t r,g,b; };
-// Style transposed from firmware features.json (priority + color + font_size).
-// minZ kept at 0 here — filtering by zoom is done upstream by tilemaker
-// (process-aprs.lua, brackets identical to firmware text_features).
+// Place label styles: priority + color + font. minZ=0 everywhere — zoom
+// filtering is delegated to tilemaker (process-aprs.lua). Duplicating it
+// here produced empty zoom bands or abrupt gaps instead of a smooth progression.
 // Priority: lower = drawn first / wins collision.
-// Colors: #555555 for city/town, #666666 for village/suburb, #777777 hamlet.
-// kPlaces : style + priorité par classe. minZ=0 partout — le filtre par
-// zoom est délégué à tilemaker (process-aprs.lua) qui réplique fidèlement
-// firmware text_features() (ladder population + type). Reproduire le
-// filtre ici en double aboutissait à des paliers vides ou à des sauts
-// abrupts au lieu d'une progression fine zoom-par-zoom.
+// Colors: #555555 city/town, #666666 village/suburb, #777777 hamlet.
 static const PlaceStyle kPlaces[] = {
     {"city",      0, 10, &lv_font_montserrat_14, 0x55,0x55,0x55},
     {"town",      0, 20, &lv_font_montserrat_14, 0x55,0x55,0x55},
@@ -919,10 +914,12 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
         bool isWaterName = (name == "water_name");
         bool isWaterDetail = (name == "water_name_detail");
         bool isRoadName = (name == "transportation_name");
-        if (!isPlace && !isWaterName && !isWaterDetail && !isRoadName) continue;
+        bool isPeak = (name == "mountain_peak");
+        if (!isPlace && !isWaterName && !isWaterDetail && !isRoadName && !isPeak) continue;
         while (auto feat = lay.next_feature()) {
             std::string labelText, nameLatin, cls, ref;
             int pop = 0;
+            int ele = 0;
             while (auto prop = feat.next_property()) {
                 auto pt = prop.value().type();
                 if (pt == vtzero::property_value_type::string_value) {
@@ -935,6 +932,12 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                     if (pt == vtzero::property_value_type::int_value)       pop = (int)prop.value().int_value();
                     else if (pt == vtzero::property_value_type::sint_value) pop = (int)prop.value().sint_value();
                     else if (pt == vtzero::property_value_type::uint_value) pop = (int)prop.value().uint_value();
+                } else if (prop.key() == "ele") {
+                    if (pt == vtzero::property_value_type::int_value)       ele = (int)prop.value().int_value();
+                    else if (pt == vtzero::property_value_type::sint_value) ele = (int)prop.value().sint_value();
+                    else if (pt == vtzero::property_value_type::uint_value) ele = (int)prop.value().uint_value();
+                    else if (pt == vtzero::property_value_type::float_value) ele = (int)prop.value().float_value();
+                    else if (pt == vtzero::property_value_type::double_value) ele = (int)prop.value().double_value();
                 }
             }
             auto geom = feat.geometry_type();
@@ -961,6 +964,27 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                     } else push(cx,cy,labelText,70,rtFont(&lv_font_montserrat_12),0x4A,0x7A,0xB0);
                 }
             }
+            // --- Mountain peak / volcano: triangle marker from Z12 with name + ele
+            // mountain_peak layer (natural=peak), min zoom 12.
+            else if (isPeak && geom == vtzero::GeomType::POINT) {
+                if (z < 12) continue;
+                struct PointAt { int ts; int px=-1, py=-1;
+                    void points_begin(uint32_t){} void points_point(vtzero::point p){ px=toPxX(p.x,ts); py=toPxY(p.y,ts); } void points_end(){}
+                    void linestring_begin(uint32_t){} void linestring_point(vtzero::point){} void linestring_end(){}
+                    void ring_begin(uint32_t){} void ring_point(vtzero::point){} void ring_end(vtzero::ring_type){}
+                } pa; pa.ts=sz;
+                vtzero::decode_point_geometry(feat.geometry(), pa);
+                if (pa.px<0 || pa.py<0 || pa.px>=sz || pa.py>=sz) continue;
+                Label lab;
+                lab.px = pa.px; lab.py = pa.py;
+                lab.priority = 40;             // between roads (25-35) and obscure places (50+)
+                lab.text = labelText.empty() ? nameLatin : labelText;
+                lab.r = 0xD0; lab.g = 0x80; lab.b = 0x50; // #d08050
+                lab.font = rtFont(&lv_font_montserrat_12);
+                lab.isPeak = true;
+                lab.elevation = ele;
+                out.push_back(std::move(lab));
+            }
             // --- Waterways (river in water_name, canal in water_name_detail): name
             // oriented along the path, no background. min_zoom handled by the tiles.
             else if ((isWaterName || (isWaterDetail && cls == "canal"))
@@ -970,10 +994,9 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                 LineMid lm; lm.ts=sz;
                 vtzero::decode_linestring_geometry(feat.geometry(),lm);
                 if (lm.px.size()>=2) {
-                    // Anchor at the polyline mid-index — same as before, used
-                    // for dedup/hysteresis. The actual rendering walks the
-                    // full path glyph by glyph (firmware-style) thanks to
-                    // Label::path populated below.
+                    // Anchor at the polyline mid-index for dedup/hysteresis.
+                    // The actual rendering walks the full path glyph by glyph
+                    // thanks to Label::path populated below.
                     int m = (int)lm.px.size() / 2;
                     int px = lm.px[m], py = lm.py[m];
                     if (px>=0 && px<sz && py>=0 && py<sz) {

@@ -129,7 +129,7 @@ namespace GPS_Utils {
 
     void setDateFromData() {
         // On Linux the system clock is managed by NTP/systemd-timesyncd.
-        // The ESP32 firmware must set it (no RTC/NTP); here we don't.
+        // On embedded targets the clock is usually set from GPS; here we don't.
         // Calling settimeofday() would jump the system clock and break
         // millis()-based timers (mapStations TTL, dedup, etc.).
     }

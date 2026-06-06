@@ -1,4 +1,4 @@
-/* Map Coordinate Math — ported from ESP32 firmware */
+/* Map Coordinate Math */
 #include "map_coordinate_math.h"
 
 namespace MapMath {

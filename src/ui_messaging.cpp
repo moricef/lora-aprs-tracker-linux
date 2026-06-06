@@ -103,6 +103,7 @@ static bool need_aprs_list_refresh = false;
 
 // Stats tab persistent widgets
 static lv_obj_t *stats_title_lbl = nullptr;
+static lv_obj_t *stats_summary_lbl = nullptr;
 static lv_obj_t *stats_table = nullptr;
 
 // Frame item pool for object recycling (avoids alloc/dealloc churn)
@@ -1198,6 +1199,13 @@ static void populate_stats(lv_obj_t *cont) {
 #endif
         }
 
+        // Hybrid stats summary: last hour / last 24 h / cumulative + since
+        stats_summary_lbl = lv_label_create(cont);
+        if (stats_summary_lbl) {
+            lv_obj_set_style_text_color(stats_summary_lbl, lv_color_hex(0xaaaaaa), 0);
+            lv_obj_set_style_text_font(stats_summary_lbl, &lv_font_montserrat_14, 0);
+        }
+
         stats_table = lv_table_create(cont);
         if (stats_table) {
             lv_table_set_col_cnt(stats_table, 4); // Remove the "Time" column
@@ -1246,7 +1254,31 @@ static void populate_stats(lv_obj_t *cont) {
 
             // Center text in all table columns
             lv_obj_set_style_text_align(stats_table, LV_TEXT_ALIGN_CENTER, LV_PART_ITEMS);
+            // Vertical-only scroll: the column widths sum exactly to the
+            // available area on this screen, so the residual horizontal
+            // scrollbar was just visual noise.
+            lv_obj_set_scroll_dir(stats_table, LV_DIR_VER);
         }
+    }
+
+    // Hybrid stats summary line (last hour / last 24 h / total + since).
+    if (stats_summary_lbl) {
+        LinkStats ls = STORAGE_Utils::getStats();
+        uint32_t rxH  = STORAGE_Utils::getRxCountLastHour();
+        uint32_t rx24 = STORAGE_Utils::getRxCountLast24h();
+        uint32_t txH  = STORAGE_Utils::getTxCountLastHour();
+        uint32_t tx24 = STORAGE_Utils::getTxCountLast24h();
+        char sinceBuf[32] = "—";
+        if (ls.since > 0) {
+            time_t t = (time_t)ls.since;
+            struct tm tm; localtime_r(&t, &tm);
+            strftime(sinceBuf, sizeof(sinceBuf), "%Y-%m-%d", &tm);
+        }
+        char line[160];
+        snprintf(line, sizeof(line),
+                 "RX %u/h  %u/24h  %u total   TX %u/h  %u/24h  %u total   since %s",
+                 rxH, rx24, ls.rxCount, txH, tx24, ls.txCount, sinceBuf);
+        lv_label_set_text(stats_summary_lbl, line);
     }
 
     // Update table

@@ -77,8 +77,13 @@ void zoomOut() {
 }
 
 void refreshStations() {
-  if (mapActive && mapCont)
+  if (mapActive && mapCont) {
     MapMarkers::createMarkers();
+    // Without this redraw the trace canvas stays frozen between zoom /
+    // tile-cross events, so mobile-station traces accumulate in memory
+    // but never appear on screen.
+    MapTraces::redraw();
+  }
 }
 
 // ============================================================
@@ -171,7 +176,7 @@ lv_obj_t *create(lv_obj_t *) {
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x1a1a2e), 0);
   lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
 
-  // Title bar (green, same as firmware)
+  // Title bar
   lv_obj_t *tbar = lv_obj_create(scr);
   tbarMap = tbar;
   lv_obj_set_size(tbar, CONT_W, 45);
@@ -181,7 +186,7 @@ lv_obj_t *create(lv_obj_t *) {
   lv_obj_set_style_radius(tbar, 0, 0);
   lv_obj_set_style_pad_all(tbar, 5, 0);
 
-  // Back button (wider than icon buttons, same as firmware)
+  // Back button (wider than icon buttons)
   lv_obj_t *btnBack = lv_btn_create(tbar);
   lv_obj_set_size(btnBack, 100, 32);
   lv_obj_set_style_bg_color(btnBack, lv_color_hex(0x16213e), 0);
@@ -191,7 +196,7 @@ lv_obj_t *create(lv_obj_t *) {
   lv_label_set_text(bl, "< BACK");
   lv_obj_center(bl);
 
-  // GPS recenter + follow toggle (firmware: blue when following, orange when not)
+  // GPS recenter + follow toggle (blue when following, orange when not)
   btnRecenter = lv_btn_create(tbar);
   lv_obj_set_size(btnRecenter, 50, 32);
   lv_obj_align(btnRecenter, LV_ALIGN_RIGHT_MID, -195, 0);
@@ -251,7 +256,7 @@ lv_obj_t *create(lv_obj_t *) {
   lv_label_set_text(zlm, "-");
   lv_obj_center(zlm);
 
-  // GPX record toggle (rightmost, orange when recording — same as firmware)
+  // GPX record toggle (rightmost, orange when recording)
   static lv_obj_t *btnGPX = nullptr;
   btnGPX = lv_btn_create(tbar);
   lv_obj_set_size(btnGPX, 50, 32);
@@ -272,7 +277,7 @@ lv_obj_t *create(lv_obj_t *) {
   lv_label_set_text(lblGPX, "GPX");
   lv_obj_center(lblGPX);
 
-  // Title "MAP (Zxx)" — center offset -30, same style as firmware
+  // Title "MAP (Zxx)"
   titleLabel = lv_label_create(tbar);
   lv_label_set_text(titleLabel, "MAP");
   lv_obj_set_style_text_color(titleLabel, lv_color_hex(0xffffff), 0);

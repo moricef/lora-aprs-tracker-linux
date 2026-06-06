@@ -1,5 +1,5 @@
 #pragma once
-// Linux File/Dir abstraction matching the Arduino SD/SPIFFS File API used in the firmware.
+// Linux File/Dir abstraction matching the Arduino SD/SPIFFS File API.
 #include <stdio.h>
 #include <dirent.h>
 #include <sys/stat.h>

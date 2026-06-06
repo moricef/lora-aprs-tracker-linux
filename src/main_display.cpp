@@ -219,7 +219,7 @@ int main(void) {
     // Ouvre les tuiles vectorielles (sans bloquer si fichier absent)
     MapVector::open("/home/fab2/Developpement/LoRa_APRS/sud-france-aprs.pmtiles");
     UIDashboard::createDashboard();
-    fprintf(stderr, "Real ESP32 dashboard running (1024x600)\n");
+    fprintf(stderr, "Dashboard running (1024x600)\n");
 
     // System time updated every second
     lv_timer_create(sysTimeCallback, 1000, nullptr);

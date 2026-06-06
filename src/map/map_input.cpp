@@ -53,7 +53,7 @@ static void touchCb(lv_event_t *e) {
         dragAccumX += dx;
         dragAccumY += dy;
 
-        // Disable GPS follow on drag (firmware behaviour)
+        // Drag disables GPS follow so the view stays where the user pans to.
         if ((dx != 0 || dy != 0) && mapFollowGps) {
             mapFollowGps = false;
             MapView::markFollowGpsDisabled();

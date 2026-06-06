@@ -344,7 +344,7 @@ void refresh() {
             lv_draw_label(&layer, &ld, &a);
             placed.push_back({lx, ly, w, h});
         } else if (wwReady) {
-            // Waterway: walk the polyline glyph by glyph (firmware model :
+            // Waterway: walk the polyline glyph by glyph —
             // each glyph is rendered upright on the scratch canvas then
             // blitted rotated by the local segment angle, so the text
             // follows the curve instead of being one rigid rotated word).

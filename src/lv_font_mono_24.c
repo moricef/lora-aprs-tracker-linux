@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 24 px
  * Bpp: 4
- * Opts: --bpp 4 --size 24 --no-compress --font /home/fab2/Developpement/LoRa_APRS/CA2RXU/JetBrainsMono-2.304/fonts/ttf/JetBrainsMono-Medium.ttf --range 32-127 --format lvgl -o /home/fab2/.local/share/LoRa_Tracker/fonts/lv_font_mono_24.c
+ * Opts: --bpp 4 --size 24 --no-compress --font JetBrainsMono-Medium.ttf --range 32-127 --format lvgl -o /home/fab2/.local/share/LoRa_Tracker/fonts/lv_font_mono_24.c
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE

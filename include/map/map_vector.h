@@ -17,9 +17,11 @@ namespace MapVector {
         bool followLine = false;    // true = texte le long de la ligne, sans fond (waterway)
         bool shield = false;        // true = ref de route : cartouche couleur de route (r,g,b = couleur de base)
         bool isPlace = false;       // true = city/town/village (rendered plain black, no halo)
+        bool isPeak = false;        // true = mountain peak / volcano (triangle marker)
         int population = 0;         // raw OSM population (places only); tiebreak between same-priority candidates
+        int elevation = 0;          // peak elevation in metres (if available)
         // Tile-local waterway polyline (empty for other label types). Walked
-        // glyph by glyph by the text-along-path renderer (firmware model).
+        // glyph by glyph by the text-along-path renderer.
         std::vector<lv_point_t> path;
     };
 
@@ -41,9 +43,9 @@ namespace MapVector {
     // tuile-locales, SANS les dessiner. Le placement global est fait par l'appelant.
     void getTileLabels(int z, int x, int y, std::vector<Label> &out);
 
-    // Charge la police accentuée (OpenSans-Bold.ttf) pour les labels, comme le firmware
-    // charge OpenSans-Bold.vlw. À appeler une fois après l'init LVGL. Sans elle, les
-    // labels retombent sur montserrat (ASCII) et les accents français sont coupés.
+    // Charge la police accentuée (OpenSans-Bold.ttf) pour les labels.
+    // À appeler une fois après l'init LVGL. Sans elle, les labels retombent
+    // sur montserrat (ASCII) et les accents français sont coupés.
     bool initLabelFonts();
 
     bool isOpen();

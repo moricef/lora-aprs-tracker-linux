@@ -96,7 +96,6 @@ void discoverZooms() {
   if (zMin <= zMax) {
     MapState::zoomMin = (zMin < 7) ? 7 : zMin;
     MapState::zoomMax = zMax;
-    MapState::zoom = zMax;
   }
   // Extend max zoom to include vector tiles + 3 overzoom levels. The
   // pmtiles file stops at maxZoom, but MapVector::ozSetup fetches the
@@ -111,6 +110,10 @@ void discoverZooms() {
     if (vMin < MapState::zoomMin || MapState::zoomMin == INT_MAX)
       MapState::zoomMin = vMin;
   }
+  // Preserve the zoom across map close/open — clamp only if the prior
+  // value falls outside the currently available range.
+  if (MapState::zoom < MapState::zoomMin) MapState::zoom = MapState::zoomMin;
+  if (MapState::zoom > MapState::zoomMax) MapState::zoom = MapState::zoomMax;
 }
 
 void discoverDefaultPosition() {

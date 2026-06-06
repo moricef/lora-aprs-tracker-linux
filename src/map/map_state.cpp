@@ -8,7 +8,7 @@ int zoomMin = 6, zoomMax = 8;
 int dragAccumX = 0, dragAccumY = 0;
 
 double gpsLat = 0.0, gpsLon = 0.0;
-bool mapFollowGps = true;  // firmware default: follow GPS on map open
+bool mapFollowGps = true;
 
 bool mapActive = false;
 bool fullscreenMap = false;

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <time.h>
 #include <algorithm>
+#include <deque>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include "storage_utils.h"
@@ -49,6 +50,11 @@ static void initPaths() {
 }
 
 static LinkStats             _stats = {};
+// Rolling windows: unix timestamps of RX/TX events in the last 24 h.
+// Used to compute "RX in last hour" and "RX in last 24 h" without
+// scanning the whole frames history. Reset on process restart.
+static std::deque<uint32_t>  _rxTimes;
+static std::deque<uint32_t>  _txTimes;
 static std::vector<DigiStats>   _digiStats;
 static std::vector<StationStats> _stationStats;
 static std::vector<DashboardRxEntry> _dashRx;
@@ -278,9 +284,22 @@ namespace STORAGE_Utils {
     void loadFramesFromSD() {}
 
     // ─── Link stats ──────────────────────────────────────────────────────────
-    void resetStats()    { _stats = {}; _digiStats.clear(); _statsDirty = true; }
+    void resetStats()    {
+        _stats = {}; _digiStats.clear();
+        _rxTimes.clear(); _txTimes.clear();
+        _statsDirty = true;
+    }
+
+    static void trimWindow(std::deque<uint32_t>& q, uint32_t now) {
+        const uint32_t cutoff = now - 24*3600;
+        while (!q.empty() && q.front() < cutoff) q.pop_front();
+    }
 
     void updateRxStats(int rssi, float snr) {
+        uint32_t now = (uint32_t)time(nullptr);
+        if (_stats.since == 0) _stats.since = now;
+        _rxTimes.push_back(now);
+        trimWindow(_rxTimes, now);
         _stats.rxCount++;
         if (_stats.rxCount == 1) { _stats.rssiMin = _stats.rssiMax = rssi; _stats.snrMin = _stats.snrMax = snr; }
         else {
@@ -298,7 +317,13 @@ namespace STORAGE_Utils {
         _statsDirty = true;
     }
 
-    void updateTxStats() { _stats.txCount++; _statsDirty = true; }
+    void updateTxStats() {
+        uint32_t now = (uint32_t)time(nullptr);
+        if (_stats.since == 0) _stats.since = now;
+        _txTimes.push_back(now);
+        trimWindow(_txTimes, now);
+        _stats.txCount++; _statsDirty = true;
+    }
     void updateAckStats(){ _stats.ackCount++; _statsDirty = true; }
 
     void updateDigiStats(const String& path) {
@@ -321,6 +346,19 @@ namespace STORAGE_Utils {
     LinkStats getStats()                                   { return _stats; }
     float getAvgRssi() { return _stats.rxCount ? (float)_stats.rssiTotal / _stats.rxCount : 0; }
     float getAvgSnr()  { return _stats.rxCount ? _stats.snrTotal / _stats.rxCount : 0; }
+
+    static uint32_t countSince(const std::deque<uint32_t>& q, uint32_t cutoff) {
+        uint32_t n = 0;
+        for (auto it = q.rbegin(); it != q.rend(); ++it) {
+            if (*it >= cutoff) n++;
+            else break;
+        }
+        return n;
+    }
+    uint32_t getRxCountLastHour()  { uint32_t now=(uint32_t)time(nullptr); return countSince(_rxTimes, now-3600); }
+    uint32_t getRxCountLast24h()   { uint32_t now=(uint32_t)time(nullptr); return countSince(_rxTimes, now-24*3600); }
+    uint32_t getTxCountLastHour()  { uint32_t now=(uint32_t)time(nullptr); return countSince(_txTimes, now-3600); }
+    uint32_t getTxCountLast24h()   { uint32_t now=(uint32_t)time(nullptr); return countSince(_txTimes, now-24*3600); }
     const std::vector<DigiStats>&    getDigiStats()       { return _digiStats; }
     const std::vector<StationStats>& getStationStats()    { return _stationStats; }
     const std::vector<DashboardRxEntry>& getDashboardLastRx() { return _dashRx; }
@@ -347,6 +385,7 @@ namespace STORAGE_Utils {
             _stats.snrMin    = j["link"].value("snrMin",    0.0f);
             _stats.snrMax    = j["link"].value("snrMax",    0.0f);
             _stats.snrTotal  = j["link"].value("snrTotal",  0.0f);
+            _stats.since     = j["link"].value("since",     0U);
         }
         if (j.contains("stations") && j["stations"].is_array()) {
             for (const auto& s : j["stations"]) {
@@ -362,8 +401,16 @@ namespace STORAGE_Utils {
                 _stationStats.push_back(ss);
             }
         }
-        ESP_LOGI(TAG, "Stats loaded: %u RX, %u TX, %zu stations",
-                 _stats.rxCount, _stats.txCount, _stationStats.size());
+        if (_stats.since > 0) {
+            time_t t = (time_t)_stats.since;
+            struct tm tm; localtime_r(&t, &tm);
+            char buf[32]; strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm);
+            ESP_LOGI(TAG, "Stats loaded: %u RX, %u TX, %zu stations (since %s)",
+                     _stats.rxCount, _stats.txCount, _stationStats.size(), buf);
+        } else {
+            ESP_LOGI(TAG, "Stats loaded: %u RX, %u TX, %zu stations",
+                     _stats.rxCount, _stats.txCount, _stationStats.size());
+        }
     }
 
     bool saveStats() {
@@ -377,6 +424,7 @@ namespace STORAGE_Utils {
         j["link"]["snrMin"]    = _stats.snrMin;
         j["link"]["snrMax"]    = _stats.snrMax;
         j["link"]["snrTotal"]  = _stats.snrTotal;
+        j["link"]["since"]     = _stats.since;
         j["stations"] = json::array();
         int max = std::min((int)_stationStats.size(), 20);
         for (int i = 0; i < max; i++) {

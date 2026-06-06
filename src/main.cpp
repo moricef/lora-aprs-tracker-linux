@@ -1,5 +1,4 @@
 // LoRa APRS Tracker — Linux port (Odroid C2 / aarch64)
-// Mirrors the ESP32 firmware logic: same modules, same data flow.
 #include "esp_log.h"
 #include <signal.h>
 #include <unistd.h>
@@ -45,7 +44,7 @@
 
 static const char* TAG = "Main";
 
-// ─── Global state (mirrors ESP32 globals) ────────────────────────────────────
+// ─── Global state ────────────────────────────────────────────────────────────
 Configuration   Config;
 uint8_t         myBeaconsIndex  = 0;
 int             myBeaconsSize   = 0;
@@ -178,7 +177,7 @@ static void* txBridgeThread(void*) {
     return nullptr;
 }
 
-// ─── Splash overlay (mirrors firmware showSplashScreen) ────────────────────────
+// ─── Splash overlay ──────────────────────────────────────────────────────────
 #ifdef USE_LVGL_UI
 static lv_obj_t *showSplashScreen() {
     lv_obj_t *parent = lv_screen_active();
@@ -212,9 +211,8 @@ static lv_obj_t *showSplashScreen() {
     lv_obj_set_style_text_font(ver, &lv_font_montserrat_24, 0);
     lv_obj_align(ver, LV_ALIGN_BOTTOM_MID, 0, -50);
 
-    // Based on credit
     lv_obj_t *ui = lv_label_create(scr);
-    lv_label_set_text(ui, "(based on CA2RXU ESP32 firmware)");
+    lv_label_set_text(ui, "LoRa APRS Linux Tracker");
     lv_obj_set_style_text_color(ui, lv_color_hex(0x0066cc), 0);
     lv_obj_set_style_text_font(ui, &lv_font_montserrat_18, 0);
     lv_obj_align(ui, LV_ALIGN_BOTTOM_MID, 0, -32);

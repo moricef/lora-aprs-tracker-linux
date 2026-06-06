@@ -19,6 +19,7 @@ struct LinkStats {
     float    snrMin;
     float    snrMax;
     float    snrTotal;
+    uint32_t since;  // Unix time of first RX/TX since last reset (0 = never updated)
 };
 
 struct DigiStats {
@@ -89,6 +90,10 @@ namespace STORAGE_Utils {
     LinkStats getStats();
     float getAvgRssi();
     float getAvgSnr();
+    uint32_t getRxCountLastHour();
+    uint32_t getRxCountLast24h();
+    uint32_t getTxCountLastHour();
+    uint32_t getTxCountLast24h();
     const std::vector<DigiStats>&   getDigiStats();
     const std::vector<StationStats>& getStationStats();
 

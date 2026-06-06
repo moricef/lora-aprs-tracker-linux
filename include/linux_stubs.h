@@ -1,5 +1,5 @@
 #pragma once
-// Stubs for ESP32-only subsystems not available on Linux.
+// Stubs for hardware subsystems not available on Linux.
 #include <Arduino.h>
 #include <stdio.h>
 #include <stdlib.h>

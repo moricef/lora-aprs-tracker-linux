@@ -14,7 +14,7 @@ namespace MapTraces {
 
 using namespace MapState;
 
-// Own trace ring buffer (mirrors firmware TracePoint).
+// Own GPS trace ring buffer.
 #define OWN_TRACE_MAX 200
 static TracePoint ownTrace[OWN_TRACE_MAX];
 static int ownTraceCount = 0;
@@ -26,91 +26,96 @@ static uint8_t  *traceBuf    = nullptr;
 constexpr int TRACE_CANVAS_W = SPRITE_SIZE;
 constexpr int TRACE_CANVAS_H = 600;
 
-static inline void traceSetPx(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
-    if (x < 0 || x >= TRACE_CANVAS_W || y < 0 || y >= TRACE_CANVAS_H) return;
-    uint8_t *p = traceBuf + (y * TRACE_CANVAS_W + x) * 4;
-    p[0] = b; p[1] = g; p[2] = r; p[3] = 0xFF;
+// Antialiased line on the trace canvas. lv_draw_line is deferred: the
+// dsc is read at flush time, after the local has gone out of scope.
+// Queuing several lines on a single layer leaves only the last one
+// valid. We commit each line by closing and reopening the layer.
+static void drawAALine(lv_obj_t *canvas, int x0, int y0, int x1, int y1,
+                       uint32_t color, int width) {
+    lv_layer_t layer;
+    lv_canvas_init_layer(canvas, &layer);
+    lv_draw_line_dsc_t d; lv_draw_line_dsc_init(&d);
+    d.color = lv_color_hex(color);
+    d.width = width;
+    d.opa = LV_OPA_COVER;
+    d.p1.x = x0; d.p1.y = y0;
+    d.p2.x = x1; d.p2.y = y1;
+    lv_draw_line(&layer, &d);
+    lv_canvas_finish_layer(canvas, &layer);
 }
 
-static void traceDrawLine(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b) {
-    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy;
-    while (true) {
-        traceSetPx(x0, y0, r, g, b);
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
-        if (e2 >= dy) { err += dy; x0 += sx; }
-        if (e2 <= dx) { err += dx; y0 += sy; }
-    }
+// Skip points that fall way outside the sprite — saves the draw call
+// when a polyline tail leaves the visible area at high zoom.
+static inline bool spriteOutOfBounds(int px, int py) {
+    return px < -SPRITE_SIZE || px > 2 * SPRITE_SIZE ||
+           py < -SPRITE_SIZE || py > 2 * SPRITE_SIZE;
 }
 
-static void drawStationsTrace() {
+static void drawStationsTrace(lv_obj_t *canvas) {
     uint32_t now = millis();
     for (int s = 0; s < MAP_STATIONS_MAX; s++) {
         MapStation *st = STATION_Utils::getMapStation(s);
-        if (!st || !st->valid || st->traceCount < 2) continue;
+        if (!st || !st->valid || st->traceCount < 1) continue;
 
         int prevSX = INT_MIN, prevSY = INT_MIN;
         bool firstPt = true;
         for (int i = 0; i < st->traceCount; i++) {
             int idx = (st->traceHead - st->traceCount + i + TRACE_MAX_POINTS) % TRACE_MAX_POINTS;
             uint32_t age = now - st->trace[idx].time;
-            if (age > 3600000) continue; // TTL 1h
+            if (age > 3600000) continue; // 1h TTL
             int sx, sy;
             MapMath::latLonToPixel(st->trace[idx].lat, st->trace[idx].lon,
                                    centerLat, centerLon, zoom, true,
                                    centerTX, centerTY, &sx, &sy);
+            if (spriteOutOfBounds(sx, sy)) continue;
             if (!firstPt)
-                traceDrawLine(prevSX, prevSY, sx, sy, 0x00, 0x55, 0xFF);
+                drawAALine(canvas, prevSX, prevSY, sx, sy, 0x0055FF, 2);
             prevSX = sx; prevSY = sy;
             firstPt = false;
         }
-        // Line to current position
         int cx, cy;
         MapMath::latLonToPixel(st->latitude, st->longitude,
                                centerLat, centerLon, zoom, true,
                                centerTX, centerTY, &cx, &cy);
-        if (!firstPt)
-            traceDrawLine(prevSX, prevSY, cx, cy, 0x00, 0x55, 0xFF);
+        if (!firstPt && !spriteOutOfBounds(cx, cy))
+            drawAALine(canvas, prevSX, prevSY, cx, cy, 0x0055FF, 2);
     }
 }
 
-// Own trace rendering — purple, same as firmware (0x9933FF).
-static void drawOwnTrace() {
+// Own trace: purple 0x9933FF, width=2 AA, no TTL.
+static void drawOwnTrace(lv_obj_t *canvas) {
     if (ownTraceCount < 2) return;
-    uint32_t now = millis();
+
+    int minPixDist2 = 0;
+    if (zoom <= 10)      minPixDist2 = 144;
+    else if (zoom <= 12) minPixDist2 = 36;
+    else if (zoom <= 14) minPixDist2 = 9;
+
     int prevSX = INT_MIN, prevSY = INT_MIN;
     bool firstPt = true;
-    // Pixel skip threshold (same as firmware) — drops jitter at low zoom.
-    int minDist2 = 0;
-    if (zoom <= 10)      minDist2 = 144;
-    else if (zoom <= 12) minDist2 = 36;
-    else if (zoom <= 14) minDist2 = 9;
-
     for (int i = 0; i < ownTraceCount; i++) {
         int idx = (ownTraceHead - ownTraceCount + i + OWN_TRACE_MAX) % OWN_TRACE_MAX;
-        if (now - ownTrace[idx].time > 3600000) continue; // 1h TTL
         int sx, sy;
         MapMath::latLonToPixel(ownTrace[idx].lat, ownTrace[idx].lon,
                                centerLat, centerLon, zoom, true,
                                centerTX, centerTY, &sx, &sy);
-        if (!firstPt) {
+        // Jitter filter exempts the last stored point — always draw the final segment.
+        if (!firstPt && i < ownTraceCount - 1 && minPixDist2 > 0) {
             int dx = sx - prevSX, dy = sy - prevSY;
-            if (minDist2 == 0 || dx*dx + dy*dy >= minDist2)
-                traceDrawLine(prevSX, prevSY, sx, sy, 0x99, 0x33, 0xFF);
+            if (dx*dx + dy*dy < minPixDist2) continue;
         }
+        if (!firstPt)
+            drawAALine(canvas, prevSX, prevSY, sx, sy, 0x9933FF, 2);
         prevSX = sx; prevSY = sy;
         firstPt = false;
     }
-    // Line to current GPS position
     if (gpsLat != 0.0 || gpsLon != 0.0) {
         int cx, cy;
         MapMath::latLonToPixel((float)gpsLat, (float)gpsLon,
                                centerLat, centerLon, zoom, true,
                                centerTX, centerTY, &cx, &cy);
         if (!firstPt)
-            traceDrawLine(prevSX, prevSY, cx, cy, 0x99, 0x33, 0xFF);
+            drawAALine(canvas, prevSX, prevSY, cx, cy, 0x9933FF, 2);
     }
 }
 
@@ -135,10 +140,10 @@ void destroy() {
 void redraw() {
     if (!traceBuf) return;
     memset(traceBuf, 0, TRACE_CANVAS_W * TRACE_CANVAS_H * 4);
-    drawStationsTrace();
-    drawOwnTrace();
-    if (traceCanvas && lv_obj_is_valid(traceCanvas))
-        lv_obj_invalidate(traceCanvas);
+    if (!traceCanvas || !lv_obj_is_valid(traceCanvas)) return;
+    drawStationsTrace(traceCanvas);
+    drawOwnTrace(traceCanvas);
+    lv_obj_invalidate(traceCanvas);
 }
 
 void recordOwnPosition() {

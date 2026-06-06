@@ -39,7 +39,11 @@ inline int spriteToContX(int spriteX) {
     return spriteX + (CONT_W - SPRITE_SIZE) / 2 + dragAccumX;
 }
 inline int spriteToContY(int spriteY) {
-    return spriteY + (MAP_H - SPRITE_SIZE) / 2 + dragAccumY;
+    // Must follow the dynamic container height (fullscreen=600 vs MAP_H=525),
+    // otherwise markers and the trace canvas — which uses the dynamic value —
+    // get offset by ~37 px vertically in fullscreen.
+    int mapH = fullscreenMap ? 600 : MAP_H;
+    return spriteY + (mapH - SPRITE_SIZE) / 2 + dragAccumY;
 }
 
 // Lat/lon → container pixel. Returns true if the projected point falls

@@ -1957,9 +1957,9 @@ void UISettings::createAboutScreen() {
     lv_obj_set_style_text_color(lbl_project, lv_color_hex(UIColors::TEXT_PURPLE), 0);
     lv_obj_set_style_text_font(lbl_project, &lv_font_montserrat_18, 0);
 
-    // CA2RXU Firmware version
+    // Reference firmware version
     lv_obj_t *lbl_fw_title = lv_label_create(content);
-    lv_label_set_text(lbl_fw_title, "Firmware (CA2RXU)");
+    lv_label_set_text(lbl_fw_title, "Reference firmware");
     lv_obj_set_style_text_color(lbl_fw_title, lv_color_hex(UIColors::TEXT_CYAN), 0);
     lv_obj_set_style_text_font(lbl_fw_title, &lv_font_montserrat_14, 0);
 

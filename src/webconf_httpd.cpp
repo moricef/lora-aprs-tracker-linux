@@ -266,13 +266,10 @@ void start(int port) {
         if (slash) *slash = '\0';
         _assets_dir = std::string(exepath) + "/data_embed";
     }
-    // Fallback: TRACKER_DATA/data_embed, then firmware source tree
+    // Fallback: TRACKER_DATA/data_embed, then source tree
     if (_assets_dir.empty() || readFile(_assets_dir + "/index.html.gz").empty()) {
         const char *td = getenv("TRACKER_DATA");
         if (td) _assets_dir = std::string(td) + "/data_embed";
-    }
-    if (readFile(_assets_dir + "/index.html.gz").empty()) {
-        _assets_dir = "/home/fab2/Developpement/LoRa_APRS/CA2RXU/LoRa_APRS_Tracker-async/data_embed";
     }
 
     struct sockaddr_in sa = {};
