@@ -24,7 +24,7 @@ static int ownTraceHead = 0;
 static lv_obj_t *traceCanvas = nullptr;
 static uint8_t  *traceBuf    = nullptr;
 constexpr int TRACE_CANVAS_W = SPRITE_SIZE;
-constexpr int TRACE_CANVAS_H = 600;
+constexpr int TRACE_CANVAS_H = SPRITE_SIZE;  // must match sprite height — traces use sprite coords
 
 // Antialiased line on the trace canvas. lv_draw_line is deferred: the
 // dsc is read at flush time, after the local has gone out of scope.
@@ -77,7 +77,7 @@ static void drawStationsTrace(lv_obj_t *canvas) {
         MapMath::latLonToPixel(st->latitude, st->longitude,
                                centerLat, centerLon, zoom, true,
                                centerTX, centerTY, &cx, &cy);
-        if (!firstPt && !spriteOutOfBounds(cx, cy))
+        if (!firstPt)
             drawAALine(canvas, prevSX, prevSY, cx, cy, 0x0055FF, 2);
     }
 }
@@ -124,8 +124,11 @@ void create(lv_obj_t *parent) {
     traceBuf = (uint8_t *)lv_malloc(LV_CANVAS_BUF_SIZE(TRACE_CANVAS_W, TRACE_CANVAS_H, 32, LV_DRAW_BUF_STRIDE_ALIGN));
     traceCanvas = lv_canvas_create(parent);
     lv_canvas_set_buffer(traceCanvas, traceBuf, TRACE_CANVAS_W, TRACE_CANVAS_H, LV_COLOR_FORMAT_ARGB8888);
-    lv_obj_set_pos(traceCanvas, (CONT_W - SPRITE_SIZE) / 2, (MAP_H - SPRITE_SIZE) / 2);
-    lv_obj_set_size(traceCanvas, TRACE_CANVAS_W, MAP_H);
+    // Canvas covers the full sprite (1280×1280), positioned so its centre
+    // aligns with the map-area centre. Same geometry as the label canvas.
+    int mapH = fullscreenMap ? 600 : MAP_H;
+    lv_obj_set_pos(traceCanvas, (CONT_W - SPRITE_SIZE) / 2, (mapH - SPRITE_SIZE) / 2);
+    lv_obj_set_size(traceCanvas, TRACE_CANVAS_W, TRACE_CANVAS_H);
     lv_obj_clear_flag(traceCanvas, LV_OBJ_FLAG_CLICKABLE);
 }
 
@@ -165,7 +168,7 @@ void reposition() {
     lv_obj_set_pos(traceCanvas,
                    (CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
                    (mapH - SPRITE_SIZE) / 2 + dragAccumY);
-    lv_obj_set_size(traceCanvas, TRACE_CANVAS_W, mapH);
+    lv_obj_set_size(traceCanvas, TRACE_CANVAS_W, TRACE_CANVAS_H);
 }
 
 bool isReady() { return traceCanvas != nullptr; }
