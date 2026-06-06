@@ -1059,6 +1059,27 @@ bool renderTileRaw(uint8_t *buf, int sz, int z, int x, int y) {
     return true;
 }
 
+// ---- renderTileCached : raw buffer + render cache (for compositing) --------
+
+bool renderTileCached(uint8_t *buf, int sz, int z, int x, int y) {
+    if (!s_mapped || !buf) return false;
+
+    uint8_t *cached = cacheGet(z, x, y);
+    if (cached) {
+        memcpy(buf, cached, sz * sz * 4);
+        return true;
+    }
+
+    renderTileBuf(buf, sz, z, x, y);
+
+    uint8_t *copy = (uint8_t *)lv_malloc(sz * sz * 4);
+    if (copy) {
+        memcpy(copy, buf, sz * sz * 4);
+        cachePut(z, x, y, copy, true);
+    }
+    return true;
+}
+
 // ---- renderTile public (canvas version, with cache) ------------------------
 
 bool renderTile(lv_obj_t *canvas, int z, int x, int y, int canvasSize) {

@@ -39,6 +39,11 @@ namespace MapVector {
     // Outil de debug : pixels identiques à ce que le canvas afficherait.
     bool renderTileRaw(uint8_t *buf, int sz, int z, int x, int y);
 
+    // Same as renderTile but fills a caller-owned buffer (sz*sz*4, ARGB8888)
+    // instead of a canvas, with the same render cache. For compositing tiles
+    // into a shared map buffer.
+    bool renderTileCached(uint8_t *buf, int sz, int z, int x, int y);
+
     // Extrait les labels d'une tuile (lieux, lac, cours d'eau, refs de route) en coords
     // tuile-locales, SANS les dessiner. Le placement global est fait par l'appelant.
     void getTileLabels(int z, int x, int y, std::vector<Label> &out);

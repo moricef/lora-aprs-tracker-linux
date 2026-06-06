@@ -23,49 +23,92 @@ using namespace MapState;
 bool  panActive = false;
 float velX = 0.0f, velY = 0.0f;
 
-// 5×5 raster image grid (one per visible tile when zoom < 9).
-static lv_obj_t *tileImg[GRID][GRID] = {};
-
-// Vector canvas grid (lazily created when zoom ≥ 9 && PMTiles open).
-// vecLast* caches the (z,x,y) tuple rendered into each slot so we don't
-// re-render an identical tile while panning sub-tile distances.
-static lv_obj_t *vecCanvas[GRID][GRID] = {};
-static int       vecLastZ[GRID][GRID]  = {};
-static int       vecLastTX[GRID][GRID] = {};
-static int       vecLastTY[GRID][GRID] = {};
-static uint8_t  *vecBuf[GRID][GRID]    = {};
+// Single composited map canvas (ARGB8888, SPRITE_SIZE²). Raster and vector
+// tiles are drawn into this one buffer instead of per-tile LVGL objects, so
+// every map layer shares a single coordinate space.
+static lv_obj_t *mapCanvas   = nullptr;
+static uint8_t  *mapBuf      = nullptr;
+static uint8_t  *tileScratch = nullptr;  // reused per vector tile render
 
 // Owner widgets passed by map_view at init/setLabels.
 static lv_obj_t *parentCont  = nullptr;
 static lv_obj_t *titleLabel  = nullptr;
 static lv_obj_t *infoLabel   = nullptr;
 
+// Place the canvas so its centre tracks the map-area centre, plus the
+// sub-tile pan offset. Single source of truth for the vertical origin.
+static void positionCanvas() {
+    if (!mapCanvas) return;
+    int mapH = fullscreenMap ? 600 : MAP_H;
+    lv_obj_set_pos(mapCanvas,
+                   (CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
+                   (mapH - SPRITE_SIZE) / 2 + dragAccumY);
+}
+
+// Composite the 5×5 tile grid into mapBuf. Raster (zoom<9) uses the LVGL
+// image pipeline; vector (zoom≥9) blits cached ARGB renders row by row.
+static void compositeTiles() {
+    if (!mapCanvas) return;
+    lv_draw_buf_t *db = lv_canvas_get_draw_buf(mapCanvas);
+    if (!db || !db->data) return;
+    uint32_t dstStride = db->header.stride;
+
+    if (zoom >= 9 && MapVector::isOpen()) {
+        for (int dy = 0; dy < GRID; dy++)
+            for (int dx = 0; dx < GRID; dx++) {
+                int tx = centerTX + dx - GRID / 2, ty = centerTY + dy - GRID / 2;
+                if (!MapVector::renderTileCached(tileScratch, TILE_SIZE, zoom, tx, ty))
+                    continue;
+                int ox = dx * TILE_SIZE, oy = dy * TILE_SIZE;
+                for (int row = 0; row < TILE_SIZE; row++)
+                    memcpy(db->data + (size_t)(oy + row) * dstStride + (size_t)ox * 4,
+                           tileScratch + (size_t)row * TILE_SIZE * 4,
+                           TILE_SIZE * 4);
+            }
+    } else {
+        lv_canvas_fill_bg(mapCanvas, lv_color_hex(0x2F4F4F), LV_OPA_COVER);
+        for (int dy = 0; dy < GRID; dy++)
+            for (int dx = 0; dx < GRID; dx++) {
+                int tx = centerTX + dx - GRID / 2, ty = centerTY + dy - GRID / 2;
+                if (!MapIO::tileExists(tx, ty, zoom)) continue;
+                char p[512];
+                snprintf(p, sizeof(p), "A:%s/%s/%d/%d/%d.jpg", MapIO::mapsRoot(),
+                         mapRegion, zoom, tx, ty);
+                // Draw each tile in its own layer pass: lv_draw_image reads the
+                // dsc (incl. src) at flush time, so the path must stay valid
+                // until finish_layer commits the draw.
+                lv_layer_t layer;
+                lv_canvas_init_layer(mapCanvas, &layer);
+                lv_draw_image_dsc_t idsc;
+                lv_draw_image_dsc_init(&idsc);
+                idsc.src = p;
+                lv_area_t coords = { dx * TILE_SIZE, dy * TILE_SIZE,
+                                     dx * TILE_SIZE + TILE_SIZE - 1,
+                                     dy * TILE_SIZE + TILE_SIZE - 1 };
+                lv_draw_image(&layer, &idsc, &coords);
+                lv_canvas_finish_layer(mapCanvas, &layer);
+            }
+    }
+    lv_obj_invalidate(mapCanvas);
+}
+
 void init(lv_obj_t *parent) {
     parentCont = parent;
-    for (int dy = 0; dy < GRID; dy++)
-        for (int dx = 0; dx < GRID; dx++) {
-            tileImg[dy][dx] = lv_image_create(parent);
-            lv_obj_set_size(tileImg[dy][dx], TILE_SIZE, TILE_SIZE);
-            lv_obj_set_pos(tileImg[dy][dx],
-                           (CONT_W - SPRITE_SIZE) / 2 + dx * TILE_SIZE,
-                           (MAP_H - SPRITE_SIZE) / 2 + dy * TILE_SIZE);
-        }
+    mapBuf = (uint8_t *)lv_malloc(
+        LV_CANVAS_BUF_SIZE(SPRITE_SIZE, SPRITE_SIZE, 32, LV_DRAW_BUF_STRIDE_ALIGN));
+    mapCanvas = lv_canvas_create(parent);
+    lv_canvas_set_buffer(mapCanvas, mapBuf, SPRITE_SIZE, SPRITE_SIZE,
+                         LV_COLOR_FORMAT_ARGB8888);
+    lv_obj_clear_flag(mapCanvas, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(mapCanvas, (CONT_W - SPRITE_SIZE) / 2, (MAP_H - SPRITE_SIZE) / 2);
+    tileScratch = (uint8_t *)lv_malloc(TILE_SIZE * TILE_SIZE * 4);
 }
 
 void destroy() {
-    for (int dy = 0; dy < GRID; dy++)
-        for (int dx = 0; dx < GRID; dx++) {
-            if (vecCanvas[dy][dx]) {
-                lv_obj_del(vecCanvas[dy][dx]);
-                vecCanvas[dy][dx] = nullptr;
-            }
-            if (vecBuf[dy][dx]) {
-                lv_free(vecBuf[dy][dx]);
-                vecBuf[dy][dx] = nullptr;
-            }
-            tileImg[dy][dx] = nullptr;  // owned by parent, deleted with it
-            vecLastZ[dy][dx] = vecLastTX[dy][dx] = vecLastTY[dy][dx] = 0;
-        }
+    if (mapCanvas && lv_obj_is_valid(mapCanvas)) lv_obj_del(mapCanvas);
+    mapCanvas = nullptr;
+    if (mapBuf)      { lv_free(mapBuf);      mapBuf = nullptr; }
+    if (tileScratch) { lv_free(tileScratch); tileScratch = nullptr; }
     parentCont = nullptr;
     titleLabel = nullptr;
     infoLabel  = nullptr;
@@ -80,53 +123,8 @@ void setLabels(lv_obj_t *title, lv_obj_t *info) {
 
 void reloadTiles() {
     if (!parentCont) return;
-    for (int dy = 0; dy < GRID; dy++) {
-        for (int dx = 0; dx < GRID; dx++) {
-            int tx = centerTX + dx - GRID / 2, ty = centerTY + dy - GRID / 2;
-            // Vector tile if zoom >= 9, raster otherwise
-            if (zoom >= 9 && MapVector::isOpen()) {
-                // Hide raster, show vector canvas
-                lv_obj_add_flag(tileImg[dy][dx], LV_OBJ_FLAG_HIDDEN);
-                if (!vecCanvas[dy][dx]) {
-                    vecCanvas[dy][dx] = lv_canvas_create(parentCont);
-                    vecBuf[dy][dx] = (uint8_t *)lv_malloc(LV_CANVAS_BUF_SIZE(
-                        TILE_SIZE, TILE_SIZE, 32, LV_DRAW_BUF_STRIDE_ALIGN));
-                    lv_canvas_set_buffer(vecCanvas[dy][dx], vecBuf[dy][dx], TILE_SIZE,
-                                         TILE_SIZE, LV_COLOR_FORMAT_ARGB8888);
-                }
-                lv_obj_clear_flag(vecCanvas[dy][dx], LV_OBJ_FLAG_HIDDEN);
-                lv_obj_set_pos(vecCanvas[dy][dx],
-                               (CONT_W - SPRITE_SIZE) / 2 + dx * TILE_SIZE + dragAccumX,
-                               (MAP_H - SPRITE_SIZE) / 2 + dy * TILE_SIZE + dragAccumY);
-                lv_obj_set_size(vecCanvas[dy][dx], TILE_SIZE, TILE_SIZE);
-                // Cache: skip re-render if same tile as last time
-                if (vecLastZ[dy][dx] != zoom || vecLastTX[dy][dx] != tx || vecLastTY[dy][dx] != ty) {
-                    if (!MapVector::renderTile(vecCanvas[dy][dx], zoom, tx, ty, TILE_SIZE)) {
-                        // Tile not in cache — queue async render for next time
-                        MapVector::requestTile(zoom, tx, ty);
-                    }
-                    vecLastZ[dy][dx]  = zoom;
-                    vecLastTX[dy][dx] = tx;
-                    vecLastTY[dy][dx] = ty;
-                }
-            } else {
-                // Raster fallback
-                if (vecCanvas[dy][dx])
-                    lv_obj_add_flag(vecCanvas[dy][dx], LV_OBJ_FLAG_HIDDEN);
-                lv_obj_clear_flag(tileImg[dy][dx], LV_OBJ_FLAG_HIDDEN);
-                lv_obj_set_pos(tileImg[dy][dx],
-                               (CONT_W - SPRITE_SIZE) / 2 + dx * TILE_SIZE + dragAccumX,
-                               (MAP_H - SPRITE_SIZE) / 2 + dy * TILE_SIZE + dragAccumY);
-                char p[512];
-                snprintf(p, sizeof(p), "A:%s/%s/%d/%d/%d.jpg", MapIO::mapsRoot(),
-                         mapRegion, zoom, tx, ty);
-                if (MapIO::tileExists(tx, ty, zoom))
-                    lv_image_set_src(tileImg[dy][dx], p);
-                else
-                    lv_image_set_src(tileImg[dy][dx], LV_SYMBOL_IMAGE);
-            }
-        }
-    }
+    compositeTiles();
+    positionCanvas();
     if (titleLabel) {
         char z[16];
         snprintf(z, sizeof(z), "MAP (Z%d)", zoom);
@@ -162,13 +160,7 @@ void reloadTiles() {
 
 void repositionAll() {
     int mapH = fullscreenMap ? 600 : MAP_H;
-    for (int dy2 = 0; dy2 < GRID; dy2++)
-        for (int dx2 = 0; dx2 < GRID; dx2++) {
-            int tx = (CONT_W - SPRITE_SIZE) / 2 + dx2 * TILE_SIZE + dragAccumX;
-            int ty = (mapH - SPRITE_SIZE) / 2 + dy2 * TILE_SIZE + dragAccumY;
-            lv_obj_set_pos(tileImg[dy2][dx2], tx, ty);
-            if (vecCanvas[dy2][dx2]) lv_obj_set_pos(vecCanvas[dy2][dx2], tx, ty);
-        }
+    positionCanvas();
     MapTraces::reposition();
     MapMarkers::updateMarkerPositions();
     MapLabels::reposition((CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
