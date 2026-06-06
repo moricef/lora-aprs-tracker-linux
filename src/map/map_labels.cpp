@@ -216,6 +216,26 @@ void drawInto(lv_obj_t *canvas) {
         float wwStartDist = 0.0f;
         bool wwReady = false;
         int swX = lx, swY = ly, swW = w, swH = h;
+        if (l.isPeak) {
+            // Match the drawn footprint (triangle + up to two text lines below)
+            // so the collision test reserves the real area, not a tiny box at
+            // the peak point — otherwise peak labels overlap place labels.
+            const int triH = 10, triW = 12;
+            int tApexY = l.y - triH / 2;
+            if (zoom >= 13 && !l.displayText.empty()) {
+                float cw = l.font->line_height * 0.55f;
+                int lineH = l.font->line_height;
+                int w1 = (int)(l.displayText.size() * cw) + 6;
+                int w2 = l.displayText2.empty() ? 0 : (int)(l.displayText2.size() * cw) + 6;
+                int textW = w1 > w2 ? w1 : w2;
+                int textH = w2 > 0 ? lineH * 2 + 1 : lineH;
+                int ty = l.y + triH / 2 + 2;
+                swX = l.x - textW / 2; swY = tApexY;
+                swW = textW; swH = (ty + textH) - tApexY;
+            } else {
+                swX = l.x - triW / 2; swY = tApexY; swW = triW; swH = triH;
+            }
+        }
         if (l.followLine && tmpLabelBuf && l.path.size() >= 2) {
             wwArc.assign(l.path.size(), 0.0f);
             for (size_t j = 1; j < l.path.size(); j++) {
