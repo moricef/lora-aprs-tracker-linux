@@ -2,9 +2,9 @@
 
 #include "lvgl.h"
 
-// Tile-grid orchestrator : owns the 5×5 raster/vector canvas grid, the
-// reload/render pipeline and the zoom controls. Drives the overlays
-// (MapTraces, MapLabels, MapMarkers) after each reload.
+// Map orchestrator : owns the single composited canvas (tiles + trace +
+// labels + markers), the reload/recompose pipeline and the zoom controls.
+// Drives the overlays (MapTraces, MapLabels, MapMarkers) at composite time.
 
 namespace MapEngine {
 
@@ -13,12 +13,11 @@ namespace MapEngine {
 extern bool  panActive;
 extern float velX, velY;
 
-// Allocate the 5×5 raster image widgets under `parent`. Vector canvases
-// are created lazily inside reloadTiles when zoom switches to vector.
+// Allocate the composited map canvas (+ snapshot/scratch buffers) under
+// `parent`.
 void init(lv_obj_t *parent);
 
-// Free every vector canvas + tile widget. Raster widgets are deleted by
-// LVGL when their parent (mapCont) is freed.
+// Free the map canvas and its buffers.
 void destroy();
 
 // Register the two header widgets so reloadTiles can update them.

@@ -1,11 +1,8 @@
 #pragma once
 
-#include "map_coordinate_math.h"
-
 // Global map state shared across map_view / map_engine / map_input /
 // map_labels / map_traces / map_markers. UI objects and per-module buffers
-// stay in their owning modules — this file only holds plain data + the few
-// inline projections that depend on it.
+// stay in their owning modules — this file only holds plain data.
 
 namespace MapState {
 
@@ -32,30 +29,5 @@ extern bool fullscreenMap;
 
 // Tile region selected by MapIO::discoverRegion (empty if no SD).
 extern char mapRegion[64];
-
-// Sprite-pixel → container-pixel projections. The sprite is centered in the
-// map container; dragAccum carries the residual sub-tile pan offset.
-inline int spriteToContX(int spriteX) {
-    return spriteX + (CONT_W - SPRITE_SIZE) / 2 + dragAccumX;
-}
-inline int spriteToContY(int spriteY) {
-    // Must follow the dynamic container height (fullscreen=600 vs MAP_H=525),
-    // otherwise markers and the trace canvas — which uses the dynamic value —
-    // get offset by ~37 px vertically in fullscreen.
-    int mapH = fullscreenMap ? 600 : MAP_H;
-    return spriteY + (mapH - SPRITE_SIZE) / 2 + dragAccumY;
-}
-
-// Lat/lon → container pixel. Returns true if the projected point falls
-// inside the sprite (±1 tile margin).
-inline bool latLonToContPos(float lat, float lon, int *cx, int *cy) {
-    int px, py;
-    MapMath::latLonToPixel(lat, lon, centerLat, centerLon, zoom, true,
-                           centerTX, centerTY, &px, &py);
-    *cx = spriteToContX(px);
-    *cy = spriteToContY(py);
-    return (px >= -TILE_SIZE && px < SPRITE_SIZE + TILE_SIZE &&
-            py >= -TILE_SIZE && py < SPRITE_SIZE + TILE_SIZE);
-}
 
 } // namespace MapState

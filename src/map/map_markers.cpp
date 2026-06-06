@@ -1,6 +1,7 @@
 #include "map/map_markers.h"
 #include "map/map_io.h"
 #include "map/map_state.h"
+#include "map_coordinate_math.h"
 #include "configuration.h"
 #include "gps_math.h"
 #include "station_utils.h"
