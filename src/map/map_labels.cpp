@@ -88,9 +88,11 @@ void refresh() {
     // swap winners on every pan step.
     struct SL { int x, y, prio; std::string text; uint8_t r, g, b; const lv_font_t *font;
                 int angle; bool followLine; bool shield;
+                bool isPeak; int elevation;
                 int worldX, worldY;
                 int population;
-                std::vector<lv_point_t> path; };  // sprite-local polyline for waterway
+                std::vector<lv_point_t> path;      // sprite-local polyline for waterway
+                std::string displayText; };        // pre-formatted peak label (name + elevation), lives until finish_layer
     const int worldOriginX = (centerTX - GRID / 2) * TILE_SIZE;
     const int worldOriginY = (centerTY - GRID / 2) * TILE_SIZE;
     std::vector<SL> all;
@@ -107,6 +109,13 @@ void refresh() {
                 s.r = l.r; s.g = l.g; s.b = l.b;
                 s.font = l.font; s.angle = l.angle;
                 s.followLine = l.followLine; s.shield = l.shield;
+                s.isPeak = l.isPeak; s.elevation = l.elevation;
+                if (l.isPeak) {
+                    if (l.elevation > 0)
+                        s.displayText = l.text + " " + std::to_string(l.elevation) + "m";
+                    else
+                        s.displayText = l.text;
+                }
                 s.worldX = worldOriginX + sx + l.px;
                 s.worldY = worldOriginY + sy + l.py;
                 s.population = l.population;
@@ -403,6 +412,36 @@ void refresh() {
             } else {
                 placed.push_back({lx, ly, w, h});
             }
+        } else if (l.isPeak) {
+            // Firmware spec (Tile-Generator-Pack/features.json): triangle
+            // marker color #d08050, name + elevation under it.
+            // Triangle apex at (l.x, l.y - triH/2), base width = triW.
+            const int triH = 10, triW = 12;
+            int tApexX = l.x,           tApexY = l.y - triH / 2;
+            int tBLX   = l.x - triW/2,  tBLY   = l.y + triH / 2;
+            int tBRX   = l.x + triW/2,  tBRY   = l.y + triH / 2;
+            lv_draw_triangle_dsc_t td; lv_draw_triangle_dsc_init(&td);
+            td.p[0].x = tApexX; td.p[0].y = tApexY;
+            td.p[1].x = tBLX;   td.p[1].y = tBLY;
+            td.p[2].x = tBRX;   td.p[2].y = tBRY;
+            td.color = lv_color_make(l.r, l.g, l.b);
+            td.opa = LV_OPA_COVER;
+            lv_draw_triangle(&layer, &td);
+            // Name (+ elevation if known) below the triangle.
+            // displayText is pre-formatted during collection (owned string,
+            // lives until finish_layer — LVGL v9 defers label drawing).
+            int textW = (int)(l.displayText.size() * l.font->line_height * 0.55f) + 6;
+            int textH = l.font->line_height;
+            int tx = l.x - textW / 2;
+            int ty = l.y + triH / 2 + 2;
+            if (tx >= 0 && tx + textW <= LABEL_CANVAS_W &&
+                ty >= 0 && ty + textH <= LABEL_CANVAS_H)
+                drawHalo(&layer, l.displayText.c_str(), l.font, tx, ty, textW, textH, l.r, l.g, l.b);
+            // Reserve both the triangle and the label box so future labels
+            // don't overlap.
+            int boxX = tx, boxY = tApexY;
+            int boxW = textW, boxH = (ty + textH) - tApexY;
+            placed.push_back({boxX, boxY, boxW, boxH});
         } else {
             drawHalo(&layer, l.text.c_str(), l.font, lx, ly, w, h, l.r, l.g, l.b);
             placed.push_back({lx, ly, w, h});
