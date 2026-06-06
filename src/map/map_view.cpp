@@ -59,11 +59,8 @@ void setPosition(double lat, double lon) {
   MapTraces::recordOwnPosition();
   if (!mapActive || !mapCont)
     return;
-  // Cheap path: move the existing own-marker in place. Fall back to a full
-  // (re)create only if there is no own-marker yet — typically the first
-  // GPS fix after the map screen opens.
-  if (!MapMarkers::updateOwnMarker())
-    MapMarkers::createMarkers();
+  // Redraw the dynamic layer (own marker + trace) over the cached tiles.
+  MapEngine::recompose();
 }
 
 void zoomIn() {
@@ -77,13 +74,8 @@ void zoomOut() {
 }
 
 void refreshStations() {
-  if (mapActive && mapCont) {
-    MapMarkers::createMarkers();
-    // Without this redraw the trace canvas stays frozen between zoom /
-    // tile-cross events, so mobile-station traces accumulate in memory
-    // but never appear on screen.
-    MapTraces::redraw();
-  }
+  if (mapActive && mapCont)
+    MapEngine::recompose();
 }
 
 // ============================================================
@@ -327,7 +319,6 @@ lv_obj_t *create(lv_obj_t *) {
 
   // ---- Conteneur map ----
   mapCont = lv_obj_create(scr);
-  MapMarkers::parent = mapCont;
   lv_obj_set_size(mapCont, CONT_W, MAP_H);
   lv_obj_set_pos(mapCont, 0, 45);
   lv_obj_set_style_bg_color(mapCont, lv_color_hex(0x2F4F4F), 0);
@@ -339,18 +330,15 @@ lv_obj_t *create(lv_obj_t *) {
   lv_obj_add_flag(mapCont, LV_OBJ_FLAG_CLICKABLE);
   MapInput::install(mapCont);
 
-  // Tile grid (5×5 raster + lazy vector canvases) owned by map_engine.
+  // Single composited map canvas owned by map_engine (tiles + overlays).
   MapEngine::init(mapCont);
   MapEngine::setLabels(titleLabel, infoLabel);
 
-  // Trace canvas overlay for station movement lines
-  MapTraces::create(mapCont);
-
-  // Label overlay (single sprite-sized canvas + scratch for rotated waterways)
+  // Waterway label scratch canvas (hidden, off-screen).
   MapLabels::create(mapCont);
 
   mapActive = true;
-  MapEngine::reloadTiles(); // load tiles + create station markers
+  MapEngine::reloadTiles(); // composite tiles + labels + traces + markers
 
   // Start 50ms periodic timer (inertia, GPS follow, station refresh)
   if (!mapTimer) mapTimer = lv_timer_create([](lv_timer_t *) { MapEngine::timerTick(); }, 50, NULL);

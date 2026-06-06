@@ -20,12 +20,6 @@ static TracePoint ownTrace[OWN_TRACE_MAX];
 static int ownTraceCount = 0;
 static int ownTraceHead = 0;
 
-// Overlay canvas (ARGB8888, sized SPRITE_SIZE × map-height).
-static lv_obj_t *traceCanvas = nullptr;
-static uint8_t  *traceBuf    = nullptr;
-constexpr int TRACE_CANVAS_W = SPRITE_SIZE;
-constexpr int TRACE_CANVAS_H = SPRITE_SIZE;  // must match sprite height — traces use sprite coords
-
 // Antialiased line on the trace canvas. lv_draw_line is deferred: the
 // dsc is read at flush time, after the local has gone out of scope.
 // Queuing several lines on a single layer leaves only the last one
@@ -119,34 +113,15 @@ static void drawOwnTrace(lv_obj_t *canvas) {
     }
 }
 
-void create(lv_obj_t *parent) {
-    if (traceCanvas || !parent) return;
-    traceBuf = (uint8_t *)lv_malloc(LV_CANVAS_BUF_SIZE(TRACE_CANVAS_W, TRACE_CANVAS_H, 32, LV_DRAW_BUF_STRIDE_ALIGN));
-    traceCanvas = lv_canvas_create(parent);
-    lv_canvas_set_buffer(traceCanvas, traceBuf, TRACE_CANVAS_W, TRACE_CANVAS_H, LV_COLOR_FORMAT_ARGB8888);
-    // Canvas covers the full sprite (1280×1280), positioned so its centre
-    // aligns with the map-area centre. Same geometry as the label canvas.
-    int mapH = fullscreenMap ? 600 : MAP_H;
-    lv_obj_set_pos(traceCanvas, (CONT_W - SPRITE_SIZE) / 2, (mapH - SPRITE_SIZE) / 2);
-    lv_obj_set_size(traceCanvas, TRACE_CANVAS_W, TRACE_CANVAS_H);
-    lv_obj_clear_flag(traceCanvas, LV_OBJ_FLAG_CLICKABLE);
-}
-
 void destroy() {
-    if (traceCanvas && lv_obj_is_valid(traceCanvas)) lv_obj_del(traceCanvas);
-    traceCanvas = nullptr;
-    if (traceBuf) { lv_free(traceBuf); traceBuf = nullptr; }
     ownTraceCount = 0;
     ownTraceHead = 0;
 }
 
-void redraw() {
-    if (!traceBuf) return;
-    memset(traceBuf, 0, TRACE_CANVAS_W * TRACE_CANVAS_H * 4);
-    if (!traceCanvas || !lv_obj_is_valid(traceCanvas)) return;
-    drawStationsTrace(traceCanvas);
-    drawOwnTrace(traceCanvas);
-    lv_obj_invalidate(traceCanvas);
+void drawInto(lv_obj_t *canvas) {
+    if (!canvas) return;
+    drawStationsTrace(canvas);
+    drawOwnTrace(canvas);
 }
 
 void recordOwnPosition() {
@@ -160,22 +135,6 @@ void recordOwnPosition() {
     ownTrace[ownTraceHead] = {(float)gpsLat, (float)gpsLon, millis()};
     ownTraceHead = (ownTraceHead + 1) % OWN_TRACE_MAX;
     if (ownTraceCount < OWN_TRACE_MAX) ownTraceCount++;
-}
-
-void reposition() {
-    if (!traceCanvas || !lv_obj_is_valid(traceCanvas)) return;
-    int mapH = fullscreenMap ? 600 : MAP_H;
-    lv_obj_set_pos(traceCanvas,
-                   (CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
-                   (mapH - SPRITE_SIZE) / 2 + dragAccumY);
-    lv_obj_set_size(traceCanvas, TRACE_CANVAS_W, TRACE_CANVAS_H);
-}
-
-bool isReady() { return traceCanvas != nullptr; }
-
-void moveToForeground() {
-    if (traceCanvas && lv_obj_is_valid(traceCanvas))
-        lv_obj_move_foreground(traceCanvas);
 }
 
 } // namespace MapTraces

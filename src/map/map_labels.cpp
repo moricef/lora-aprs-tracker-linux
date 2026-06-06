@@ -13,9 +13,6 @@ namespace MapLabels {
 
 using namespace MapState;
 
-// Main overlay : same size as the tile sprite, pans with it.
-static lv_obj_t *labelCanvas = nullptr;
-static uint8_t  *labelBuf    = nullptr;
 constexpr int LABEL_CANVAS_W = SPRITE_SIZE;
 constexpr int LABEL_CANVAS_H = SPRITE_SIZE;
 
@@ -27,14 +24,7 @@ constexpr int TMP_LABEL_W = 320;
 constexpr int TMP_LABEL_H = 40;
 
 void create(lv_obj_t *parent) {
-    if (labelCanvas || !parent) return;
-
-    labelBuf = (uint8_t *)lv_malloc(LV_CANVAS_BUF_SIZE(LABEL_CANVAS_W, LABEL_CANVAS_H, 32, LV_DRAW_BUF_STRIDE_ALIGN));
-    labelCanvas = lv_canvas_create(parent);
-    lv_canvas_set_buffer(labelCanvas, labelBuf, LABEL_CANVAS_W, LABEL_CANVAS_H, LV_COLOR_FORMAT_ARGB8888);
-    lv_obj_set_pos(labelCanvas, (CONT_W - SPRITE_SIZE) / 2, (MAP_H - SPRITE_SIZE) / 2);
-    lv_obj_clear_flag(labelCanvas, LV_OBJ_FLAG_CLICKABLE);
-    memset(labelBuf, 0, LABEL_CANVAS_W * LABEL_CANVAS_H * 4);
+    if (tmpLabelCanvas || !parent) return;
 
     // Scratch canvas (hidden, off-screen buffer only)
     tmpLabelBuf = (uint8_t *)lv_malloc(LV_CANVAS_BUF_SIZE(TMP_LABEL_W, TMP_LABEL_H, 32, LV_DRAW_BUF_STRIDE_ALIGN));
@@ -44,37 +34,17 @@ void create(lv_obj_t *parent) {
 }
 
 void destroy() {
-    if (labelCanvas && lv_obj_is_valid(labelCanvas)) lv_obj_del(labelCanvas);
-    labelCanvas = nullptr;
-    if (labelBuf) { lv_free(labelBuf); labelBuf = nullptr; }
     if (tmpLabelCanvas && lv_obj_is_valid(tmpLabelCanvas)) lv_obj_del(tmpLabelCanvas);
     tmpLabelCanvas = nullptr;
     if (tmpLabelBuf) { lv_free(tmpLabelBuf); tmpLabelBuf = nullptr; }
 }
 
-void clear() {
-    if (!labelBuf) return;
-    memset(labelBuf, 0, LABEL_CANVAS_W * LABEL_CANVAS_H * 4);
-    if (labelCanvas && lv_obj_is_valid(labelCanvas)) lv_obj_invalidate(labelCanvas);
-}
-
-void reposition(int originX, int originY) {
-    if (labelCanvas && lv_obj_is_valid(labelCanvas))
-        lv_obj_set_pos(labelCanvas, originX, originY);
-}
-
-void moveToForeground() {
-    if (labelCanvas && lv_obj_is_valid(labelCanvas))
-        lv_obj_move_foreground(labelCanvas);
-}
-
 // Collect labels from the visible tiles, run global collision, draw them
-// into the overlay canvas. Positions are in sprite coords (tile-aligned),
-// like the tile grid.
-void refresh() {
-    if (!labelBuf || !labelCanvas) return;
-    memset(labelBuf, 0, LABEL_CANVAS_W * LABEL_CANVAS_H * 4);
-    if (!(zoom >= 9 && MapVector::isOpen())) { lv_obj_invalidate(labelCanvas); return; }
+// into `canvas`. Positions are in sprite coords (tile-aligned), like the
+// tile grid.
+void drawInto(lv_obj_t *canvas) {
+    if (!canvas) return;
+    if (!(zoom >= 9 && MapVector::isOpen())) return;
 
     // Each label keeps its tile-local position (centroid or polyline mid)
     // produced by MapVector::getTileLabels — that's already on the actual
@@ -92,7 +62,8 @@ void refresh() {
                 int worldX, worldY;
                 int population;
                 std::vector<lv_point_t> path;      // sprite-local polyline for waterway
-                std::string displayText; };        // pre-formatted peak label (name + elevation), lives until finish_layer
+                std::string displayText;            // peak label line 1, lives until finish_layer
+                std::string displayText2; };       // peak label line 2 (may be empty)
     const int worldOriginX = (centerTX - GRID / 2) * TILE_SIZE;
     const int worldOriginY = (centerTY - GRID / 2) * TILE_SIZE;
     std::vector<SL> all;
@@ -111,10 +82,21 @@ void refresh() {
                 s.followLine = l.followLine; s.shield = l.shield;
                 s.isPeak = l.isPeak; s.elevation = l.elevation;
                 if (l.isPeak) {
-                    if (l.elevation > 0)
-                        s.displayText = l.text + " " + std::to_string(l.elevation) + "m";
-                    else
-                        s.displayText = l.text;
+                    std::string full = l.elevation > 0
+                        ? l.text + " " + std::to_string(l.elevation) + "m"
+                        : l.text;
+                    int mid = (int)full.size() / 2;
+                    int splitAt = -1;
+                    for (int d = 0; d <= mid; d++) {
+                        if (mid + d < (int)full.size() && full[mid + d] == ' ') { splitAt = mid + d; break; }
+                        if (mid - d >= 0 && full[mid - d] == ' ')               { splitAt = mid - d; break; }
+                    }
+                    if (splitAt > 0 && splitAt < (int)full.size() - 1) {
+                        s.displayText  = full.substr(0, splitAt);
+                        s.displayText2 = full.substr(splitAt + 1);
+                    } else {
+                        s.displayText = full;
+                    }
                 }
                 s.worldX = worldOriginX + sx + l.px;
                 s.worldY = worldOriginY + sy + l.py;
@@ -181,7 +163,7 @@ void refresh() {
     std::vector<Box> placed;
 
     lv_layer_t layer;
-    lv_canvas_init_layer(labelCanvas, &layer);
+    lv_canvas_init_layer(canvas, &layer);
 
     // Draw a word with a white halo (4 diagonal offsets) into the given layer/area.
     auto drawHalo = [](lv_layer_t *L, const char *txt, const lv_font_t *font,
@@ -400,8 +382,8 @@ void refresh() {
                 // position renders the final letter. Close + reopen the
                 // main layer to commit each blit with its own scratch.
                 lv_draw_image(&layer, &id, &ia);
-                lv_canvas_finish_layer(labelCanvas, &layer);
-                lv_canvas_init_layer(labelCanvas, &layer);
+                lv_canvas_finish_layer(canvas, &layer);
+                lv_canvas_init_layer(canvas, &layer);
                 curDist += gW;
                 i += n;
             }
@@ -413,9 +395,6 @@ void refresh() {
                 placed.push_back({lx, ly, w, h});
             }
         } else if (l.isPeak) {
-            // Firmware spec (Tile-Generator-Pack/features.json): triangle
-            // marker color #d08050, name + elevation under it.
-            // Triangle apex at (l.x, l.y - triH/2), base width = triW.
             const int triH = 10, triW = 12;
             int tApexX = l.x,           tApexY = l.y - triH / 2;
             int tBLX   = l.x - triW/2,  tBLY   = l.y + triH / 2;
@@ -427,21 +406,28 @@ void refresh() {
             td.color = lv_color_make(l.r, l.g, l.b);
             td.opa = LV_OPA_COVER;
             lv_draw_triangle(&layer, &td);
-            // Name (+ elevation if known) below the triangle.
-            // displayText is pre-formatted during collection (owned string,
-            // lives until finish_layer — LVGL v9 defers label drawing).
-            int textW = (int)(l.displayText.size() * l.font->line_height * 0.55f) + 6;
-            int textH = l.font->line_height;
-            int tx = l.x - textW / 2;
-            int ty = l.y + triH / 2 + 2;
-            if (tx >= 0 && tx + textW <= LABEL_CANVAS_W &&
-                ty >= 0 && ty + textH <= LABEL_CANVAS_H)
-                drawHalo(&layer, l.displayText.c_str(), l.font, tx, ty, textW, textH, l.r, l.g, l.b);
-            // Reserve both the triangle and the label box so future labels
-            // don't overlap.
-            int boxX = tx, boxY = tApexY;
-            int boxW = textW, boxH = (ty + textH) - tApexY;
-            placed.push_back({boxX, boxY, boxW, boxH});
+            if (zoom >= 13 && !l.displayText.empty()) {
+                float cw = l.font->line_height * 0.55f;
+                int lineH = l.font->line_height;
+                int w1 = (int)(l.displayText.size() * cw) + 6;
+                int w2 = l.displayText2.empty() ? 0 : (int)(l.displayText2.size() * cw) + 6;
+                int textW = w1 > w2 ? w1 : w2;
+                int textH = w2 > 0 ? lineH * 2 + 1 : lineH;
+                int tx = l.x - textW / 2;
+                int ty = l.y + triH / 2 + 2;
+                if (tx >= 0 && tx + textW <= LABEL_CANVAS_W &&
+                    ty >= 0 && ty + textH <= LABEL_CANVAS_H) {
+                    drawHalo(&layer, l.displayText.c_str(), l.font, l.x - w1/2, ty, w1, lineH, l.r, l.g, l.b);
+                    if (!l.displayText2.empty())
+                        drawHalo(&layer, l.displayText2.c_str(), l.font, l.x - w2/2, ty + lineH + 1, w2, lineH, l.r, l.g, l.b);
+                }
+                int boxX = tx, boxY = tApexY;
+                int boxW = textW, boxH = (ty + textH) - tApexY;
+                placed.push_back({boxX, boxY, boxW, boxH});
+            } else {
+                // Z12: triangle only, reserve small collision box.
+                placed.push_back({l.x - triW/2, tApexY, triW, triH});
+            }
         } else {
             drawHalo(&layer, l.text.c_str(), l.font, lx, ly, w, h, l.r, l.g, l.b);
             placed.push_back({lx, ly, w, h});
@@ -460,8 +446,7 @@ void refresh() {
     // bootstrap from priority alone, which is fine.
     s_anchorCache.swap(newAnchorCache);
 
-    lv_canvas_finish_layer(labelCanvas, &layer);
-    lv_obj_invalidate(labelCanvas);
+    lv_canvas_finish_layer(canvas, &layer);
 }
 
 } // namespace MapLabels

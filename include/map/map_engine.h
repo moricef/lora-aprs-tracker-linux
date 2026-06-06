@@ -24,11 +24,15 @@ void destroy();
 // Register the two header widgets so reloadTiles can update them.
 void setLabels(lv_obj_t *titleLabel, lv_obj_t *infoLabel);
 
-// (Re)render all 25 tiles + redraw overlays + (re)create markers.
+// Rebuild the static layer (tiles + labels) and recompose. Called on zoom /
+// tile-cross / recenter.
 void reloadTiles();
 
-// Move the 25 tile widgets + overlays in place after a pan, without
-// re-rendering tiles.
+// Redraw the dynamic layer (trace + markers) over the cached static layer.
+// Cheap — call on GPS / station updates without re-rendering tiles.
+void recompose();
+
+// Move the single map canvas in place after a pan (everything is baked in).
 void repositionAll();
 
 // Zoom in/out around the current viewport center. Disables follow-GPS.

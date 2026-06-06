@@ -30,6 +30,12 @@ static lv_obj_t *mapCanvas   = nullptr;
 static uint8_t  *mapBuf      = nullptr;
 static uint8_t  *tileScratch = nullptr;  // reused per vector tile render
 
+// Snapshot of the static layer (tiles + labels). Rebuilt only on zoom /
+// tile-cross; restored under the dynamic layer (trace + markers) on every
+// recompose so a GPS tick doesn't re-decode tiles or re-run label collision.
+static uint8_t  *tilesBuf     = nullptr;
+static size_t    tilesBufSize = 0;
+
 // Owner widgets passed by map_view at init/setLabels.
 static lv_obj_t *parentCont  = nullptr;
 static lv_obj_t *titleLabel  = nullptr;
@@ -89,6 +95,27 @@ static void compositeTiles() {
                 lv_canvas_finish_layer(mapCanvas, &layer);
             }
     }
+}
+
+// Rebuild the static layer (tiles + labels) into mapBuf and snapshot it.
+// Called on zoom / tile-cross / recenter.
+static void rebuildStaticLayer() {
+    if (!mapCanvas) return;
+    compositeTiles();
+    MapLabels::drawInto(mapCanvas);
+    lv_draw_buf_t *db = lv_canvas_get_draw_buf(mapCanvas);
+    if (db && db->data && tilesBuf) memcpy(tilesBuf, db->data, tilesBufSize);
+}
+
+// Restore the static layer and draw the dynamic layer (trace + markers) on
+// top. Called on every overlay refresh (GPS, station update) and after a
+// static rebuild.
+void recompose() {
+    if (!mapCanvas) return;
+    lv_draw_buf_t *db = lv_canvas_get_draw_buf(mapCanvas);
+    if (db && db->data && tilesBuf) memcpy(db->data, tilesBuf, tilesBufSize);
+    MapTraces::drawInto(mapCanvas);
+    MapMarkers::drawInto(mapCanvas);
     lv_obj_invalidate(mapCanvas);
 }
 
@@ -102,6 +129,12 @@ void init(lv_obj_t *parent) {
     lv_obj_clear_flag(mapCanvas, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_pos(mapCanvas, (CONT_W - SPRITE_SIZE) / 2, (MAP_H - SPRITE_SIZE) / 2);
     tileScratch = (uint8_t *)lv_malloc(TILE_SIZE * TILE_SIZE * 4);
+
+    lv_draw_buf_t *db = lv_canvas_get_draw_buf(mapCanvas);
+    if (db && db->data) {
+        tilesBufSize = (size_t)db->header.stride * SPRITE_SIZE;
+        tilesBuf = (uint8_t *)lv_malloc(tilesBufSize);
+    }
 }
 
 void destroy() {
@@ -109,6 +142,7 @@ void destroy() {
     mapCanvas = nullptr;
     if (mapBuf)      { lv_free(mapBuf);      mapBuf = nullptr; }
     if (tileScratch) { lv_free(tileScratch); tileScratch = nullptr; }
+    if (tilesBuf)    { lv_free(tilesBuf);    tilesBuf = nullptr; tilesBufSize = 0; }
     parentCont = nullptr;
     titleLabel = nullptr;
     infoLabel  = nullptr;
@@ -123,7 +157,8 @@ void setLabels(lv_obj_t *title, lv_obj_t *info) {
 
 void reloadTiles() {
     if (!parentCont) return;
-    compositeTiles();
+    rebuildStaticLayer();
+    recompose();
     positionCanvas();
     if (titleLabel) {
         char z[16];
@@ -141,30 +176,11 @@ void reloadTiles() {
                  mapStationsCount);
         lv_label_set_text(infoLabel, ib);
     }
-    MapTraces::redraw();
-    MapTraces::reposition();
-    MapLabels::refresh();
-    // reloadTiles places each tile canvas using the current dragAccum
-    // (sub-tile correction after a zoom). The label overlay carries the
-    // labels in sprite-local coords, so it has to follow the same origin
-    // — without this call, labels stay glued to the no-drag origin and
-    // appear shifted by dragAccum at first paint after a zoom switch.
-    int mapH = fullscreenMap ? 600 : MAP_H;
-    MapLabels::reposition((CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
-                          (mapH - SPRITE_SIZE) / 2 + dragAccumY);
-    // Keep overlays above the (re)created vector tile canvases; markers go on top next.
-    MapTraces::moveToForeground();
-    MapLabels::moveToForeground();
-    MapMarkers::createMarkers();
 }
 
 void repositionAll() {
-    int mapH = fullscreenMap ? 600 : MAP_H;
+    // Everything is baked into the single canvas, so a pan only moves it.
     positionCanvas();
-    MapTraces::reposition();
-    MapMarkers::updateMarkerPositions();
-    MapLabels::reposition((CONT_W - SPRITE_SIZE) / 2 + dragAccumX,
-                          (mapH - SPRITE_SIZE) / 2 + dragAccumY);
 }
 
 void recenterForZoom(int newZoom) {
@@ -267,7 +283,7 @@ void timerTick() {
     if (++tickCounter >= 200) {
         tickCounter = 0;
         STATION_Utils::cleanOldMapStations();
-        if (!panActive) MapMarkers::createMarkers();
+        if (!panActive) recompose();
         if (infoLabel) {
             int spriteCX = SPRITE_SIZE / 2 - dragAccumX;
             int spriteCY = SPRITE_SIZE / 2 - dragAccumY;

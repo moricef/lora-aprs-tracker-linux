@@ -2,30 +2,20 @@
 
 #include "lvgl.h"
 
-// Station markers (own + received) and the station-info popup. Marker
-// widgets are children of MapMarkers::parent set by map_view at init.
+// Station markers (own + received) and the station-info popup. Markers are
+// drawn directly into the shared map canvas at sprite coordinates.
 
 namespace MapMarkers {
 
-// Parent container (mapCont). Must be set before any create/update call.
-extern lv_obj_t *parent;
+// Draw own station + every valid MapStations entry into `canvas`, recording
+// each marker's sprite position for hit-testing. Calls cleanOldMapStations.
+void drawInto(lv_obj_t *canvas);
 
-// (Re)create all marker widgets : own station + every valid MapStations
-// entry. Calls STATION_Utils::cleanOldMapStations first.
-void createMarkers();
-
-// Pan/zoom — move marker widgets in place without recreating them.
-void updateMarkerPositions();
-
-// Move only the own-station marker (gpsLat/gpsLon). Returns false if no
-// own-marker exists yet — the caller can then call createMarkers().
-bool updateOwnMarker();
-
-// Free all marker widgets and reset the marker count.
+// Reset the marker list (markers are repainted by the next drawInto).
 void deleteMarkers();
 
-// Returns true if `point` lies inside any marker's bbox; stores the
-// stationIdx (-1 = own, >=0 mapStations).
+// Returns true if `point` (container coords) lies inside any marker's bbox;
+// stores the stationIdx (-1 = own, >=0 mapStations).
 bool hitTest(lv_point_t point, int *stationIdx);
 
 // Station info modal (lv_msgbox). closeStationPopup is a no-op if none.

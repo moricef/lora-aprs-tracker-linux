@@ -17,19 +17,21 @@ namespace MapMarkers {
 
 using namespace MapState;
 
-lv_obj_t *parent = nullptr;
-
 #define MAX_MARKERS (MAP_STATIONS_MAX + 1) // stations + own
 struct MarkerInfo {
-    lv_obj_t *obj;
+    int sx, sy;     // sprite coords of the geo anchor (icon centre)
     int stationIdx; // -1 = own station, >=0 = mapStations index
 };
 static MarkerInfo markers[MAX_MARKERS];
 static int markerCount = 0;
 
+// The map canvas markers are drawn into — kept so hitTest can map a screen
+// point back to sprite coords via the canvas's absolute position.
+static lv_obj_t *markerCanvas = nullptr;
+
 static lv_obj_t *stationPopup = nullptr;
 
-// Marker container dimensions (24x24 icon + 14px callsign below)
+// Marker dimensions (24x24 icon + callsign below)
 #define MARKER_W 80
 #define MARKER_H 40
 #define ICON_SIZE 24
@@ -127,110 +129,103 @@ void showStationPopup(int stationIdx) {
                         NULL);
 }
 
-void deleteMarkers() {
-    for (int i = 0; i < markerCount; i++) {
-        if (markers[i].obj && lv_obj_is_valid(markers[i].obj))
-            lv_obj_del(markers[i].obj);
-        markers[i].obj = nullptr;
-    }
-    markerCount = 0;
-}
+void deleteMarkers() { markerCount = 0; markerCanvas = nullptr; }
 
-// Create a marker container centred on (cx, cy) with APRS icon and callsign.
-// table/sym: APRS table ('/' or '\\') and symbol (char) — fallback coloured
-// disc if PNG missing. overlayChar: alphanumeric to draw on icon, or 0 if none.
-static lv_obj_t *createMarkerObj(lv_obj_t *parent, const char *callsign,
-                                 char table, char sym, char overlayChar,
-                                 lv_color_t fallbackColor, int cx, int cy,
-                                 int /*stationIdx*/) {
-    // Transparent clickable container
-    lv_obj_t *m = lv_obj_create(parent);
-    lv_obj_set_size(m, MARKER_W, MARKER_H);
-    lv_obj_set_pos(m, cx - MARKER_W / 2, cy - ICON_SIZE / 2);
-    lv_obj_set_style_bg_opa(m, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(m, 0, 0);
-    lv_obj_set_style_pad_all(m, 0, 0);
-    lv_obj_clear_flag(m, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(m, LV_OBJ_FLAG_CLICKABLE);
+// Draw one marker centred on sprite (sx, sy): APRS icon (or fallback disc),
+// optional overlay char, and the callsign with a semi-transparent backdrop.
+// Each marker uses its own layer pass — lv_draw_image reads the icon path at
+// flush time, so it must stay valid until finish_layer commits the draw.
+static void drawMarker(lv_obj_t *canvas, int sx, int sy, const char *callsign,
+                       char table, char sym, char overlayChar,
+                       lv_color_t fallbackColor) {
+    lv_layer_t layer;
+    lv_canvas_init_layer(canvas, &layer);
 
-    // APRS icon or fallback disc
     char iconPath[320];
+    lv_area_t ia = { sx - ICON_SIZE / 2, sy - ICON_SIZE / 2,
+                     sx + ICON_SIZE / 2 - 1, sy + ICON_SIZE / 2 - 1 };
     if (sym != '\0' && MapIO::getSymbolPath(table, sym, iconPath, sizeof(iconPath))) {
-        lv_obj_t *img = lv_image_create(m);
-        lv_image_set_src(img, iconPath);
-        lv_obj_align(img, LV_ALIGN_TOP_MID, 0, 0);
-        lv_obj_set_size(img, ICON_SIZE, ICON_SIZE);
+        lv_draw_image_dsc_t id; lv_draw_image_dsc_init(&id);
+        id.src = iconPath;
+        lv_draw_image(&layer, &id, &ia);
 
-        // Overlay character (digi 'D', iGate 'I', etc.) directly on icon
+        // Overlay character (digi 'D', iGate 'I', etc.) drawn on the icon.
         if (overlayChar != 0 && overlayChar != '/' && overlayChar != '\\') {
-            char ovTxt[2] = {overlayChar, 0};
-            lv_obj_t *ovLbl = lv_label_create(m);
-            lv_label_set_text(ovLbl, ovTxt);
-            lv_obj_set_style_text_color(ovLbl, lv_color_hex(0xffffff), 0);
-            lv_obj_set_style_text_font(ovLbl, &lv_font_montserrat_14, 0);
-            lv_obj_set_style_bg_opa(ovLbl, LV_OPA_TRANSP, 0);
-            lv_obj_set_style_pad_all(ovLbl, 0, 0);
-            lv_obj_align(ovLbl, LV_ALIGN_TOP_MID, 0, 4);
+            char ovTxt[2] = { overlayChar, 0 };
+            lv_draw_label_dsc_t od; lv_draw_label_dsc_init(&od);
+            od.text = ovTxt; od.font = &lv_font_montserrat_14;
+            od.color = lv_color_hex(0xffffff); od.align = LV_TEXT_ALIGN_CENTER;
+            lv_area_t oa = { sx - ICON_SIZE / 2, sy - ICON_SIZE / 2 + 4,
+                             sx + ICON_SIZE / 2 - 1, sy + ICON_SIZE / 2 - 1 };
+            lv_draw_label(&layer, &od, &oa);
         }
     } else {
-        // Fallback: coloured disc 16x16
-        lv_obj_t *dot = lv_obj_create(m);
-        lv_obj_set_size(dot, 16, 16);
-        lv_obj_set_style_bg_color(dot, fallbackColor, 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_border_width(dot, 0, 0);
-        lv_obj_align(dot, LV_ALIGN_TOP_MID, 0, 4);
+        // Fallback: coloured disc 16x16.
+        lv_draw_rect_dsc_t dd; lv_draw_rect_dsc_init(&dd);
+        dd.bg_color = fallbackColor; dd.bg_opa = LV_OPA_COVER;
+        dd.radius = LV_RADIUS_CIRCLE;
+        lv_area_t da = { sx - 8, sy - 8, sx + 7, sy + 7 };
+        lv_draw_rect(&layer, &dd, &da);
     }
 
-    // Callsign with semi-transparent background for readability
-    lv_obj_t *lbl = lv_label_create(m);
-    lv_label_set_text(lbl, callsign);
-    lv_label_set_long_mode(lbl, LV_LABEL_LONG_CLIP);
-    lv_obj_set_width(lbl, MARKER_W);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_bg_color(lbl, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(lbl, LV_OPA_30, 0);
-    lv_obj_set_style_pad_hor(lbl, 2, 0);
-    lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, 0);
+    // Callsign with semi-transparent background, centred under the icon.
+    int lh = lv_font_montserrat_12.line_height;
+    int tw = (int)(strlen(callsign) * 8) + 6;
+    int tx = sx - tw / 2, ty = sy + ICON_SIZE / 2;
+    lv_area_t ta = { tx, ty, tx + tw - 1, ty + lh - 1 };
+    lv_draw_rect_dsc_t bd; lv_draw_rect_dsc_init(&bd);
+    bd.bg_color = lv_color_hex(0x000000); bd.bg_opa = LV_OPA_30;
+    lv_draw_rect(&layer, &bd, &ta);
+    lv_draw_label_dsc_t ld; lv_draw_label_dsc_init(&ld);
+    ld.text = callsign; ld.font = &lv_font_montserrat_12;
+    ld.color = lv_color_hex(0xffffff); ld.align = LV_TEXT_ALIGN_CENTER;
+    lv_draw_label(&layer, &ld, &ta);
 
-    lv_obj_update_layout(m);
-    lv_obj_move_foreground(m);
-    return m;
+    lv_canvas_finish_layer(canvas, &layer);
 }
 
-void createMarkers() {
-    if (!parent || !mapActive)
-        return;
-    deleteMarkers();
+// lat/lon → sprite pixel; returns true if within the sprite (±1 tile margin).
+static bool latLonToSprite(float lat, float lon, int *sx, int *sy) {
+    int px, py;
+    MapMath::latLonToPixel(lat, lon, centerLat, centerLon, zoom, true,
+                           centerTX, centerTY, &px, &py);
+    *sx = px; *sy = py;
+    return (px >= -TILE_SIZE && px < SPRITE_SIZE + TILE_SIZE &&
+            py >= -TILE_SIZE && py < SPRITE_SIZE + TILE_SIZE);
+}
+
+// Draw own station + every valid received station into `canvas`, recording
+// each marker's sprite position for hit-testing.
+void drawInto(lv_obj_t *canvas) {
+    if (!canvas || !mapActive) return;
+    markerCanvas = canvas;
+    markerCount = 0;
+    STATION_Utils::cleanOldMapStations();
 
     // Own station
     if (gpsLat != 0.0 || gpsLon != 0.0) {
-        int cx, cy;
-        if (latLonToContPos((float)gpsLat, (float)gpsLon, &cx, &cy)) {
+        int sx, sy;
+        if (latLonToSprite((float)gpsLat, (float)gpsLon, &sx, &sy)) {
             const char *cs = (!Config.beacons.empty())
                                  ? Config.beacons[myBeaconsIndex].callsign.c_str()
                                  : "HOME";
             const char *ov = (!Config.beacons.empty())
                                  ? Config.beacons[myBeaconsIndex].overlay.c_str()
                                  : "/";
-            const char *sy = (!Config.beacons.empty())
+            const char *sy_ = (!Config.beacons.empty())
                                  ? Config.beacons[myBeaconsIndex].symbol.c_str()
                                  : "&";
             char table = (ov[0] == '/') ? '/' : '\\';
-            char sym = sy[0];
+            char sym = sy_[0];
             char ovChar = (ov[0] != '/' && ov[0] != '\\') ? ov[0] : 0;
-            lv_obj_t *m = createMarkerObj(parent, cs, table, sym, ovChar,
-                                          lv_color_hex(0x0055cc), cx, cy, -1);
-            if (m && markerCount < MAX_MARKERS)
-                markers[markerCount++] = {m, -1};
+            drawMarker(canvas, sx, sy, cs, table, sym, ovChar,
+                       lv_color_hex(0x0055cc));
+            if (markerCount < MAX_MARKERS)
+                markers[markerCount++] = {sx, sy, -1};
         }
     }
 
     // Received stations
-    STATION_Utils::cleanOldMapStations();
     for (int i = 0; i < MAP_STATIONS_MAX && markerCount < MAX_MARKERS; i++) {
         MapStation *st = STATION_Utils::getMapStation(i);
         if (!st || !st->valid)
@@ -238,8 +233,8 @@ void createMarkers() {
         if (st->latitude == 0.0f && st->longitude == 0.0f)
             continue;
 
-        int cx, cy;
-        if (!latLonToContPos(st->latitude, st->longitude, &cx, &cy))
+        int sx, sy;
+        if (!latLonToSprite(st->latitude, st->longitude, &sx, &sy))
             continue;
 
         char ov0 = (st->overlay.length() > 0) ? st->overlay[0] : '/';
@@ -252,56 +247,24 @@ void createMarkers() {
         lv_color_t fc = (elapsed < 10 * 60 * 1000) ? lv_color_hex(0xff6600)
                                                    : lv_color_hex(0x888888);
 
-        lv_obj_t *m = createMarkerObj(parent, st->callsign.c_str(), table, sym,
-                                      ovChar, fc, cx, cy, i);
-        if (m)
-            markers[markerCount++] = {m, i};
+        drawMarker(canvas, sx, sy, st->callsign.c_str(), table, sym, ovChar, fc);
+        markers[markerCount++] = {sx, sy, i};
     }
-}
-
-void updateMarkerPositions() {
-    for (int i = 0; i < markerCount; i++) {
-        if (!markers[i].obj || !lv_obj_is_valid(markers[i].obj))
-            continue;
-
-        float lat, lon;
-        if (markers[i].stationIdx < 0) {
-            lat = (float)gpsLat;
-            lon = (float)gpsLon;
-        } else {
-            MapStation *st = STATION_Utils::getMapStation(markers[i].stationIdx);
-            if (!st || !st->valid)
-                continue;
-            lat = st->latitude;
-            lon = st->longitude;
-        }
-        int cx, cy;
-        latLonToContPos(lat, lon, &cx, &cy);
-        lv_obj_set_pos(markers[i].obj, cx - MARKER_W / 2, cy - ICON_SIZE / 2);
-        lv_obj_update_layout(markers[i].obj);
-    }
-}
-
-bool updateOwnMarker() {
-    for (int i = 0; i < markerCount; i++) {
-        if (markers[i].stationIdx != -1) continue;
-        if (!markers[i].obj || !lv_obj_is_valid(markers[i].obj)) continue;
-        int cx, cy;
-        latLonToContPos((float)gpsLat, (float)gpsLon, &cx, &cy);
-        lv_obj_set_pos(markers[i].obj, cx - MARKER_W / 2, cy - ICON_SIZE / 2);
-        lv_obj_update_layout(markers[i].obj);
-        return true;
-    }
-    return false;
 }
 
 bool hitTest(lv_point_t point, int *stationIdx) {
+    // Screen point → sprite coords via the canvas's absolute on-screen origin
+    // (robust to the container position, fullscreen and the pan offset).
+    if (!markerCanvas || !lv_obj_is_valid(markerCanvas)) return false;
+    lv_area_t ca;
+    lv_obj_get_coords(markerCanvas, &ca);
+    int sx = point.x - ca.x1;
+    int sy = point.y - ca.y1;
     for (int i = 0; i < markerCount; i++) {
-        if (!markers[i].obj || !lv_obj_is_valid(markers[i].obj)) continue;
-        lv_area_t a;
-        lv_obj_get_coords(markers[i].obj, &a);
-        if (point.x < a.x1 || point.x > a.x2 ||
-            point.y < a.y1 || point.y > a.y2) continue;
+        int bx = markers[i].sx - MARKER_W / 2;
+        int by = markers[i].sy - ICON_SIZE / 2;
+        if (sx < bx || sx > bx + MARKER_W || sy < by || sy > by + MARKER_H)
+            continue;
         if (stationIdx) *stationIdx = markers[i].stationIdx;
         return true;
     }
