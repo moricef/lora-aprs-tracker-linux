@@ -73,6 +73,7 @@ endif
 
 OBJS := $(SRCS:.cpp=.o)
 OBJS := $(OBJS:.c=.o)
+DEPS := $(OBJS:.o=.d)
 
 # ---- Règles -----------------------------------------------------------------
 all: $(TARGET)
@@ -80,14 +81,19 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
 
+# -MMD -MP : génère un .d par objet listant ses en-têtes, pour que make
+# recompile quand un header change (sans ça, modifier un .h ne déclenche
+# aucune recompilation et le binaire garde l'ancienne valeur).
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) $(INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(INC) -MMD -MP -c $< -o $@
 
 %.o: %.c
-	$(CC) $(CFLAGS) $(INC) -c $< -o $@
+	$(CC) $(CFLAGS) $(INC) -MMD -MP -c $< -o $@
 
 clean:
-	rm -f $(OBJS) $(TARGET)
-	find lib -name "*.o" -delete
+	rm -f $(OBJS) $(DEPS) $(TARGET)
+	find lib \( -name "*.o" -o -name "*.d" \) -delete
+
+-include $(DEPS)
 
 .PHONY: all clean
