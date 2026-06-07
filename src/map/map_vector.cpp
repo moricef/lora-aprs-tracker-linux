@@ -487,8 +487,12 @@ static const PlaceStyle kPlaces[] = {
     {"islet",     0, 50, &lv_font_montserrat_12, 0x77,0x77,0x77},
     {"isolated_dwelling",0,55,&lv_font_montserrat_12,0x77,0x77,0x77},
     {"farm",      0, 55, &lv_font_montserrat_12, 0x77,0x77,0x77},
-    {"state",     0,  5, &lv_font_montserrat_14, 0x55,0x44,0x43},
-    {"country",   0,  1, &lv_font_montserrat_14, 0x33,0x22,0x21},
+    // INVENTED (user-requested, no firmware source): the reference firmware emits
+    // no admin-region labels at all. We keep state/country but place them AFTER
+    // every settlement (prio > all above) so a region never displaces a city; the
+    // label collision additionally keeps them clear of settlement labels.
+    {"state",     0, 60, &lv_font_montserrat_14, 0x55,0x44,0x43},
+    {"country",   0, 62, &lv_font_montserrat_14, 0x33,0x22,0x21},
 };
 
 // ---- Path drawing with width ------------------------------------------------
@@ -883,7 +887,7 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
     auto push = [&](int px, int py, const std::string &t, int prio,
                     const lv_font_t *f, uint8_t r, uint8_t g, uint8_t b,
                     int angle = 0, bool followLine = false, bool shield = false,
-                    int population = 0) {
+                    int population = 0, bool isRegion = false) {
         // Keep labels whose anchor lies in the (sub-)tile. Margin tightened
         // to zero so labels near a sub-tile boundary aren't dropped from
         // every sibling sub-tile under overzoom — global collision in
@@ -894,6 +898,7 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
             lab.r = r; lab.g = g; lab.b = b; lab.font = f;
             lab.angle = angle; lab.followLine = followLine; lab.shield = shield;
             lab.population = population;
+            lab.isRegion = isRegion;
             out.push_back(std::move(lab));
         }
     };
@@ -960,7 +965,8 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                     int cx=(lp.minX+lp.maxX)/2, cy=(lp.minY+lp.maxY)/2;
                     if (isPlace) {
                         for (auto &ps : kPlaces) if (cls==ps.cls && z>=ps.minZ) {
-                            push(cx,cy,labelText,ps.prio,rtFont(ps.font),ps.r,ps.g,ps.b,0,false,false,pop); break; }
+                            bool region = (cls=="state" || cls=="country");
+                            push(cx,cy,labelText,ps.prio,rtFont(ps.font),ps.r,ps.g,ps.b,0,false,false,pop,region); break; }
                     } else push(cx,cy,labelText,70,rtFont(&lv_font_montserrat_12),0x4A,0x7A,0xB0);
                 }
             }

@@ -18,6 +18,7 @@ namespace MapVector {
         bool shield = false;        // true = ref de route : cartouche couleur de route (r,g,b = couleur de base)
         bool isPlace = false;       // true = city/town/village (rendered plain black, no halo)
         bool isPeak = false;        // true = mountain peak / volcano (triangle marker)
+        bool isRegion = false;      // INVENTED (no firmware source): admin region (state/country), placed last + kept clear of settlements
         int population = 0;         // raw OSM population (places only); tiebreak between same-priority candidates
         int elevation = 0;          // peak elevation in metres (if available)
         // Tile-local waterway polyline (empty for other label types). Walked

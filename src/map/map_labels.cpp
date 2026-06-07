@@ -59,6 +59,7 @@ void drawInto(lv_obj_t *canvas) {
     struct SL { int x, y, prio; std::string text; uint8_t r, g, b; const lv_font_t *font;
                 int angle; bool followLine; bool shield;
                 bool isPeak; int elevation;
+                bool isRegion;
                 int worldX, worldY;
                 int population;
                 std::vector<lv_point_t> path;      // sprite-local polyline for waterway
@@ -81,6 +82,7 @@ void drawInto(lv_obj_t *canvas) {
                 s.font = l.font; s.angle = l.angle;
                 s.followLine = l.followLine; s.shield = l.shield;
                 s.isPeak = l.isPeak; s.elevation = l.elevation;
+                s.isRegion = l.isRegion;
                 if (l.isPeak) {
                     std::string full = l.elevation > 0
                         ? l.text + " " + std::to_string(l.elevation) + "m"
@@ -325,9 +327,14 @@ void drawInto(lv_obj_t *canvas) {
             }
         }
 
+        // Admin region labels (state/country) are placed last (highest prio
+        // number) and kept well clear of the settlement labels already placed,
+        // so a region name appears in open space, never crowding a city.
+        int mgX = l.isRegion ? 80 : 3;
+        int mgY = l.isRegion ? 80 : 2;
         bool ov = false;
         for (auto &p : placed)
-            if (!(swX + swW + 3 <= p.x || p.x + p.w + 3 <= swX || swY + swH + 2 <= p.y || p.y + p.h + 2 <= swY)) { ov = true; break; }
+            if (!(swX + swW + mgX <= p.x || p.x + p.w + mgX <= swX || swY + swH + mgY <= p.y || p.y + p.h + mgY <= swY)) { ov = true; break; }
         if (ov) continue;
 
         lv_area_t a = { lx, ly, lx + w - 1, ly + h - 1 };
