@@ -1,0 +1,49 @@
+#!/bin/sh
+# Garde-fou projet (CLAUDE.md) : tout commit doit déclarer son rapport au
+# firmware de référence (CA2RXU/LoRa_APRS_Tracker-async + générateur
+# Tile-Generator-Pack). Soit une transposition citée fichier:ligne, soit un
+# aveu explicite que le commit contient de la logique hors-firmware.
+#
+# But : rendre toute invention VISIBLE et CONSCIENTE, jamais déguisée en
+# "firmware-aligned" (cf. table kPlaces, commit 7f329d5).
+#
+# Bypass ponctuel (à éviter) : git commit --no-verify
+# Activation après clone : git config core.hooksPath .githooks
+
+msg_file="$1"
+msg="$(cat "$msg_file")"
+
+# Laisser passer merge / revert / fixup automatiques.
+case "$msg" in
+  "Merge "*|"Revert "*|"fixup!"*|"squash!"*) exit 0 ;;
+esac
+
+# Cas 1 : transposition firmware citée — mot-clé + au moins un fichier:ligne.
+if printf '%s' "$msg" | grep -qiE 'transposition firmware' \
+   && printf '%s' "$msg" | grep -qE '[A-Za-z0-9_./-]+\.(c|cc|cpp|h|hpp|lua|json):[0-9]+'; then
+  exit 0
+fi
+
+# Cas 2 : aveu explicite de logique sans équivalent firmware.
+if printf '%s' "$msg" | grep -qiE 'hors-firmware'; then
+  exit 0
+fi
+
+cat >&2 <<'EOF'
+✗ Commit refusé — garde-fou firmware (CLAUDE.md).
+
+Le message doit contenir AU CHOIX :
+
+  • « Transposition firmware: » avec au moins un fichier:ligne cité, p.ex.
+        Transposition firmware:
+        - constants.hpp:89 (text_features place=city) -> map_vector.cpp:478
+
+  • OU « Hors-firmware: » + justification, si le commit introduit de la
+    logique / des valeurs SANS équivalent dans le firmware de référence.
+
+Le hook ne vérifie pas que la citation est VRAIE — ça reste ta responsabilité.
+Il force juste à déclarer, au lieu d'inventer en silence.
+
+Bypass ponctuel (déconseillé) : git commit --no-verify
+EOF
+exit 1
