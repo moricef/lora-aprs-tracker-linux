@@ -567,9 +567,37 @@ struct StyledLineCollector {
     void linestring_begin(uint32_t) { px.clear(); py.clear(); }
     void linestring_point(vtzero::point p) { px.push_back(toPxX(p.x, sz)); py.push_back(toPxY(p.y, sz)); }
     int scale = 1;  // ×1 normal, ×2 SSAA — so line widths match buffer resolution
+    float dashOn = 0, dashGap = 0;  // dash pattern in px (pre-scale); 0 = solid
     void linestring_end() {
-        for (size_t i = 1; i < px.size(); i++)
-            drawWideLine(buf,w,h,px[i-1],py[i-1],px[i],py[i],width * scale,r,g,b);
+        float lw = width * scale;
+        if (dashGap <= 0) {
+            for (size_t i = 1; i < px.size(); i++)
+                drawWideLine(buf,w,h,px[i-1],py[i-1],px[i],py[i],lw,r,g,b);
+            return;
+        }
+        // Dashed: walk the polyline by arc length, drawing only the "on" runs.
+        // Phase is continuous across segments so dashes don't restart at vertices.
+        float on = dashOn * scale, gap = dashGap * scale, cycle = on + gap;
+        float phase = 0;
+        for (size_t i = 1; i < px.size(); i++) {
+            float ax = px[i-1], ay = py[i-1];
+            float ddx = px[i]-ax, ddy = py[i]-ay;
+            float seg = sqrtf(ddx*ddx + ddy*ddy);
+            if (seg < 0.5f) continue;
+            float ux = ddx/seg, uy = ddy/seg, pos = 0;
+            while (pos < seg) {
+                float inCycle = fmodf(phase, cycle);
+                if (inCycle < on) {
+                    float dl = fminf(on - inCycle, seg - pos);
+                    drawWideLine(buf,w,h, (int)(ax+ux*pos),(int)(ay+uy*pos),
+                                 (int)(ax+ux*(pos+dl)),(int)(ay+uy*(pos+dl)), lw,r,g,b);
+                    pos += dl; phase += dl;
+                } else {
+                    float sk = fminf(cycle - inCycle, seg - pos);
+                    pos += sk; phase += sk;
+                }
+            }
+        }
     }
     void points_begin(uint32_t) {} void points_point(vtzero::point) {} void points_end() {}
     void ring_begin(uint32_t) {}   void ring_point(vtzero::point)   {} void ring_end(vtzero::ring_type) {}
@@ -854,6 +882,10 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 if (fw < 0) continue;            // route pas visible à ce zoom
                 lc.r=rd->r; lc.g=rd->g; lc.b=rd->b;
                 lc.width = fw;
+                // Tracks are dashed (4 on / 2 gap); everything else solid.
+                bool dashed = (key == "track");
+                lc.dashOn = dashed ? 4.0f : 0.0f;
+                lc.dashGap = dashed ? 2.0f : 0.0f;
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
             }
         }
