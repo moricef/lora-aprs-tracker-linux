@@ -41,11 +41,20 @@ namespace MapVector {
 // Falls back to montserrat when the TTF is missing.
 static lv_font_t *s_font12 = nullptr;
 static lv_font_t *s_font14 = nullptr;
+// Place labels are sized by importance (OSM differentiates by size, one colour),
+// so we keep a FreeType font per pixel size. Indexed by px (8..18).
+static lv_font_t *s_placeFont[19] = {};
 
 static const lv_font_t *rtFont(const lv_font_t *fallback) {
     if (fallback == &lv_font_montserrat_14 && s_font14) return s_font14;
     if (fallback == &lv_font_montserrat_12 && s_font12) return s_font12;
     return fallback;
+}
+
+static const lv_font_t *placeFont(int px) {
+    if (px < 8) px = 8; if (px > 18) px = 18;
+    if (s_placeFont[px]) return s_placeFont[px];
+    return s_font12 ? s_font12 : &lv_font_montserrat_12;
 }
 
 bool initLabelFonts() {
@@ -65,6 +74,10 @@ bool initLabelFonts() {
     // FreeType is already initialized by lv_init() (LV_USE_FREETYPE=1); don't re-init.
     s_font12 = lv_freetype_font_create(found, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, 14, LV_FREETYPE_FONT_STYLE_NORMAL);
     s_font14 = lv_freetype_font_create(found, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, 16, LV_FREETYPE_FONT_STYLE_NORMAL);
+    // Place label sizes (OSM range 10-15). Pre-created here so getTileLabels
+    // (worker thread) never has to allocate a font.
+    for (int px : {11, 12, 13, 14, 15})
+        s_placeFont[px] = lv_freetype_font_create(found, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, px, LV_FREETYPE_FONT_STYLE_NORMAL);
     printf("[map] police labels: %s (%s)\n", found, (s_font12 && s_font14) ? "OK" : "partiel");
     return s_font12 && s_font14;
 }
@@ -509,29 +522,29 @@ static const AdminStyle kAdmin[] = {
 };
 
 // Place label styling: class → {minZoom, priority, font, r, g, b}
-struct PlaceStyle { const char *cls; int minZ; int prio; const lv_font_t *font; uint8_t r,g,b; };
-// Place label styles: priority + color + font. minZ=0 everywhere — zoom
-// filtering is delegated to tilemaker (process-aprs.lua). Duplicating it
-// here produced empty zoom bands or abrupt gaps instead of a smooth progression.
-// Priority: lower = drawn first / wins collision.
-// Colors: #555555 city/town, #666666 village/suburb, #777777 hamlet.
+struct PlaceStyle { const char *cls; int minZ; int prio; int sizePx; uint8_t r,g,b; };
+// Place label styles: priority + size + colour. minZ=0 everywhere — zoom
+// filtering is delegated to tilemaker (process-aprs.lua).
+// Settlements are differentiated by SIZE, all one dark colour (#222) — the OSM
+// way. Bigger place = bigger font (city 15 > town 13 > village/suburb 12 >
+// hamlet/quarter 11). Priority: lower = drawn first / wins collision.
 static const PlaceStyle kPlaces[] = {
-    {"city",      0, 10, &lv_font_montserrat_14, 0x55,0x55,0x55},
-    {"town",      0, 20, &lv_font_montserrat_14, 0x55,0x55,0x55},
-    {"village",   0, 30, &lv_font_montserrat_12, 0x66,0x66,0x66},
-    {"borough",   0, 33, &lv_font_montserrat_12, 0x66,0x66,0x66},
-    {"suburb",    0, 35, &lv_font_montserrat_12, 0x66,0x66,0x66},
-    {"neighbourhood",0,38,&lv_font_montserrat_12,0x66,0x66,0x66},
-    {"hamlet",    0, 40, &lv_font_montserrat_12, 0x77,0x77,0x77},
-    {"quarter",   0, 45, &lv_font_montserrat_12, 0x77,0x77,0x77},
-    {"locality",  0, 45, &lv_font_montserrat_12, 0x77,0x77,0x77},
-    {"islet",     0, 50, &lv_font_montserrat_12, 0x77,0x77,0x77},
-    {"isolated_dwelling",0,55,&lv_font_montserrat_12,0x77,0x77,0x77},
-    {"farm",      0, 55, &lv_font_montserrat_12, 0x77,0x77,0x77},
+    {"city",      0, 10, 15, 0x22,0x22,0x22},
+    {"town",      0, 20, 13, 0x22,0x22,0x22},
+    {"village",   0, 30, 12, 0x22,0x22,0x22},
+    {"borough",   0, 33, 12, 0x22,0x22,0x22},
+    {"suburb",    0, 35, 12, 0x22,0x22,0x22},
+    {"neighbourhood",0,38,11, 0x22,0x22,0x22},
+    {"hamlet",    0, 40, 11, 0x22,0x22,0x22},
+    {"quarter",   0, 45, 11, 0x22,0x22,0x22},
+    {"locality",  0, 45, 11, 0x22,0x22,0x22},
+    {"islet",     0, 50, 11, 0x22,0x22,0x22},
+    {"isolated_dwelling",0,55,11, 0x22,0x22,0x22},
+    {"farm",      0, 55, 11, 0x22,0x22,0x22},
     // Admin regions: prio above every settlement so a region is placed last and
     // never displaces a city; the label collision also keeps them clear.
-    {"state",     0, 60, &lv_font_montserrat_14, 0x55,0x44,0x43},
-    {"country",   0, 62, &lv_font_montserrat_14, 0x33,0x22,0x21},
+    {"state",     0, 60, 14, 0x55,0x44,0x43},
+    {"country",   0, 62, 15, 0x33,0x22,0x21},
 };
 
 // ---- Path drawing with width ------------------------------------------------
@@ -1075,7 +1088,7 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                     if (isPlace) {
                         for (auto &ps : kPlaces) if (cls==ps.cls && z>=ps.minZ) {
                             bool region = (cls=="state" || cls=="country");
-                            push(cx,cy,labelText,ps.prio,rtFont(ps.font),ps.r,ps.g,ps.b,0,false,false,pop,region); break; }
+                            push(cx,cy,labelText,ps.prio,placeFont(ps.sizePx),ps.r,ps.g,ps.b,0,false,false,pop,region); break; }
                     } else push(cx,cy,labelText,70,rtFont(&lv_font_montserrat_12),0x4A,0x7A,0xB0);
                 }
             }
