@@ -1139,20 +1139,14 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
             // on motorway/trunk/primary/secondary.
             else if (isRoadName && geom == vtzero::GeomType::LINESTRING) {
                 if (ref.empty()) continue;
-                bool highZoom = (z >= 14);
-                if (!highZoom && cls!="motorway"&&cls!="trunk"&&cls!="primary"&&cls!="secondary") continue;
-                if (highZoom && cls!="motorway"&&cls!="trunk"&&cls!="primary"&&cls!="secondary"&&cls!="tertiary") continue;
-                bool wanted = (ref[0]=='A' || ref[0]=='N');
-                if (!wanted && ref[0]=='D') {
-                    if (highZoom) wanted = true;
-                    else { try { int n=std::stoi(ref.substr(1)); wanted = (n>=1000 && n<=1999); } catch(...) {} }
-                }
-                if (!wanted) continue;
+                // Ref shields per class, at the OSM-carto shield zooms. No shield
+                // for unclassified/residential/etc — OSM doesn't ref those.
                 int minZ;
-                if (cls=="motorway"||cls=="trunk")      minZ = 10;
-                else if (cls=="primary")                minZ = 11;
-                else if (cls=="secondary")              minZ = 12;
-                else                                    minZ = 14; // tertiary
+                if      (cls=="motorway")                minZ = 10;
+                else if (cls=="trunk" || cls=="primary") minZ = 11;
+                else if (cls=="secondary")               minZ = 12;
+                else if (cls=="tertiary")                minZ = 13;
+                else continue;
                 if (z < minZ) continue;
                 int prio = (cls=="motorway"||cls=="trunk") ? 25 : (cls=="primary" ? 35 : 45);
                 // Pass the road BASE color; the shield (light bg + dark text + border)
