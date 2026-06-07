@@ -115,38 +115,33 @@ void drawInto(lv_obj_t *canvas) {
         }
 
     // Hysteresis cache : world-pixel anchor of the last frame's winner per
-    // name. Cleared on zoom change. Each candidate gets a gradient bonus
-    // that scales from kHystMaxBonus at distance 0 down to 0 at the
-    // radius — so the candidate closest to last frame's winner reliably
-    // wins, even when waterway labels all share priority=60.
+    // name. Cleared on zoom change. Used ONLY to break ties between candidates
+    // of the SAME priority (e.g. waterway labels all at priority=60), so the
+    // winner stays stable across tile-cross recomputes. It must NOT override
+    // priority — otherwise an "established" suburb beats its own town and the
+    // town label drops on a tile change (history-dependent flicker).
     static std::map<std::string, lv_point_t> s_anchorCache;
     static int s_anchorCacheZoom = -1;
     if (s_anchorCacheZoom != zoom) { s_anchorCache.clear(); s_anchorCacheZoom = zoom; }
     const int kHystRadiusPx = 400;
-    const int kHystMaxBonus = 100;          // dominates raw priority spread
-    auto scoreOf = [&](const SL& l) -> int {
-        int s = l.prio * 100;               // scale priority so bonus is meaningful
+    // Distance (px) to this name's anchor from last frame, or INT_MAX if absent
+    // / out of range. Smaller = was a stable winner here.
+    auto hystDist = [&](const SL& l) -> int {
         auto it = s_anchorCache.find(l.text);
-        if (it != s_anchorCache.end()) {
-            int dx = it->second.x - l.worldX, dy = it->second.y - l.worldY;
-            int d2 = dx*dx + dy*dy;
-            int r2 = kHystRadiusPx * kHystRadiusPx;
-            if (d2 < r2) {
-                // Linear gradient: closest match gets the full bonus.
-                int d = (int)sqrt((double)d2);
-                s -= kHystMaxBonus * 100 * (kHystRadiusPx - d) / kHystRadiusPx;
-            }
-        }
-        return s;
+        if (it == s_anchorCache.end()) return INT_MAX;
+        int dx = it->second.x - l.worldX, dy = it->second.y - l.worldY;
+        int d2 = dx*dx + dy*dy;
+        if (d2 >= kHystRadiusPx * kHystRadiusPx) return INT_MAX;
+        return (int)sqrt((double)d2);
     };
-    // Stable sort with a deterministic tiebreaker (world anchor) so two
-    // candidates with identical scores keep the same order frame to frame.
+    // Importance first (lower prio wins — a town always beats its suburbs),
+    // THEN frame-to-frame stability, THEN population, THEN a deterministic
+    // world-anchor tiebreaker.
     std::stable_sort(all.begin(), all.end(),
               [&](const SL &a, const SL &b) {
-                  int sa = scoreOf(a), sb = scoreOf(b);
-                  if (sa != sb) return sa < sb;
-                  // Same score: larger population wins (Cugnaux 17.5k beats
-                  // Fonsorbes 12.8k, both town/prio=20/rank=9).
+                  if (a.prio != b.prio) return a.prio < b.prio;
+                  int da = hystDist(a), db = hystDist(b);
+                  if (da != db) return da < db;
                   if (a.population != b.population) return a.population > b.population;
                   if (a.worldX != b.worldX) return a.worldX < b.worldX;
                   return a.worldY < b.worldY;
@@ -330,8 +325,8 @@ void drawInto(lv_obj_t *canvas) {
         // Admin region labels (state/country) are placed last (highest prio
         // number) and kept well clear of the settlement labels already placed,
         // so a region name appears in open space, never crowding a city.
-        int mgX = l.isRegion ? 80 : 3;
-        int mgY = l.isRegion ? 80 : 2;
+        int mgX = l.isRegion ? 30 : 3;
+        int mgY = l.isRegion ? 30 : 2;
         bool ov = false;
         for (auto &p : placed)
             if (!(swX + swW + mgX <= p.x || p.x + p.w + mgX <= swX || swY + swH + mgY <= p.y || p.y + p.h + mgY <= swY)) { ov = true; break; }
