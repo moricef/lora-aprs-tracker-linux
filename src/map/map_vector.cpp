@@ -459,11 +459,41 @@ static float roadWidthForZoom(const std::string &cls, int z) {
 
 // Waterway classification
 static const StyleRule kWaterway[] = {
-    {"river",  10, 0xAA,0xD2,0xDF}, {"canal", 10, 0xAA,0xD2,0xDF},
+    {"river",   8, 0xAA,0xD2,0xDF}, {"canal", 13, 0xAA,0xD2,0xDF},
     {"stream", 13, 0xAA,0xD2,0xDF}, {"ditch", 13, 0xAA,0xD2,0xDF},
     {"drain",  13, 0xAA,0xD2,0xDF}, {"dam",   12, 0xAD,0xAD,0xAD},
     {"weir",   12, 0xAA,0xAA,0xAA},
 };
+
+// Waterway line width per zoom. river starts z8, stream/canal/ditch/drain z13;
+// returns -1 below. canal = stream*1.4+0.6, stream/ditch/drain = stream+0.6.
+static float waterwayWidthForZoom(const std::string &cls, int z) {
+    if (cls == "river") {
+        switch (z) {
+            case 8: return 0.7f;  case 9: return 1.2f;  case 10: return 1.5f;
+            case 11: return 1.8f; case 12: return 2.3f; case 13: return 3.0f;
+            case 14: return 4.5f; case 15: return 6.0f; case 16: return 8.0f;
+            case 17: return 10.0f;
+            default: return z >= 18 ? 12.0f : -1.0f;
+        }
+    }
+    if (cls == "canal") {
+        switch (z) {
+            case 13: return 2.6f; case 14: return 3.4f; case 15: return 4.1f;
+            case 16: return 4.8f;
+            default: return z >= 17 ? 5.5f : -1.0f;
+        }
+    }
+    if (cls == "stream" || cls == "ditch" || cls == "drain") {
+        switch (z) {
+            case 13: return 2.0f; case 14: return 2.6f; case 15: return 3.1f;
+            case 16: return 3.6f;
+            default: return z >= 17 ? 4.1f : -1.0f;
+        }
+    }
+    if (cls == "dam" || cls == "weir") return z >= 12 ? 2.0f : -1.0f;
+    return -1.0f;
+}
 static const StyleRule kRailway[] = {
     {"rail",        10, 0x88,0x88,0x88}, {"tram",        12, 0x88,0x88,0x88},
     {"abandoned",   12, 0x77,0x77,0x77}, {"disused",     12, 0x88,0x88,0x88},
@@ -731,8 +761,11 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
                 std::string cls = readClass(feat);
                 if (cls.empty()) continue;
+                float ww = waterwayWidthForZoom(cls, z);
+                if (ww < 0) continue;
                 lc.r=lc.g=lc.b=0; lc.applyClass(cls);
                 if (lc.r==0 && lc.g==0 && lc.b==0) continue;
+                lc.width = ww;
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
             }
         }
