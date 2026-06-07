@@ -268,14 +268,14 @@ landcoverKeys   = { wood="wood", forest="wood",
 -- remplace le filtre par surface SetMinZoomByArea() pour le landcover :
 -- la couverture végétation apparaît à zoom fixe quelle que soit la taille du polygone.
 landcoverMinZoom = {
-                    wood=8, forest=8, fell=8,
+                    wood=7, forest=7, fell=7,
                     grassland=9, grass=9,
                     heath=10, scrub=10, shrubbery=10, meadow=10, allotments=10,
                     village_green=10, tundra=10, garden=13, golf_course=11,
                     park=12, recreation_ground=12,
                     farmland=9, farm=9, orchard=10, vineyard=11, plant_nursery=10,
                     horse_racing=12, track=12, pitch=13,
-                    bare_rock=8, scree=8, rock=8, stone=8, shingle=10,
+                    bare_rock=7, scree=7, rock=7, stone=7, shingle=10,
                     beach=10, sand=10, dune=10, glacier=10, ice_shelf=10, wetland=11 }
 
 -- POI key/value pairs: based on https://github.com/openmaptiles/openmaptiles/blob/master/layers/poi/mapping.yaml
@@ -681,7 +681,7 @@ function way_function()
 			Layer("landuse", true)
 			Attribute("class", l)
 			if l=="residential" then
-				if Area()<ZRES8^2 then MinZoom(8)
+				if Area()<ZRES7^2 then MinZoom(7)
 				else SetMinZoomByArea() end
 			else MinZoom(11) end
 			write_name = true

@@ -51,15 +51,16 @@ static void positionCanvas() {
                    (mapH - SPRITE_SIZE) / 2 + dragAccumY);
 }
 
-// Composite the 5×5 tile grid into mapBuf. Raster (zoom<9) uses the LVGL
-// image pipeline; vector (zoom≥9) blits cached ARGB renders row by row.
+// Composite the 5×5 tile grid into mapBuf. Below VECTOR_MIN_ZOOM the LVGL image
+// pipeline draws raster tiles; at/above it, cached ARGB vector renders are
+// blitted row by row.
 static void compositeTiles() {
     if (!mapCanvas) return;
     lv_draw_buf_t *db = lv_canvas_get_draw_buf(mapCanvas);
     if (!db || !db->data) return;
     uint32_t dstStride = db->header.stride;
 
-    if (zoom >= 9 && MapVector::isOpen()) {
+    if (zoom >= VECTOR_MIN_ZOOM && MapVector::isOpen()) {
         for (int dy = 0; dy < GRID; dy++)
             for (int dx = 0; dx < GRID; dx++) {
                 int tx = centerTX + dx - GRID / 2, ty = centerTY + dy - GRID / 2;

@@ -337,17 +337,17 @@ static bool matchStyle(const StyleRule *t, int n, const std::string &cls, int zo
 // Style tables aligned with tilemaker process.lua output classes
 // landcover classes: wood, grass, farmland, wetland, sand, rock, ice
 static const StyleRule kLandcover[] = {
-    {"wood",      8, 0xAD,0xD1,0x9E},
+    {"wood",      7, 0xAD,0xD1,0x9E},
     {"grass",     9, 0xCE,0xEC,0xB1},
     {"farmland",  9, 0xEE,0xF0,0xD6},
     {"wetland",   9, 0xAC,0xD2,0xBF},
     {"sand",     10, 0xF5,0xE9,0xC6},
-    {"rock",      8, 0xEE,0xE6,0xDD},
+    {"rock",      7, 0xEE,0xE6,0xDD},
     {"ice",      10, 0xDE,0xED,0xED},
 };
 // landuse classes from landuseKeys in process.lua
 static const StyleRule kLanduse[] = {
-    {"residential",  8, 0xE1,0xE0,0xE0},
+    {"residential",  7, 0xE1,0xE0,0xE0},
     {"commercial",  10, 0xF2,0xDA,0xD9},
     {"industrial",  10, 0xEB,0xDB,0xE8},
     {"retail",      10, 0xFF,0xD6,0xD1},
@@ -367,7 +367,7 @@ static const StyleRule kLanduse[] = {
 };
 // park layer: only national_park and nature_reserve (process.lua)
 static const StyleRule kPark[] = {
-    {"national_park",  8, 0xF2,0xEF,0xE9},
+    {"national_park",  7, 0xF2,0xEF,0xE9},
     {"nature_reserve", 9, 0xF2,0xEF,0xE9},
 };
 static const StyleRule kAeroway[] = {
@@ -377,11 +377,11 @@ static const StyleRule kAeroway[] = {
 };
 static const StyleRule kWater[] = {
     {"ocean",     6, 0xAA,0xD2,0xDF},
-    {"water",     8, 0xAA,0xD2,0xDF}, {"bay",        8, 0xAA,0xD2,0xDF},
-    {"river",     8, 0xAA,0xD2,0xDF}, {"canal",     10, 0xAA,0xD2,0xDF},
-    {"lake",      8, 0xAA,0xD2,0xDF}, {"reservoir",  8, 0xAA,0xD2,0xDF},
+    {"water",     7, 0xAA,0xD2,0xDF}, {"bay",        7, 0xAA,0xD2,0xDF},
+    {"river",     7, 0xAA,0xD2,0xDF}, {"canal",     10, 0xAA,0xD2,0xDF},
+    {"lake",      7, 0xAA,0xD2,0xDF}, {"reservoir",  7, 0xAA,0xD2,0xDF},
     {"pond",     12, 0xAA,0xD2,0xDF}, {"basin",     11, 0xAA,0xD2,0xDF},
-    {"dock",     12, 0xAA,0xD2,0xDF}, {"riverbank",  8, 0xAA,0xD2,0xDF},
+    {"dock",     12, 0xAA,0xD2,0xDF}, {"riverbank",  7, 0xAA,0xD2,0xDF},
 };
 
 // Road classification — colour + min zoom + line width multiplier
@@ -427,7 +427,7 @@ static int roadWidthForZoom(const std::string &cls, int z) {
         {"motorway_link", {-1,-1,-1,-1,  2,  2,  2,  3,  3,  5,  8, 14, 14, 16}},
         {"trunk",         { 2, 2, 2, 2,  3,  3,  4,  5,  6,  7, 10, 18, 22, 28}},
         {"trunk_link",    {-1,-1,-1,-1,  2,  2,  2,  3,  3,  5,  8, 14, 14, 16}},
-        {"primary",       {-1,-1, 2, 2,  3,  3,  3,  4,  5,  6, 10, 16, 22, 28}},
+        {"primary",       {-1, 2, 2, 2,  3,  3,  3,  4,  5,  6, 10, 16, 22, 28}},
         {"primary_link",  {-1,-1,-1,-1,  2,  2,  2,  3,  3,  4,  8, 12, 14, 16}},
         {"secondary",     {-1,-1,-1,-1,  2,  2,  3,  3,  4,  5, 10, 14, 22, 28}},
         {"secondary_link",{-1,-1,-1,-1,  2,  2,  2,  3,  2,  3,  8, 10, 14, 16}},
@@ -441,7 +441,8 @@ static int roadWidthForZoom(const std::string &cls, int z) {
         {"track",         {-1,-1,-1,-1, -1, -1, -1, -1, -1,  2,  2,  4,  4,  6}},
         {"rail",          {-1,-1,-1, 2,  2,  2,  2,  2,  2,  2,  3,  3,  4,  6}},
     };
-    if (z < 6) z = 6; if (z > 19) z = 19;
+    if (z < 6) z = 6;
+    if (z > 19) z = 19;
     for (auto &w : T) if (cls == w.cls) { int v = w.z[z-6]; return v; }
     return 2; // défaut routes mineures non tabulées
 }
@@ -464,7 +465,7 @@ struct AdminStyle { int level; int minZ; uint8_t r,g,b; int width; };
 static const AdminStyle kAdmin[] = {
     {2, 6, 0x8D,0x61,0x8B, 2},
     {4, 7, 0x8D,0x61,0x8B, 1},
-    {6, 9, 0x8D,0x61,0x8B, 1},
+    {6, 8, 0x8D,0x61,0x8B, 1},
 };
 
 // Place label styling: class → {minZoom, priority, font, r, g, b}
@@ -563,7 +564,6 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                       ? gunzip(raw, 0) : raw;
     if (mvt.empty()) return;
 
-    auto layerName = [](vtzero::layer &l) { return std::string(l.name()); };
     auto readClass = [](vtzero::feature &f) -> std::string {
         while (auto p = f.next_property()) {
             if (p.key() == "class" && p.value().type() == vtzero::property_value_type::string_value) {
@@ -642,11 +642,11 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
         {"farmland", 9, 0xEE,0xF0,0xD6},
         {"grass",    9, 0xCE,0xEC,0xB1},
         {"sand",    10, 0xF5,0xE9,0xC6},
-        {"rock",     8, 0xEE,0xE6,0xDD},
+        {"rock",     7, 0xEE,0xE6,0xDD},
         {"ice",     10, 0xDE,0xED,0xED},
     };
     static const StyleRule kLandcoverFg[] = {
-        {"wood",    8, 0xAD,0xD1,0x9E},
+        {"wood",    7, 0xAD,0xD1,0x9E},
         {"wetland", 9, 0xAC,0xD2,0xBF},
     };
     // Draw order matters: a park / hippodrome lawn is often INSIDE a larger
@@ -680,7 +680,9 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 int admin_level = 0;
                 while (auto prop = feat.next_property()) {
                     if (prop.key() == "admin_level") {
-                        if (prop.value().type() == vtzero::property_value_type::sint_value)
+                        if (prop.value().type() == vtzero::property_value_type::int_value)
+                            admin_level = (int)prop.value().int_value();
+                        else if (prop.value().type() == vtzero::property_value_type::sint_value)
                             admin_level = (int)prop.value().sint_value();
                         else if (prop.value().type() == vtzero::property_value_type::uint_value)
                             admin_level = (int)prop.value().uint_value();
@@ -952,7 +954,11 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                 if (labelText.empty()) continue;
                 struct LabelPos { int minX=99999,minY=99999,maxX=-99999,maxY=-99999,n=0,ts=0;
                     void add(vtzero::point p){int px=toPxX(p.x, ts),py=toPxY(p.y, ts);
-                        if(px<minX)minX=px;if(px>maxX)maxX=px;if(py<minY)minY=py;if(py>maxY)maxY=py;n++;}
+                        if(px<minX)minX=px;
+                        if(px>maxX)maxX=px;
+                        if(py<minY)minY=py;
+                        if(py>maxY)maxY=py;
+                        n++;}
                     void ring_begin(uint32_t){} void ring_point(vtzero::point p){add(p);} void ring_end(vtzero::ring_type){}
                     void points_begin(uint32_t){} void points_point(vtzero::point p){add(p);} void points_end(){}
                     void linestring_begin(uint32_t){}void linestring_point(vtzero::point){}void linestring_end(){}
