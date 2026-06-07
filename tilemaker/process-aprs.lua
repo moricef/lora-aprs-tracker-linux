@@ -184,14 +184,13 @@ function node_function()
 		elseif place == "neighbourhood" and pop>=5000 then mz=12
 		elseif place == "neighbourhood"          then mz=13
 		-- hamlet: ladder pop (firmware = z14 single, ici on avance les gros)
-		elseif place == "hamlet" and pop>=500   then mz=13
 		elseif place == "hamlet"                then mz=14
 		-- types sans pop OSM en général
-		elseif place == "quarter"           then mz=13
-		elseif place == "locality"          then mz=13
-		elseif place == "islet"             then mz=12
-		elseif place == "isolated_dwelling" then mz=14
-		elseif place == "farm"              then mz=14
+		elseif place == "quarter"           then mz=15
+		elseif place == "locality"          then mz=15
+		elseif place == "islet"             then mz=15
+		elseif place == "isolated_dwelling" then mz=15
+		elseif place == "farm"              then mz=15
 		end
 
 		Layer("place", false)

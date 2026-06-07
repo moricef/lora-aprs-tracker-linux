@@ -22,7 +22,10 @@
 #include <thread>
 #include <condition_variable>
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #include "pmtiles.hpp"
+#pragma GCC diagnostic pop
 #include "vtzero/vector_tile.hpp"
 #include "vtzero/geometry.hpp"
 
@@ -364,6 +367,8 @@ static const StyleRule kLanduse[] = {
     {"hospital",    12, 0xFF,0xFF,0xE5},
     {"theme_park",  12, 0xD6,0xFF,0xDA},
     {"zoo",         12, 0xD6,0xFF,0xDA},
+    {"parking",     13, 0xEE,0xEE,0xEE},
+    {"parking_space",13,0xEE,0xEE,0xEE},
 };
 // park layer: only national_park and nature_reserve (process.lua)
 static const StyleRule kPark[] = {
@@ -404,11 +409,11 @@ static const RoadStyle kRoads[] = {
     {"service",      15, 0xFF,0xFF,0xFF, 0.8f},
     {"track",        14, 0x99,0x66,0x00, 0.7f},
     {"construction", 13, 0xAA,0xAA,0xAA, 1.0f},
-    {"path",         14, 0x88,0x88,0x88, 0.5f},
-    {"footway",      14, 0x88,0x88,0x88, 0.5f},
-    {"cycleway",     14, 0x88,0x88,0x88, 0.5f},
-    {"steps",        14, 0x88,0x88,0x88, 0.5f},
-    {"bridleway",    14, 0x88,0x88,0x88, 0.5f},
+    {"path",         15, 0x88,0x88,0x88, 0.4f},
+    {"footway",      16, 0x88,0x88,0x88, 0.3f},
+    {"cycleway",     16, 0x88,0x88,0x88, 0.3f},
+    {"steps",        17, 0x88,0x88,0x88, 0.3f},
+    {"bridleway",    16, 0x88,0x88,0x88, 0.3f},
 };
 static const RoadStyle *findRoad(const std::string &cls) {
     if (cls.empty()) return nullptr;
@@ -423,22 +428,27 @@ static int roadWidthForZoom(const std::string &cls, int z) {
     // -1 = absent (route pas dessinée à ce zoom)
     static const WZ T[] = {
         //                 z6 z7 z8 z9 z10 z11 z12 z13 z14 z15 z16 z17 z18 z19
-        {"motorway",      { 2, 2, 2, 2,  3,  3,  4,  5,  6,  7, 10, 18, 22, 28}},
+        {"motorway",      { 2, 2, 2, 2,  3,  3,  4,  6,  8, 11, 15, 21, 22, 28}},
         {"motorway_link", {-1,-1,-1,-1,  2,  2,  2,  3,  3,  5,  8, 14, 14, 16}},
-        {"trunk",         { 2, 2, 2, 2,  3,  3,  4,  5,  6,  7, 10, 18, 22, 28}},
+        {"trunk",         { 2, 2, 2, 2,  3,  3,  4,  6,  8, 11, 15, 21, 22, 28}},
         {"trunk_link",    {-1,-1,-1,-1,  2,  2,  2,  3,  3,  5,  8, 14, 14, 16}},
-        {"primary",       {-1, 2, 2, 2,  3,  3,  3,  4,  5,  6, 10, 16, 22, 28}},
+        {"primary",       {-1, 2, 2, 2,  3,  3,  3,  5,  7, 10, 14, 19, 22, 28}},
         {"primary_link",  {-1,-1,-1,-1,  2,  2,  2,  3,  3,  4,  8, 12, 14, 16}},
-        {"secondary",     {-1,-1,-1,-1,  2,  2,  3,  3,  4,  5, 10, 14, 22, 28}},
+        {"secondary",     {-1,-1,-1,-1,  2,  2,  3,  5,  6,  8, 11, 16, 22, 28}},
         {"secondary_link",{-1,-1,-1,-1,  2,  2,  2,  3,  2,  3,  8, 10, 14, 16}},
-        {"tertiary",      {-1,-1,-1,-1, -1,  2,  2,  3,  3,  4, 10, 12, 19, 28}},
+        {"tertiary",      {-1,-1,-1,-1, -1,  2,  2,  4,  5,  6,  9, 12, 19, 28}},
         {"tertiary_link", {-1,-1,-1,-1, -1, -1,  2,  2,  2,  3,  8, 10, 12, 16}},
         {"pedestrian",    {-1,-1,-1,-1, -1, -1, -1,  2,  2,  3,  8, 12, 15, 18}},
         {"residential",   {-1,-1,-1,-1, -1, -1, -1,  2,  2,  3,  5,  8, 11, 18}},
         {"living_street", {-1,-1,-1,-1, -1, -1, -1,  2,  2,  3,  5,  8, 11, 18}},
         {"unclassified",  {-1,-1,-1,-1, -1, -1,  2,  2,  3,  3,  5, 12, 11, 18}},
         {"service",       {-1,-1,-1,-1, -1, -1, -1,  2,  2,  2,  3,  6,  8, 10}},
-        {"track",         {-1,-1,-1,-1, -1, -1, -1, -1, -1,  2,  2,  4,  4,  6}},
+        {"track",         {-1,-1,-1,-1, -1, -1, -1, -1,  2,  3,  4,  6,  6,  8}},
+        {"path",          {-1,-1,-1,-1, -1, -1, -1, -1, -1,  1,  2,  2,  3,  4}},
+        {"footway",       {-1,-1,-1,-1, -1, -1, -1, -1, -1, -1,  1,  2,  2,  3}},
+        {"cycleway",      {-1,-1,-1,-1, -1, -1, -1, -1, -1, -1,  1,  2,  2,  3}},
+        {"bridleway",     {-1,-1,-1,-1, -1, -1, -1, -1, -1, -1,  1,  2,  2,  3}},
+        {"steps",         {-1,-1,-1,-1, -1, -1, -1, -1, -1, -1, -1,  1,  2,  2}},
         {"rail",          {-1,-1,-1, 2,  2,  2,  2,  2,  2,  2,  3,  3,  4,  6}},
     };
     if (z < 6) z = 6;
@@ -525,9 +535,10 @@ struct StyledLineCollector {
     void setRoads() { table = nullptr; tableLen = 0; roadTable = kRoads; }
     void linestring_begin(uint32_t) { px.clear(); py.clear(); }
     void linestring_point(vtzero::point p) { px.push_back(toPxX(p.x, sz)); py.push_back(toPxY(p.y, sz)); }
+    int scale = 1;  // ×1 normal, ×2 SSAA — so line widths match buffer resolution
     void linestring_end() {
         for (size_t i = 1; i < px.size(); i++)
-            drawWideLine(buf,w,h,px[i-1],py[i-1],px[i],py[i],width,r,g,b);
+            drawWideLine(buf,w,h,px[i-1],py[i-1],px[i],py[i],width * scale,r,g,b);
     }
     void points_begin(uint32_t) {} void points_point(vtzero::point) {} void points_end() {}
     void ring_begin(uint32_t) {}   void ring_point(vtzero::point)   {} void ring_end(vtzero::ring_type) {}
@@ -550,6 +561,7 @@ struct StyledLineCollector {
 static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
     int z = s_ozStyleZ ? s_ozStyleZ : srcZ;
     int w = sz, h = sz;
+    int wScale = sz / TILE_SIZE;  // 1=normal, 2=SSAA — line widths must match buffer resolution
 
     // Background — LAND_BG_COLOR du générateur (#f2efe9), octets B,G,R,A
     for (int i = 0; i < w * h; i++) {
@@ -589,7 +601,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
     // Retourne "" si la route ne doit pas être rendue (chemins non-pedestrian).
     auto roadKey = [](const std::string &cls, const std::string &sub) -> std::string {
         if (cls == "minor") return sub.empty() ? std::string("residential") : sub;
-        if (cls == "path")  return (sub == "pedestrian") ? std::string("pedestrian") : std::string();
+        if (cls == "path")  return sub.empty() ? std::string("path") : sub;
         return cls;
     };
     // Lit class, subclass et ramp (les bretelles = ramp=1, repliées dans la classe
@@ -694,6 +706,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 for (auto &a : kAdmin) if (a.level == admin_level && z >= a.minZ) { as = &a; break; }
                 if (!as) continue;
                 StyledLineCollector lc; lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h;
+                lc.scale = wScale;
                 lc.r=as->r; lc.g=as->g; lc.b=as->b; lc.width=as->width;
                 lc.zoom=z; lc.table=nullptr; lc.tableLen=0; lc.roadTable=nullptr;
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
@@ -704,7 +717,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
     // Pass 3: waterway lines
     {
         StyledLineCollector lc;
-        lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z; lc.width=1;
+        lc.scale = wScale; lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z; lc.width=1;
         lc.setTable(kWaterway, STYLE_LEN(kWaterway));
         vtzero::vector_tile t{mvt};
         while (auto lay = t.next_layer()) {
@@ -724,7 +737,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
     // not covered by the polygon pass. Drawn from z12 up.
     if (z >= 12) {
         StyledLineCollector lc;
-        lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z;
+        lc.scale = wScale; lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z;
         lc.table=nullptr; lc.tableLen=0; lc.roadTable=nullptr;
         lc.r=0xB2; lc.g=0xB5; lc.b=0xD1;   // #b2b5d1
         vtzero::vector_tile t{mvt};
@@ -744,7 +757,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
     // Pass 4: railway lines
     {
         StyledLineCollector lc;
-        lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z; lc.width=1;
+        lc.scale = wScale; lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z; lc.width=1;
         lc.setTable(kRailway, STYLE_LEN(kRailway));
         vtzero::vector_tile t{mvt};
         while (auto lay = t.next_layer()) {
@@ -763,7 +776,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
     // Pass 5: roads
     {
         StyledLineCollector lc;
-        lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z; lc.width=1;
+        lc.scale = wScale; lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z; lc.width=1;
         lc.setRoads();
         // Outline pass (liseré fin, fill+2) — uniquement routes MAJEURES
         // (motorway/trunk/primary/secondary, wMul>=1.5). Tertiary et en dessous
@@ -1030,15 +1043,24 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                 }
             }
             // --- Major road refs: the A/N/D number, not the street name ---
+            // z14+ : all D roads + tertiary get a shield; below z14 only A/N/D1000-1999
+            // on motorway/trunk/primary/secondary.
             else if (isRoadName && geom == vtzero::GeomType::LINESTRING) {
                 if (ref.empty()) continue;
-                if (cls!="motorway"&&cls!="trunk"&&cls!="primary"&&cls!="secondary") continue;
+                bool highZoom = (z >= 14);
+                if (!highZoom && cls!="motorway"&&cls!="trunk"&&cls!="primary"&&cls!="secondary") continue;
+                if (highZoom && cls!="motorway"&&cls!="trunk"&&cls!="primary"&&cls!="secondary"&&cls!="tertiary") continue;
                 bool wanted = (ref[0]=='A' || ref[0]=='N');
-                if (!wanted && ref[0]=='D') {        // reclassified D roads reuse the 1000-1999 range
-                    try { int n=std::stoi(ref.substr(1)); wanted = (n>=1000 && n<=1999); } catch(...) {}
+                if (!wanted && ref[0]=='D') {
+                    if (highZoom) wanted = true;
+                    else { try { int n=std::stoi(ref.substr(1)); wanted = (n>=1000 && n<=1999); } catch(...) {} }
                 }
                 if (!wanted) continue;
-                int minZ = (cls=="motorway"||cls=="trunk") ? 10 : (cls=="primary" ? 11 : 12);
+                int minZ;
+                if (cls=="motorway"||cls=="trunk")      minZ = 10;
+                else if (cls=="primary")                minZ = 11;
+                else if (cls=="secondary")              minZ = 12;
+                else                                    minZ = 14; // tertiary
                 if (z < minZ) continue;
                 int prio = (cls=="motorway"||cls=="trunk") ? 25 : (cls=="primary" ? 35 : 45);
                 // Pass the road BASE color; the shield (light bg + dark text + border)
