@@ -148,10 +148,12 @@ void drawInto(lv_obj_t *canvas) {
               });
 
     // Per-name dedup radius : drop a second "Garonne" label that lands too
-    // close to one we already kept. Larger radius for followLine/shield
-    // (rivers / road refs span many tiles) than for places (one node only).
+    // close to one we already kept. Road shields repeat far apart (like OSM
+    // shield-spacing 760 / repeat-distance 400); rivers a bit less; places once.
     auto dedupRadiusPx = [](const SL& l) -> int {
-        return (l.followLine || l.shield) ? 350 : 100;
+        if (l.shield) return 650;
+        if (l.followLine) return 350;
+        return 100;
     };
     std::vector<SL> kept;
     std::map<std::string, lv_point_t> newAnchorCache;
@@ -325,8 +327,10 @@ void drawInto(lv_obj_t *canvas) {
         // Admin region labels (state/country) are placed last (highest prio
         // number) and kept well clear of the settlement labels already placed,
         // so a region name appears in open space, never crowding a city.
-        int mgX = l.isRegion ? 30 : 3;
-        int mgY = l.isRegion ? 30 : 2;
+        // Road shields keep clearance from other labels (OSM shield-margin) so
+        // they thin out instead of packing the road network.
+        int mgX = l.isRegion ? 30 : (l.shield ? 28 : 3);
+        int mgY = l.isRegion ? 30 : (l.shield ? 28 : 2);
         bool ov = false;
         for (auto &p : placed)
             if (!(swX + swW + mgX <= p.x || p.x + p.w + mgX <= swX || swY + swH + mgY <= p.y || p.y + p.h + mgY <= swY)) { ov = true; break; }
