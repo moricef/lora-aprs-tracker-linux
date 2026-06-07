@@ -423,7 +423,7 @@ static const RoadStyle *findRoad(const std::string &cls) {
 
 // Largeur de route par zoom — transcription de constants.hpp line_width_per_zoom
 // (Tile-Generator-Pack). Valeur = largeur pleine en px. -1 = non visible à ce zoom.
-static int roadWidthForZoom(const std::string &cls, int z) {
+static float roadWidthForZoom(const std::string &cls, int z) {
     struct WZ { const char *cls; int z[14]; }; // index 0=z6 .. 13=z19
     // -1 = absent (route pas dessinée à ce zoom)
     static const WZ T[] = {
@@ -506,11 +506,12 @@ static const PlaceStyle kPlaces[] = {
 
 // ---- Path drawing with width ------------------------------------------------
 static void drawWideLine(uint8_t *buf, int w, int h, int x0, int y0, int x1, int y1,
-                         int width, uint8_t r, uint8_t g, uint8_t b) {
+                         float width, uint8_t r, uint8_t g, uint8_t b) {
     if (width <= 1) { drawLine(buf,w,h,x0,y0,x1,y1,r,g,b); return; }
     int dx = abs(x1-x0), sx = x0<x1 ? 1 : -1;
     int dy = -abs(y1-y0), sy = y0<y1 ? 1 : -1;
-    int err = dx+dy, rad = width/2;
+    int err = dx+dy;
+    int rad = (int)(width / 2.0f + 0.5f);
     while (true) {
         for (int dy2 = -rad; dy2 <= rad; dy2++)
             for (int dx2 = -rad; dx2 <= rad; dx2++)
@@ -524,7 +525,7 @@ static void drawWideLine(uint8_t *buf, int w, int h, int x0, int y0, int x1, int
 // ---- Line collector with per-feature class lookup ----------------------------
 struct StyledLineCollector {
     std::vector<int> px, py;
-    int sz, w, h, width;
+    int sz, w, h; float width;
     uint8_t *buf;
     uint8_t r, g, b;
     int zoom;
@@ -792,12 +793,12 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 auto *rd = findRoad(key);
                 if (!rd) continue;
                 if (rd->wMul < 1.5f) continue;   // pas de liseré sur tertiary et en dessous
-                int fw = roadWidthForZoom(widthKey(key, ramp), z);
+                float fw = roadWidthForZoom(widthKey(key, ramp), z);
                 if (fw < 3) continue;            // ni si trop fine à ce zoom
                 // Liseré = couleur de la voie légèrement assombrie (×0.85, même teinte),
                 // pas du noir — discret sur le 7" 1024x600.
                 lc.r=(uint8_t)(rd->r*0.85f); lc.g=(uint8_t)(rd->g*0.85f); lc.b=(uint8_t)(rd->b*0.85f);
-                lc.width = fw + 2;
+                lc.width = fw + 2.0f;
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
             }
         }
@@ -812,7 +813,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 if (key.empty()) continue;       // chemins non-pedestrian non rendus
                 auto *rd = findRoad(key);
                 if (!rd) continue;
-                int fw = roadWidthForZoom(widthKey(key, ramp), z);
+                float fw = roadWidthForZoom(widthKey(key, ramp), z);
                 if (fw < 0) continue;            // route pas visible à ce zoom
                 lc.r=rd->r; lc.g=rd->g; lc.b=rd->b;
                 lc.width = fw;
