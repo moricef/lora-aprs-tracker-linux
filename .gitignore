@@ -1,4 +1,5 @@
 *.o
+*.d
 lora_rx
 lora_aprs_tracker
 lib/RadioLib/
