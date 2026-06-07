@@ -572,13 +572,24 @@ struct StyledLineCollector {
     void linestring_end() {
         float lw = width * scale;
         if (dashGap <= 0) {
-            if (bridgeCasing) {
-                float cw = lw + 2.0f * scale;  // ~1px black edge each side
-                for (size_t i = 1; i < px.size(); i++)
-                    drawWideLine(buf,w,h,px[i-1],py[i-1],px[i],py[i],cw,0,0,0);
-            }
             for (size_t i = 1; i < px.size(); i++)
                 drawWideLine(buf,w,h,px[i-1],py[i-1],px[i],py[i],lw,r,g,b);
+            // Bridge: a thin black rail along EACH edge of the road. A single
+            // wide line under the fill rounds into a blob on short spans, so we
+            // offset two rails perpendicular to each segment instead.
+            if (bridgeCasing) {
+                float railW = 1.0f * scale, off = lw / 2.0f;
+                for (size_t i = 1; i < px.size(); i++) {
+                    float ax = px[i-1], ay = py[i-1];
+                    float dx = px[i]-ax, dy = py[i]-ay, L = sqrtf(dx*dx+dy*dy);
+                    if (L < 0.5f) continue;
+                    float nx = -dy/L*off, ny = dx/L*off;
+                    drawWideLine(buf,w,h,(int)(ax+nx),(int)(ay+ny),
+                                 (int)(px[i]+nx),(int)(py[i]+ny), railW,0,0,0);
+                    drawWideLine(buf,w,h,(int)(ax-nx),(int)(ay-ny),
+                                 (int)(px[i]-nx),(int)(py[i]-ny), railW,0,0,0);
+                }
+            }
             return;
         }
         // Dashed: walk the polyline by arc length, drawing only the "on" runs.
