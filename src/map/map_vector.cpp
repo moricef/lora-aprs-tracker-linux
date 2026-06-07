@@ -568,9 +568,15 @@ struct StyledLineCollector {
     void linestring_point(vtzero::point p) { px.push_back(toPxX(p.x, sz)); py.push_back(toPxY(p.y, sz)); }
     int scale = 1;  // ×1 normal, ×2 SSAA — so line widths match buffer resolution
     float dashOn = 0, dashGap = 0;  // dash pattern in px (pre-scale); 0 = solid
+    bool bridgeCasing = false;      // draw a black border under the fill (bridges)
     void linestring_end() {
         float lw = width * scale;
         if (dashGap <= 0) {
+            if (bridgeCasing) {
+                float cw = lw + 2.0f * scale;  // ~1px black edge each side
+                for (size_t i = 1; i < px.size(); i++)
+                    drawWideLine(buf,w,h,px[i-1],py[i-1],px[i],py[i],cw,0,0,0);
+            }
             for (size_t i = 1; i < px.size(); i++)
                 drawWideLine(buf,w,h,px[i-1],py[i-1],px[i],py[i],lw,r,g,b);
             return;
@@ -665,8 +671,9 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
     };
     // Lit class, subclass et ramp (les bretelles = ramp=1, repliées dans la classe
     // parente). Pour une bretelle on prend la largeur du variant _link (plus fin).
-    auto readRoad = [](vtzero::feature &f, std::string &cls, std::string &sub, bool &ramp) {
-        cls.clear(); sub.clear(); ramp = false;
+    auto readRoad = [](vtzero::feature &f, std::string &cls, std::string &sub,
+                       bool &ramp, bool &bridge) {
+        cls.clear(); sub.clear(); ramp = false; bridge = false;
         while (auto p = f.next_property()) {
             auto t = p.value().type();
             if (p.key() == "ramp") { ramp = true; continue; }
@@ -674,6 +681,8 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
             auto v = p.value().string_value();
             if (p.key() == "class")    cls.assign(v.data(), v.size());
             else if (p.key() == "subclass") sub.assign(v.data(), v.size());
+            else if (p.key() == "brunnel" && std::string(v.data(), v.size()) == "bridge")
+                bridge = true;
         }
     };
     auto widthKey = [](const std::string &key, bool ramp) -> std::string {
@@ -852,7 +861,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
             if (std::string(lay.name()) != "transportation") continue;
             while (auto feat = lay.next_feature()) {
                 if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
-                std::string cls, sub; bool ramp; readRoad(feat, cls, sub, ramp);
+                std::string cls, sub; bool ramp, bridge; readRoad(feat, cls, sub, ramp, bridge);
                 std::string key = roadKey(cls, sub);
                 if (key.empty()) continue;
                 auto *rd = findRoad(key);
@@ -873,7 +882,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
             if (std::string(lay.name()) != "transportation") continue;
             while (auto feat = lay.next_feature()) {
                 if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
-                std::string cls, sub; bool ramp; readRoad(feat, cls, sub, ramp);
+                std::string cls, sub; bool ramp, bridge; readRoad(feat, cls, sub, ramp, bridge);
                 std::string key = roadKey(cls, sub);
                 if (key.empty()) continue;       // chemins non-pedestrian non rendus
                 auto *rd = findRoad(key);
@@ -886,6 +895,8 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 bool dashed = (key == "track");
                 lc.dashOn = dashed ? 4.0f : 0.0f;
                 lc.dashGap = dashed ? 2.0f : 0.0f;
+                // Bridges get a black casing (OSM look) from z12.
+                lc.bridgeCasing = (bridge && z >= 12);
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
             }
         }
