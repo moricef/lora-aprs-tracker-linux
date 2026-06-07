@@ -21,8 +21,10 @@
 
 #include <Arduino.h>
 
-// Structure for stations to display on map
-#define MAP_STATIONS_MAX 20
+// Structure for stations to display on map.
+// Single knob driving the mapStations array, markers and every loop. Practical
+// ceiling is on-screen clutter, not memory (~1.3 KB/station).
+#define MAP_STATIONS_MAX 50
 #define TRACE_MAX_POINTS 100
 
 struct TracePoint {
