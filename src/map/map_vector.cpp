@@ -428,15 +428,15 @@ static float roadWidthForZoom(const std::string &cls, int z) {
     // -1 = absent (route pas dessinée à ce zoom)
     static const WZ T[] = {
         //                 z6 z7 z8 z9 z10 z11 z12 z13 z14 z15 z16 z17 z18 z19
-        {"motorway",      { 2, 2, 2, 2,  3,  3,  4,  6,  8, 11, 15, 21, 22, 28}},
+        {"motorway",      { 2, 2, 2, 2,  2,  2,  4,  6,  8, 11, 15, 21, 22, 28}},
         {"motorway_link", {-1,-1,-1,-1,  2,  2,  2,  3,  3,  5,  8, 14, 14, 16}},
-        {"trunk",         { 2, 2, 2, 2,  3,  3,  4,  6,  8, 11, 15, 21, 22, 28}},
+        {"trunk",         { 2, 2, 2, 2,  2,  2,  4,  6,  8, 11, 15, 21, 22, 28}},
         {"trunk_link",    {-1,-1,-1,-1,  2,  2,  2,  3,  3,  5,  8, 14, 14, 16}},
-        {"primary",       {-1, 2, 2, 2,  3,  3,  3,  5,  7, 10, 14, 19, 22, 28}},
+        {"primary",       {-1, 2, 2, 2,  2,  2,  3,  5,  7, 10, 14, 19, 22, 28}},
         {"primary_link",  {-1,-1,-1,-1,  2,  2,  2,  3,  3,  4,  8, 12, 14, 16}},
-        {"secondary",     {-1,-1,-1,-1,  2,  2,  3,  4,  6,  8, 11, 16, 22, 28}},
+        {"secondary",     {-1,-1,-1,-1,  1,  1,  3,  4,  6,  8, 11, 16, 22, 28}},
         {"secondary_link",{-1,-1,-1,-1,  2,  2,  2,  3,  2,  3,  8, 10, 14, 16}},
-        {"tertiary",      {-1,-1,-1,-1, -1,  2,  2,  3,  5,  6,  9, 12, 19, 28}},
+        {"tertiary",      {-1,-1,-1,-1, -1,  1,  2,  3,  5,  6,  9, 12, 19, 28}},
         {"tertiary_link", {-1,-1,-1,-1, -1, -1,  2,  2,  2,  3,  8, 10, 12, 16}},
         {"pedestrian",    {-1,-1,-1,-1, -1, -1, -1, -1,  3,  3,  8, 12, 15, 18}},
         {"residential",   {-1,-1,-1,-1, -1, -1, -1, -1,  2,  3,  5,  8, 11, 18}},
@@ -708,7 +708,11 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 if (!as) continue;
                 StyledLineCollector lc; lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h;
                 lc.scale = wScale;
-                lc.r=as->r; lc.g=as->g; lc.b=as->b; lc.width=as->width;
+                int bw = as->width;
+                // Thinner country border at low zoom (avoids a z7 border as fat
+                // as z8).
+                if (as->level == 2 && z <= 7) bw = 1;
+                lc.r=as->r; lc.g=as->g; lc.b=as->b; lc.width=bw;
                 lc.zoom=z; lc.table=nullptr; lc.tableLen=0; lc.roadTable=nullptr;
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
             }
