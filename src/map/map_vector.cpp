@@ -487,10 +487,8 @@ static const PlaceStyle kPlaces[] = {
     {"islet",     0, 50, &lv_font_montserrat_12, 0x77,0x77,0x77},
     {"isolated_dwelling",0,55,&lv_font_montserrat_12,0x77,0x77,0x77},
     {"farm",      0, 55, &lv_font_montserrat_12, 0x77,0x77,0x77},
-    // INVENTED (user-requested, no firmware source): the reference firmware emits
-    // no admin-region labels at all. We keep state/country but place them AFTER
-    // every settlement (prio > all above) so a region never displaces a city; the
-    // label collision additionally keeps them clear of settlement labels.
+    // Admin regions: prio above every settlement so a region is placed last and
+    // never displaces a city; the label collision also keeps them clear.
     {"state",     0, 60, &lv_font_montserrat_14, 0x55,0x44,0x43},
     {"country",   0, 62, &lv_font_montserrat_14, 0x33,0x22,0x21},
 };
