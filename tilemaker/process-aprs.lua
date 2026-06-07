@@ -168,25 +168,15 @@ function node_function()
 		elseif place == "town" and pop>=15000   then mz=9
 		elseif place == "town" and pop>=5000    then mz=10
 		elseif place == "town"                  then mz=11
-		-- village: firmware text_features
-		elseif place == "village" and pop>=2000 then mz=11
-		elseif place == "village" and pop>=500  then mz=12
-		elseif place == "village"               then mz=13
+		elseif place == "village"               then mz=12
 		-- borough: ladder pop pour métropoles (arrondissements parisiens etc.)
 		elseif place == "borough" and pop>=50000 then mz=10
 		elseif place == "borough" and pop>=10000 then mz=11
 		elseif place == "borough"                then mz=12
-		-- suburb: ladder pop pour quartiers nommés (densité variable)
-		elseif place == "suburb" and pop>=10000  then mz=11
-		elseif place == "suburb" and pop>=3000   then mz=12
-		elseif place == "suburb"                 then mz=13
-		-- neighbourhood: ladder pop
-		elseif place == "neighbourhood" and pop>=5000 then mz=12
-		elseif place == "neighbourhood"          then mz=13
-		-- hamlet: ladder pop (firmware = z14 single, ici on avance les gros)
-		elseif place == "hamlet"                then mz=14
-		-- types sans pop OSM en général
-		elseif place == "quarter"           then mz=15
+		elseif place == "suburb"                 then mz=12
+		elseif place == "neighbourhood"          then mz=15
+		elseif place == "hamlet"                 then mz=14
+		elseif place == "quarter"           then mz=14
 		elseif place == "locality"          then mz=15
 		elseif place == "islet"             then mz=15
 		elseif place == "isolated_dwelling" then mz=15
