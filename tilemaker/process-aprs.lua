@@ -144,36 +144,34 @@ function node_function()
 	local place = Find("place")
 	if place ~= "" then
 		local pop = tonumber(Find("population")) or 0
-		local capital = capitalLevel(Find("capital"))
+		local cap = Find("capital")
+		local capital = capitalLevel(cap)
 		local rank = calcRank(place, pop, capital)
-		-- minzoom par classe. mz = -1 → PAS écrit (exclu) : locality, islet,
-		-- square, island, isolated_dwelling, farm, neighbourhood… polluent et
-		-- ne sont pas montrés à ces zooms par OSM/OMT. Agglomérations : ladder
-		-- population (les grosses villes apparaissent tôt) ; village/suburb/
-		-- hamlet/quarter aux zooms OSM-carto.
+		-- Critères OSM-carto (project.mml score + placenames.mss). FEATURES = OSM.
+		-- city : score = max(pop,100000) × (capital=4 ? 2) → zoom par bracket.
+		-- town : TOUS dès z9 (category 2 ; la population ne change que la taille).
+		-- village/suburb z12, hamlet/quarter z14. Les classes qu'OSM-carto ne rend
+		-- pas en placename (borough, locality, neighbourhood, islet, square,
+		-- island, isolated_dwelling, farm) ne sont PAS écrites.
 		local mz = -1
-		if     place == "continent"             then mz=0
-		elseif place == "country"               then
+		if     place == "continent" then mz=0
+		elseif place == "country"   then
 			if     pop>50000000 then rank=1; mz=1
 			elseif pop>20000000 then rank=2; mz=2
 			else                     rank=3; mz=3 end
-		elseif place == "state"                 then mz=4
-		elseif place == "province"              then mz=5
-		elseif place == "city" and pop>=1000000 then mz=4
-		elseif place == "city" and pop>=500000  then mz=5
-		elseif place == "city" and pop>=100000  then mz=6
-		elseif place == "city"                  then mz=8
-		elseif place == "town" and pop>=50000   then mz=8
-		elseif place == "town" and pop>=15000   then mz=9
-		elseif place == "town" and pop>=5000    then mz=10
-		elseif place == "town"                  then mz=11
-		elseif place == "village"               then mz=12
-		elseif place == "suburb"                then mz=12
-		elseif place == "borough" and pop>=50000 then mz=10
-		elseif place == "borough" and pop>=10000 then mz=11
-		elseif place == "borough"               then mz=12
-		elseif place == "quarter"               then mz=14
-		elseif place == "hamlet"                then mz=14
+		elseif place == "state"     then mz=4
+		elseif place == "province"  then mz=5
+		elseif place == "city"      then
+			local score = (pop > 0 and pop or 100000) * (cap == "4" and 2 or 1)
+			if     score >= 3000000 then mz=4
+			elseif score >= 400000  then mz=5
+			elseif score >= 70000   then mz=6
+			else                         mz=8 end
+		elseif place == "town"      then mz=9
+		elseif place == "village"   then mz=12
+		elseif place == "suburb"    then mz=12
+		elseif place == "hamlet"    then mz=14
+		elseif place == "quarter"   then mz=14
 		end
 
 		if mz >= 0 then
