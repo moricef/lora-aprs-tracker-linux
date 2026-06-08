@@ -143,66 +143,61 @@ function node_function()
 	--   we could potentially approximate it for cities based on the population tag
 	local place = Find("place")
 	if place ~= "" then
-		local mz = 13
 		local pop = tonumber(Find("population")) or 0
 		local capital = capitalLevel(Find("capital"))
 		local rank = calcRank(place, pop, capital)
-
-		if     place == "continent"     then mz=0
-		elseif place == "country"       then
+		-- minzoom par classe. mz = -1 → PAS écrit (exclu) : locality, islet,
+		-- square, island, isolated_dwelling, farm, neighbourhood… polluent et
+		-- ne sont pas montrés à ces zooms par OSM/OMT. Agglomérations : ladder
+		-- population (les grosses villes apparaissent tôt) ; village/suburb/
+		-- hamlet/quarter aux zooms OSM-carto.
+		local mz = -1
+		if     place == "continent"             then mz=0
+		elseif place == "country"               then
 			if     pop>50000000 then rank=1; mz=1
 			elseif pop>20000000 then rank=2; mz=2
 			else                     rank=3; mz=3 end
-		elseif place == "state"         then mz=4
-		elseif place == "province"         then mz=5
-		-- Population brackets transposed from firmware (Tile-Generator-Pack
-		-- src/constants.hpp text_features). Keeps Linux and ESP32 visually
-		-- consistent (same label density per zoom).
-		-- city: firmware text_features
+		elseif place == "state"                 then mz=4
+		elseif place == "province"              then mz=5
 		elseif place == "city" and pop>=1000000 then mz=4
 		elseif place == "city" and pop>=500000  then mz=5
 		elseif place == "city" and pop>=100000  then mz=6
 		elseif place == "city"                  then mz=8
-		-- town: firmware text_features
 		elseif place == "town" and pop>=50000   then mz=8
 		elseif place == "town" and pop>=15000   then mz=9
 		elseif place == "town" and pop>=5000    then mz=10
 		elseif place == "town"                  then mz=11
 		elseif place == "village"               then mz=12
-		-- borough: ladder pop pour métropoles (arrondissements parisiens etc.)
+		elseif place == "suburb"                then mz=12
 		elseif place == "borough" and pop>=50000 then mz=10
 		elseif place == "borough" and pop>=10000 then mz=11
-		elseif place == "borough"                then mz=12
-		elseif place == "suburb"                 then mz=12
-		elseif place == "neighbourhood"          then mz=15
-		elseif place == "hamlet"                 then mz=14
-		elseif place == "quarter"           then mz=14
-		elseif place == "locality"          then mz=15
-		elseif place == "islet"             then mz=15
-		elseif place == "isolated_dwelling" then mz=15
-		elseif place == "farm"              then mz=15
+		elseif place == "borough"               then mz=12
+		elseif place == "quarter"               then mz=14
+		elseif place == "hamlet"                then mz=14
 		end
 
-		Layer("place", false)
-		Attribute("class", place)
-		MinZoom(mz)
-		if rank then AttributeInteger("rank", rank) end
-		if capital then AttributeInteger("capital", capital) end
-		-- Raw population: tiebreak between two same-rank, same-priority towns
-		-- on the renderer side (Cugnaux 17.5k beats Fonsorbes 12.8k both rank 9).
-		if pop > 0 then AttributeInteger("population", pop) end
-		if place=="country" then
-			local iso_a2 = Find("ISO3166-1:alpha2")
-			while iso_a2 == "" do
-				local rel, role = NextRelation()
-				if not rel then break end
-				if role == 'label' then
-					iso_a2 = FindInRelation("ISO3166-1:alpha2")
+		if mz >= 0 then
+			Layer("place", false)
+			Attribute("class", place)
+			MinZoom(mz)
+			if rank then AttributeInteger("rank", rank) end
+			if capital then AttributeInteger("capital", capital) end
+			-- Raw population: tiebreak between two same-rank, same-priority towns
+			-- on the renderer side (Cugnaux 17.5k beats Fonsorbes 12.8k rank 9).
+			if pop > 0 then AttributeInteger("population", pop) end
+			if place=="country" then
+				local iso_a2 = Find("ISO3166-1:alpha2")
+				while iso_a2 == "" do
+					local rel, role = NextRelation()
+					if not rel then break end
+					if role == 'label' then
+						iso_a2 = FindInRelation("ISO3166-1:alpha2")
+					end
 				end
+				Attribute("iso_a2", iso_a2)
 			end
-			Attribute("iso_a2", iso_a2)
+			SetNameAttributes()
 		end
-		SetNameAttributes()
 		return
 	end
 
