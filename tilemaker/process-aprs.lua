@@ -147,12 +147,14 @@ function node_function()
 		local cap = Find("capital")
 		local capital = capitalLevel(cap)
 		local rank = calcRank(place, pop, capital)
-		-- Critères OSM-carto (project.mml score + placenames.mss). FEATURES = OSM.
-		-- city : score = max(pop,100000) × (capital=4 ? 2) → zoom par bracket.
-		-- town : TOUS dès z9 (category 2 ; la population ne change que la taille).
-		-- village/suburb z12, hamlet/quarter z14. Les classes qu'OSM-carto ne rend
-		-- pas en placename (borough, locality, neighbourhood, islet, square,
-		-- island, isolated_dwelling, farm) ne sont PAS écrites.
+		-- Critères OSM-carto (project.mml + placenames.mss). FEATURES = OSM.
+		-- score OMT = (pop ou défaut city=100000/town=1000/autre=1) × (capital=4 ? 2),
+		-- écrit en attribut → départage de collision côté renderer (score, pas pop).
+		-- city : minzoom par score. town : tous dès z9. village/suburb z12,
+		-- hamlet/quarter z14. borough/locality/neighbourhood/islet/square/island/
+		-- isolated_dwelling/farm : non écrits (OSM ne les rend pas en placename).
+		local base = (place=="city" and 100000) or (place=="town" and 1000) or 1
+		local score = (pop>0 and pop or base) * (cap=="4" and 2 or 1)
 		local mz = -1
 		if     place == "continent" then mz=0
 		elseif place == "country"   then
@@ -162,11 +164,10 @@ function node_function()
 		elseif place == "state"     then mz=4
 		elseif place == "province"  then mz=5
 		elseif place == "city"      then
-			local score = (pop > 0 and pop or 100000) * (cap == "4" and 2 or 1)
 			if     score >= 3000000 then mz=4
 			elseif score >= 400000  then mz=5
 			elseif score >= 70000   then mz=6
-			else                         mz=8 end
+			else                         mz=7 end
 		elseif place == "town"      then mz=9
 		elseif place == "village"   then mz=12
 		elseif place == "suburb"    then mz=12
@@ -178,6 +179,7 @@ function node_function()
 			Layer("place", false)
 			Attribute("class", place)
 			MinZoom(mz)
+			AttributeInteger("score", score)
 			if rank then AttributeInteger("rank", rank) end
 			if capital then AttributeInteger("capital", capital) end
 			-- Raw population: tiebreak between two same-rank, same-priority towns

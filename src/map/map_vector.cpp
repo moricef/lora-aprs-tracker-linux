@@ -57,6 +57,23 @@ static const lv_font_t *placeFont(int px) {
     return s_font12 ? s_font12 : &lv_font_montserrat_12;
 }
 
+// OSM-carto text-size per class and zoom (placenames.mss). Font grows with zoom,
+// like OSM. score (= OMT score) selects the high vs medium-importance city band.
+static int placeSizePx(const std::string &cls, int z, long score) {
+    if (cls == "city") {
+        if (score >= 400000) return z <= 9 ? 13 : (z == 10 ? 14 : 15);
+        return z <= 8 ? 10 : (z == 9 ? 12 : (z == 10 ? 13 : (z <= 13 ? 14 : 15)));
+    }
+    if (cls == "town")    return z <= 10 ? 10 : (z == 11 ? 11 : (z <= 13 ? 13 : 15));
+    if (cls == "suburb")  return z <= 12 ? 11 : (z == 13 ? 12 : 14);
+    if (cls == "village") return z <= 12 ? 10 : (z == 13 ? 11 : 13);
+    if (cls == "quarter") return 11;
+    if (cls == "hamlet")  return 10;
+    if (cls == "country") return 14;
+    if (cls == "state" || cls == "province") return 13;
+    return 11;
+}
+
 bool initLabelFonts() {
     if (s_font12 && s_font14) return true;
     static const char *paths[] = {
@@ -76,7 +93,7 @@ bool initLabelFonts() {
     s_font14 = lv_freetype_font_create(found, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, 16, LV_FREETYPE_FONT_STYLE_NORMAL);
     // Place label sizes (OSM range 10-15). Pre-created here so getTileLabels
     // (worker thread) never has to allocate a font.
-    for (int px : {11, 12, 13, 14, 15})
+    for (int px : {10, 11, 12, 13, 14, 15})
         s_placeFont[px] = lv_freetype_font_create(found, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, px, LV_FREETYPE_FONT_STYLE_NORMAL);
     printf("[map] police labels: %s (%s)\n", found, (s_font12 && s_font14) ? "OK" : "partiel");
     return s_font12 && s_font14;
@@ -1042,6 +1059,7 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
         while (auto feat = lay.next_feature()) {
             std::string labelText, nameLatin, cls, ref;
             int pop = 0;
+            long score = 0;
             int ele = 0;
             while (auto prop = feat.next_property()) {
                 auto pt = prop.value().type();
@@ -1055,6 +1073,10 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                     if (pt == vtzero::property_value_type::int_value)       pop = (int)prop.value().int_value();
                     else if (pt == vtzero::property_value_type::sint_value) pop = (int)prop.value().sint_value();
                     else if (pt == vtzero::property_value_type::uint_value) pop = (int)prop.value().uint_value();
+                } else if (prop.key() == "score") {
+                    if (pt == vtzero::property_value_type::int_value)       score = (long)prop.value().int_value();
+                    else if (pt == vtzero::property_value_type::sint_value) score = (long)prop.value().sint_value();
+                    else if (pt == vtzero::property_value_type::uint_value) score = (long)prop.value().uint_value();
                 } else if (prop.key() == "ele") {
                     if (pt == vtzero::property_value_type::int_value)       ele = (int)prop.value().int_value();
                     else if (pt == vtzero::property_value_type::sint_value) ele = (int)prop.value().sint_value();
@@ -1086,9 +1108,11 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                 if (lp.n>0) {
                     int cx=(lp.minX+lp.maxX)/2, cy=(lp.minY+lp.maxY)/2;
                     if (isPlace) {
+                        long sc = score > 0 ? score : (long)pop;
                         for (auto &ps : kPlaces) if (cls==ps.cls && z>=ps.minZ) {
                             bool region = (cls=="state" || cls=="country");
-                            push(cx,cy,labelText,ps.prio,placeFont(ps.sizePx),ps.r,ps.g,ps.b,0,false,false,pop,region); break; }
+                            // OSM: font grows with zoom; collision tiebreak by score.
+                            push(cx,cy,labelText,ps.prio,placeFont(placeSizePx(cls,z,sc)),ps.r,ps.g,ps.b,0,false,false,(int)sc,region); break; }
                     } else push(cx,cy,labelText,70,rtFont(&lv_font_montserrat_12),0x4A,0x7A,0xB0);
                 }
             }
