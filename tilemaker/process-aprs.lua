@@ -625,7 +625,9 @@ function way_function()
 		local class="lake"; if waterway~="" then class="river" end
 		if class=="lake" and Find("wikidata")=="Q192770" then return end
 		Layer("water",true)
-		SetMinZoomByArea(way)
+		-- Canals are long but narrow: area-based minzoom buries them until z14.
+		-- Treat the canal surface like a linear water feature with a fixed minzoom.
+		if water=="canal" or waterway=="canal" then MinZoom(12) else SetMinZoomByArea(way) end
 		Attribute("class",class)
 
 		if Find("intermittent")=="yes" then Attribute("intermittent",1) end
