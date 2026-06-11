@@ -57,22 +57,26 @@ static const lv_font_t *placeFont(int px) {
     return s_font12 ? s_font12 : &lv_font_montserrat_12;
 }
 
-// OSM-carto text-size per class and zoom (placenames.mss). Font grows with zoom,
-// like OSM. score (= OMT score) selects the high vs medium-importance city band.
+// Per-zoom label size; score splits the city band (large vs medium importance).
 static int placeSizePx(const std::string &cls, int z, long score) {
     if (cls == "city") {
         if (score >= 400000) return z <= 9 ? 13 : (z == 10 ? 14 : 15);
         return z <= 8 ? 10 : (z == 9 ? 12 : (z == 10 ? 13 : (z <= 13 ? 14 : 15)));
     }
     if (cls == "town")    return z <= 10 ? 10 : (z == 11 ? 11 : (z <= 13 ? 13 : 15));
-    if (cls == "suburb")  return z <= 12 ? 11 : (z == 13 ? 12 : 14);
-    if (cls == "village") return z <= 12 ? 10 : (z == 13 ? 11 : 13);
-    if (cls == "quarter") return 11;
-    if (cls == "hamlet")  return 10;
-    if (cls == "country") return 14;
-    if (cls == "state" || cls == "province") return 13;
+    if (cls == "suburb")  return z <= 12 ? 11 : (z == 13 ? 12 : (z <= 15 ? 14 : 15));
+    if (cls == "village") return z <= 12 ? 10 : (z == 13 ? 11 : (z == 14 ? 13 : (z == 15 ? 14 : 15)));
+    if (cls == "quarter") return z <= 14 ? 11 : (z == 15 ? 12 : 14);
+    if (cls == "hamlet")  return z <= 14 ? 10 : (z == 15 ? 11 : 12);
+    if (cls == "country") return z <= 3 ? 10 : (z == 4 ? 11 : (z <= 6 ? 12 : (z <= 8 ? 13 : (z == 9 ? 14 : 15))));
+    if (cls == "state" || cls == "province")
+                          return z <= 6 ? 10 : (z <= 8 ? 11 : (z == 9 ? 12 : (z <= 11 ? 13 : 15)));
     return 11;
 }
+
+// 7-inch ~169 DPI panel: lift every place label by a fixed step so the smallest
+// stay legible; relative sizes unchanged.
+static constexpr int kPlaceSizeBoost = 3;
 
 bool initLabelFonts() {
     if (s_font12 && s_font14) return true;
@@ -93,7 +97,7 @@ bool initLabelFonts() {
     s_font14 = lv_freetype_font_create(found, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, 16, LV_FREETYPE_FONT_STYLE_NORMAL);
     // Place label sizes (OSM range 10-15). Pre-created here so getTileLabels
     // (worker thread) never has to allocate a font.
-    for (int px : {10, 11, 12, 13, 14, 15})
+    for (int px : {10, 11, 12, 13, 14, 15, 16, 17, 18})
         s_placeFont[px] = lv_freetype_font_create(found, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, px, LV_FREETYPE_FONT_STYLE_NORMAL);
     printf("[map] police labels: %s (%s)\n", found, (s_font12 && s_font14) ? "OK" : "partiel");
     return s_font12 && s_font14;
@@ -290,6 +294,39 @@ static void fillPoly(uint8_t *buf, int w, int h,
     }
 }
 
+// Even-odd fill across every ring of one polygon feature at once: a point inside
+// an odd number of rings is filled, so inner rings (islands/holes) punch through.
+static void fillPolyMulti(uint8_t *buf, int w, int h,
+                          const std::vector<std::vector<int>> &X,
+                          const std::vector<std::vector<int>> &Y,
+                          uint8_t r, uint8_t g, uint8_t b) {
+    int minY = h, maxY = 0;
+    for (auto &c : Y) for (int v : c) { if (v < minY) minY = v; if (v > maxY) maxY = v; }
+    if (minY < 0) minY = 0;
+    if (maxY >= h) maxY = h - 1;
+    std::vector<int> xs;
+    for (int y = minY; y <= maxY; y++) {
+        xs.clear();
+        for (size_t c = 0; c < X.size(); c++) {
+            const auto &px = X[c]; const auto &py = Y[c];
+            int n = (int)px.size();
+            for (int i = 0; i < n; i++) {
+                int j = (i + 1) % n;
+                if ((py[i] <= y && py[j] > y) || (py[j] <= y && py[i] > y))
+                    if (py[j] != py[i])
+                        xs.push_back(px[i] + (y - py[i]) * (px[j] - px[i]) / (py[j] - py[i]));
+            }
+        }
+        std::sort(xs.begin(), xs.end());
+        for (size_t k = 0; k + 1 < xs.size(); k += 2) {
+            int x0 = xs[k], x1 = xs[k+1];
+            if (x0 < 0) x0 = 0;
+            if (x1 >= w) x1 = w - 1;
+            for (int x = x0; x <= x1; x++) setPx(buf, w*4, x, y, r, g, b);
+        }
+    }
+}
+
 // VTzero → pixel coords, with optional overzoom transform.
 // When rendering at a screen zoom higher than the pmtiles max zoom, the
 // source tile covers a 2^delta × 2^delta region of target tiles. We pick
@@ -339,15 +376,16 @@ struct PolyCollector {
     uint8_t r, g, b;
     uint8_t *buf;
     int w, h;
+    std::vector<std::vector<int>> ringsX, ringsY;  // all rings of the current feature
     void ring_begin(uint32_t) { px.clear(); py.clear(); }
     void ring_point(vtzero::point p) { px.push_back(toPxX(p.x, sz)); py.push_back(toPxY(p.y, sz)); }
-    void ring_end(vtzero::ring_type rt) {
-        // On remplit TOUS les rings (outer ET inner) en plein : le winding des
-        // tuiles bas-zoom est peu fiable (gros polygones classés inner à tort).
-        // Les vrais trous du landcover sont négligeables visuellement.
-        (void)rt;
-        if (px.size() >= 3)
-            fillPoly(buf, w, h, px, py, r, g, b);
+    void ring_end(vtzero::ring_type) {
+        if (px.size() >= 3) { ringsX.push_back(px); ringsY.push_back(py); }
+    }
+    // Fill outer + inner rings together (even-odd) so islands stay land.
+    void flush() {
+        if (!ringsX.empty()) fillPolyMulti(buf, w, h, ringsX, ringsY, r, g, b);
+        ringsX.clear(); ringsY.clear();
     }
     void points_begin(uint32_t) {} void points_point(vtzero::point) {} void points_end() {}
     void linestring_begin(uint32_t) {} void linestring_point(vtzero::point) {} void linestring_end() {}
@@ -451,40 +489,72 @@ static const RoadStyle *findRoad(const std::string &cls) {
     return nullptr;
 }
 
-// Largeur de route par zoom — transcription de constants.hpp line_width_per_zoom
-// (Tile-Generator-Pack). Valeur = largeur pleine en px. -1 = non visible à ce zoom.
+// Per-zoom full line width in px. -1 = not drawn at that zoom. Values carry
+// forward from the last defined zoom, so a flat run (e.g. z15==z16) is intended.
 static float roadWidthForZoom(const std::string &cls, int z) {
-    struct WZ { const char *cls; int z[14]; }; // index 0=z6 .. 13=z19
-    // -1 = absent (route pas dessinée à ce zoom)
+    struct WZ { const char *cls; float z[14]; }; // index 0=z6 .. 13=z19
     static const WZ T[] = {
-        //                 z6 z7 z8 z9 z10 z11 z12 z13 z14 z15 z16 z17 z18 z19
-        {"motorway",      { 2, 2, 2, 2,  2,  2,  4,  6,  8, 11, 15, 21, 22, 28}},
-        {"motorway_link", {-1,-1,-1,-1,  2,  2,  2,  3,  3,  5,  8, 14, 14, 16}},
-        {"trunk",         { 2, 2, 2, 2,  2,  2,  4,  6,  8, 11, 15, 21, 22, 28}},
-        {"trunk_link",    {-1,-1,-1,-1,  2,  2,  2,  3,  3,  5,  8, 14, 14, 16}},
-        {"primary",       {-1, 2, 2, 2,  2,  2,  3,  5,  7, 10, 14, 19, 22, 28}},
-        {"primary_link",  {-1,-1,-1,-1,  2,  2,  2,  3,  3,  4,  8, 12, 14, 16}},
-        {"secondary",     {-1,-1,-1,-1,  1,  1,  3,  4,  6,  8, 11, 16, 22, 28}},
-        {"secondary_link",{-1,-1,-1,-1,  2,  2,  2,  3,  2,  3,  8, 10, 14, 16}},
-        {"tertiary",      {-1,-1,-1,-1, -1,  1,  2,  3,  5,  6,  9, 12, 19, 28}},
-        {"tertiary_link", {-1,-1,-1,-1, -1, -1,  2,  2,  2,  3,  8, 10, 12, 16}},
-        {"pedestrian",    {-1,-1,-1,-1, -1, -1, -1, -1,  3,  3,  8, 12, 15, 18}},
-        {"residential",   {-1,-1,-1,-1, -1, -1, -1, -1,  2,  3,  5,  8, 11, 18}},
-        {"living_street", {-1,-1,-1,-1, -1, -1, -1, -1,  2,  3,  5,  8, 11, 18}},
-        {"unclassified",  {-1,-1,-1,-1, -1, -1, -1, -1,  3,  3,  5, 12, 11, 18}},
-        {"service",       {-1,-1,-1,-1, -1, -1, -1, -1,  2,  2,  3,  6,  8, 10}},
-        {"track",         {-1,-1,-1,-1, -1, -1, -1, -1,  2,  3,  4,  6,  6,  8}},
-        {"path",          {-1,-1,-1,-1, -1, -1, -1, -1, -1,  1,  2,  2,  3,  4}},
-        {"footway",       {-1,-1,-1,-1, -1, -1, -1, -1, -1, -1,  1,  2,  2,  3}},
-        {"cycleway",      {-1,-1,-1,-1, -1, -1, -1, -1, -1, -1,  1,  2,  2,  3}},
-        {"bridleway",     {-1,-1,-1,-1, -1, -1, -1, -1, -1, -1,  1,  2,  2,  3}},
-        {"steps",         {-1,-1,-1,-1, -1, -1, -1, -1, -1, -1, -1,  1,  2,  2}},
-        {"rail",          {-1,-1,-1, 2,  2,  2,  2,  2,  2,  2,  3,  3,  4,  6}},
+        //                  z6   z7   z8   z9  z10  z11  z12  z13  z14  z15  z16  z17  z18  z19
+        {"motorway",      {0.4f,0.8f,  1,1.4f,1.9f,  2,3.5f,  6,   6,  10,  10,  18,  21,  27}},
+        {"motorway_link", { -1,  -1,  -1,  -1,1.5f,1.5f,1.5f,  4,   4,7.8f,7.8f,  12,  13,  16}},
+        {"trunk",         {0.4f,0.6f,  1,1.4f,1.9f,1.9f,3.5f,  6,   6,  10,  10,  18,  21,  27}},
+        {"trunk_link",    { -1,  -1,  -1,  -1,1.5f,1.5f,1.5f,  4,   4,7.8f,7.8f,  12,  13,  16}},
+        {"primary",       { -1,   1,   1,1.4f,1.8f,1.8f,3.5f,  5,   5,  10,  10,  18,  21,  27}},
+        {"primary_link",  { -1,  -1,  -1,  -1,1.5f,1.5f,1.5f,  4,   4,7.8f,7.8f,  12,  13,  16}},
+        {"secondary",     { -1,  -1,  -1,  -1,1.1f,1.1f,3.5f,  5,   5,   9,  10,  18,  21,  27}},
+        {"secondary_link",{ -1,  -1,  -1,  -1,1.5f,1.5f,1.5f,  4,   4,   7,   7,  12,  13,  16}},
+        {"tertiary",      { -1,  -1,  -1,  -1,  -1,0.7f,2.5f,  4,   5,   9,  10,  18,  21,  27}},
+        {"tertiary_link", { -1,  -1,  -1,  -1,  -1,  -1,1.5f,  3,   3,   7,   7,  12,  13,  16}},
+        {"pedestrian",    { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   3,   5,   6,  12,  13,  17}},
+        {"residential",   { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   3,   5,   6,  12,  13,  17}},
+        {"living_street", { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   3,   5,   6,  12,  13,  17}},
+        {"unclassified",  { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   3,   3,   5,  12,  11,  18}},
+        {"service",       { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   2,   2,3.5f,   7,8.5f,  11}},
+        {"track",         { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   2,   3,   4,   6,   6,   8}},
+        {"path",          { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   1,   2,   2,   3,   4}},
+        {"footway",       { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   1,   2,   2,   3}},
+        {"cycleway",      { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   1,   2,   2,   3}},
+        {"bridleway",     { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   1,   2,   2,   3}},
+        {"steps",         { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   1,   2,   2}},
+        {"rail",          { -1,  -1,  -1,   2,   2,   2,   2,   2,   2,   2,   3,   3,   4,   6}},
     };
     if (z < 6) z = 6;
     if (z > 19) z = 19;
-    for (auto &w : T) if (cls == w.cls) { int v = w.z[z-6]; return v; }
+    for (auto &w : T) if (cls == w.cls) return w.z[z-6];
     return 2; // défaut routes mineures non tabulées
+}
+
+// Road outline (per-side) by zoom: major = motorway/trunk/primary, plus a
+// thinner ladder for secondary. Keeps the casing from over-fattening roads at
+// low zoom, where a flat width reads far too wide.
+static float roadCasingW(const std::string &k, int z) {
+    if (k == "secondary" || k == "secondary_link") {
+        if (z <= 12) return 0.3f;
+        if (z <= 14) return 0.35f;
+        if (z <= 16) return 0.7f;
+        return 1.0f;
+    }
+    if (z <= 11) return 0.3f;
+    if (z <= 13) return 0.5f;
+    if (z == 14) return 0.6f;
+    if (z <= 16) return 0.7f;
+    return 1.0f;
+}
+
+// Black bridge casing: the fill is inset by this width on each side, so the
+// casing showing past it equals this per-side amount. Two ladders by zoom:
+// motorway/trunk/primary vs everything else.
+static float bridgeCasingW(const std::string &cls, int z) {
+    bool major = (cls == "motorway" || cls == "trunk" || cls == "primary");
+    if (major) {
+        if (z <= 13) return 0.5f;
+        if (z == 14) return 0.6f;
+        if (z <= 16) return 0.75f;
+        return 1.0f;            // z17+
+    }
+    if (z <= 14) return 0.5f;
+    if (z <= 16) return 0.75f;
+    return 0.8f;               // z17+
 }
 
 // Waterway classification
@@ -582,6 +652,50 @@ static void drawWideLine(uint8_t *buf, int w, int h, int x0, int y0, int x1, int
     }
 }
 
+// Thick polyline with flat (butt) caps at the two free ends and round joins at
+// interior vertices. Used as a casing/fill underlay where round caps would poke a
+// halo past the span ends — the flat end is what makes a bridge read as a bridge.
+static void drawThickPolyButt(uint8_t *buf, int w, int h,
+                              const std::vector<int> &px, const std::vector<int> &py,
+                              float width, uint8_t r, uint8_t g, uint8_t b,
+                              float endTrim = 0, bool joinDiscs = true) {
+    float hw = width * 0.5f;
+    int stride = w * 4;
+    int last = (int)px.size() - 1;
+    for (size_t i = 1; i < px.size(); i++) {
+        float ax = px[i-1], ay = py[i-1], bx = px[i], by = py[i];
+        float ddx = bx-ax, ddy = by-ay, L = sqrtf(ddx*ddx + ddy*ddy);
+        if (L < 0.01f) continue;
+        float ux = ddx/L, uy = ddy/L;     // along segment
+        // Recess only the two free ends of the polyline, so the (untrimmed)
+        // fill drawn over this casing reaches flush and leaves no black tab
+        // across the end; interior segment ends are bridged by the join discs.
+        float t0 = (i == 1) ? endTrim : 0.0f;
+        float t1 = ((int)i == last) ? endTrim : 0.0f;
+        int minx = (int)floorf(fminf(ax,bx)-hw-1), maxx = (int)ceilf(fmaxf(ax,bx)+hw+1);
+        int miny = (int)floorf(fminf(ay,by)-hw-1), maxy = (int)ceilf(fmaxf(ay,by)+hw+1);
+        if (minx<0) minx=0; if (miny<0) miny=0; if (maxx>w-1) maxx=w-1; if (maxy>h-1) maxy=h-1;
+        for (int y = miny; y <= maxy; y++)
+            for (int x = minx; x <= maxx; x++) {
+                float rx = x-ax, ry = y-ay;
+                float t = rx*ux + ry*uy;
+                if (t < t0 || t > L - t1) continue;    // butt cap, ends recessed
+                float d = rx*(-uy) + ry*ux;
+                if (d < -hw || d > hw) continue;
+                setPx(buf, stride, x, y, r, g, b);
+            }
+    }
+    if (!joinDiscs) return;
+    int rad = (int)(hw + 0.5f);
+    for (size_t i = 1; i + 1 < px.size(); i++)         // round joins, not endpoints
+        for (int dy = -rad; dy <= rad; dy++)
+            for (int dx = -rad; dx <= rad; dx++)
+                if (dx*dx + dy*dy <= rad*rad) {
+                    int X = px[i]+dx, Y = py[i]+dy;
+                    if (X>=0 && X<w && Y>=0 && Y<h) setPx(buf, stride, X, Y, r, g, b);
+                }
+}
+
 // ---- Line collector with per-feature class lookup ----------------------------
 struct StyledLineCollector {
     std::vector<int> px, py;
@@ -598,28 +712,18 @@ struct StyledLineCollector {
     void linestring_point(vtzero::point p) { px.push_back(toPxX(p.x, sz)); py.push_back(toPxY(p.y, sz)); }
     int scale = 1;  // ×1 normal, ×2 SSAA — so line widths match buffer resolution
     float dashOn = 0, dashGap = 0;  // dash pattern in px (pre-scale); 0 = solid
-    bool bridgeCasing = false;      // draw a black border under the fill (bridges)
+    bool buttCap = false;           // flat ends + round joins (bridge casing/fill underlay)
+    float buttEndTrim = 0;          // recess casing ends so the fill leaves no black tab
+    bool buttJoinDiscs = true;      // round-join discs (off for casing: would blob the ends)
     void linestring_end() {
         float lw = width * scale;
+        if (buttCap && dashGap <= 0) {
+            drawThickPolyButt(buf,w,h,px,py,lw,r,g,b,buttEndTrim*scale,buttJoinDiscs);
+            return;
+        }
         if (dashGap <= 0) {
             for (size_t i = 1; i < px.size(); i++)
                 drawWideLine(buf,w,h,px[i-1],py[i-1],px[i],py[i],lw,r,g,b);
-            // Bridge: a thin black rail along EACH edge of the road. A single
-            // wide line under the fill rounds into a blob on short spans, so we
-            // offset two rails perpendicular to each segment instead.
-            if (bridgeCasing) {
-                float railW = 1.0f * scale, off = lw / 2.0f;
-                for (size_t i = 1; i < px.size(); i++) {
-                    float ax = px[i-1], ay = py[i-1];
-                    float dx = px[i]-ax, dy = py[i]-ay, L = sqrtf(dx*dx+dy*dy);
-                    if (L < 0.5f) continue;
-                    float nx = -dy/L*off, ny = dx/L*off;
-                    drawWideLine(buf,w,h,(int)(ax+nx),(int)(ay+ny),
-                                 (int)(px[i]+nx),(int)(py[i]+ny), railW,0,0,0);
-                    drawWideLine(buf,w,h,(int)(ax-nx),(int)(ay-ny),
-                                 (int)(px[i]-nx),(int)(py[i]-ny), railW,0,0,0);
-                }
-            }
             return;
         }
         // Dashed: walk the polyline by arc length, drawing only the "on" runs.
@@ -713,11 +817,17 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
     // Lit class, subclass et ramp (les bretelles = ramp=1, repliées dans la classe
     // parente). Pour une bretelle on prend la largeur du variant _link (plus fin).
     auto readRoad = [](vtzero::feature &f, std::string &cls, std::string &sub,
-                       bool &ramp, bool &bridge) {
-        cls.clear(); sub.clear(); ramp = false; bridge = false;
+                       bool &ramp, bool &bridge, int &layer) {
+        cls.clear(); sub.clear(); ramp = false; bridge = false; layer = 0;
         while (auto p = f.next_property()) {
             auto t = p.value().type();
             if (p.key() == "ramp") { ramp = true; continue; }
+            if (p.key() == "layer") {
+                if (t == vtzero::property_value_type::int_value)       layer = (int)p.value().int_value();
+                else if (t == vtzero::property_value_type::sint_value) layer = (int)p.value().sint_value();
+                else if (t == vtzero::property_value_type::uint_value) layer = (int)p.value().uint_value();
+                continue;
+            }
             if (t != vtzero::property_value_type::string_value) continue;
             auto v = p.value().string_value();
             if (p.key() == "class")    cls.assign(v.data(), v.size());
@@ -754,6 +864,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                     for (auto &sc : kLandcoverSub) if (sub == sc.sub) { r=sc.r; g=sc.g; b=sc.b; break; }
                 PolyCollector pc; pc.sz=sz; pc.buf=buf; pc.w=w; pc.h=h; pc.r=r; pc.g=g; pc.b=b;
                 vtzero::decode_polygon_geometry(feat.geometry(), pc);
+                pc.flush();
             }
         }
     };
@@ -902,7 +1013,8 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
             if (std::string(lay.name()) != "transportation") continue;
             while (auto feat = lay.next_feature()) {
                 if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
-                std::string cls, sub; bool ramp, bridge; readRoad(feat, cls, sub, ramp, bridge);
+                std::string cls, sub; bool ramp, bridge; int lyr; readRoad(feat, cls, sub, ramp, bridge, lyr);
+                if (bridge && z >= 13) continue; // bridges handled by the dedicated pass below
                 std::string key = roadKey(cls, sub);
                 if (key.empty()) continue;
                 auto *rd = findRoad(key);
@@ -913,7 +1025,7 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 // Liseré = couleur de la voie légèrement assombrie (×0.85, même teinte),
                 // pas du noir — discret sur le 7" 1024x600.
                 lc.r=(uint8_t)(rd->r*0.85f); lc.g=(uint8_t)(rd->g*0.85f); lc.b=(uint8_t)(rd->b*0.85f);
-                lc.width = fw + 2.0f;
+                lc.width = fw + 2.0f*roadCasingW(key, z);
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
             }
         }
@@ -923,7 +1035,8 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
             if (std::string(lay.name()) != "transportation") continue;
             while (auto feat = lay.next_feature()) {
                 if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
-                std::string cls, sub; bool ramp, bridge; readRoad(feat, cls, sub, ramp, bridge);
+                std::string cls, sub; bool ramp, bridge; int lyr; readRoad(feat, cls, sub, ramp, bridge, lyr);
+                if (bridge && z >= 13) continue; // bridges handled by the dedicated pass below
                 std::string key = roadKey(cls, sub);
                 if (key.empty()) continue;       // chemins non-pedestrian non rendus
                 auto *rd = findRoad(key);
@@ -936,10 +1049,52 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 bool dashed = (key == "track");
                 lc.dashOn = dashed ? 4.0f : 0.0f;
                 lc.dashGap = dashed ? 2.0f : 0.0f;
-                // Bridges get a black casing (OSM look) from z12.
-                lc.bridgeCasing = (bridge && z >= 12);
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
             }
+        }
+
+        // Bridges as a dedicated layer on top: all black butt-cap casings, then
+        // all butt-cap fills. Drawing every casing before any fill stops a span
+        // from streaking black across the fill of the span it crosses.
+        if (z >= 13) {
+            lc.buttCap = true; lc.dashOn = lc.dashGap = 0;
+            // Distinct bridge layers, ascending: a higher deck (e.g. a tertiary
+            // crossing a motorway) must be drawn last so it spans on top intact.
+            std::vector<int> layers;
+            { vtzero::vector_tile ts{mvt};
+              while (auto lay = ts.next_layer()) {
+                  if (std::string(lay.name()) != "transportation") continue;
+                  while (auto feat = lay.next_feature()) {
+                      if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
+                      std::string cls, sub; bool ramp, bridge; int lyr; readRoad(feat, cls, sub, ramp, bridge, lyr);
+                      if (bridge) layers.push_back(lyr);
+                  }
+              }
+            }
+            std::sort(layers.begin(), layers.end());
+            layers.erase(std::unique(layers.begin(), layers.end()), layers.end());
+            for (int pass = 0; pass < 2; pass++)
+              for (int L : layers) {
+                vtzero::vector_tile tb{mvt};
+                while (auto lay = tb.next_layer()) {
+                    if (std::string(lay.name()) != "transportation") continue;
+                    while (auto feat = lay.next_feature()) {
+                        if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
+                        std::string cls, sub; bool ramp, bridge; int lyr; readRoad(feat, cls, sub, ramp, bridge, lyr);
+                        if (!bridge || lyr != L) continue;
+                        std::string key = roadKey(cls, sub);
+                        if (key.empty()) continue;
+                        auto *rd = findRoad(key);
+                        if (!rd) continue;
+                        float fw = roadWidthForZoom(widthKey(key, ramp), z);
+                        if (fw < 0) continue;
+                        if (pass == 0) { lc.r=lc.g=lc.b=0; lc.width = fw + 2.0f*bridgeCasingW(cls, z); lc.buttEndTrim = bridgeCasingW(cls, z); lc.buttJoinDiscs = false; }
+                        else           { lc.r=rd->r; lc.g=rd->g; lc.b=rd->b; lc.width = fw; lc.buttEndTrim = 0; lc.buttJoinDiscs = true; }
+                        vtzero::decode_linestring_geometry(feat.geometry(), lc);
+                    }
+                }
+              }
+            lc.buttCap = false;
         }
     }
 
@@ -1112,7 +1267,7 @@ void getTileLabels(int z, int x, int y, std::vector<Label> &out) {
                         for (auto &ps : kPlaces) if (cls==ps.cls && z>=ps.minZ) {
                             bool region = (cls=="state" || cls=="country");
                             // OSM: font grows with zoom; collision tiebreak by score.
-                            push(cx,cy,labelText,ps.prio,placeFont(placeSizePx(cls,z,sc)),ps.r,ps.g,ps.b,0,false,false,(int)sc,region); break; }
+                            push(cx,cy,labelText,ps.prio,placeFont(placeSizePx(cls,z,sc)+kPlaceSizeBoost),ps.r,ps.g,ps.b,0,false,false,(int)sc,region); break; }
                     } else push(cx,cy,labelText,70,rtFont(&lv_font_montserrat_12),0x4A,0x7A,0xB0);
                 }
             }
