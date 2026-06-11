@@ -2024,7 +2024,7 @@
     "visibility": "visible"
    },
    "paint": {
-    "fill-color": "rgba(255, 255, 255, 1)",
+    "fill-color": "rgba(187, 187, 204, 1)",
     "fill-opacity": {
      "base": 1,
      "stops": [
@@ -2068,7 +2068,7 @@
     "visibility": "visible"
    },
    "paint": {
-    "line-color": "rgba(255, 255, 255, 1)",
+    "line-color": "rgba(187, 187, 204, 1)",
     "line-opacity": {
      "base": 1,
      "stops": [
@@ -2125,7 +2125,7 @@
     "visibility": "visible"
    },
    "paint": {
-    "line-color": "rgba(255, 255, 255, 1)",
+    "line-color": "rgba(187, 187, 204, 1)",
     "line-opacity": {
      "base": 1,
      "stops": [
