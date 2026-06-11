@@ -443,10 +443,15 @@ static const StyleRule kPark[] = {
     {"national_park",  7, 0xF2,0xEF,0xE9},
     {"nature_reserve", 9, 0xF2,0xEF,0xE9},
 };
-static const StyleRule kAeroway[] = {
-    {"aerodrome", 10, 0xE7,0xE6,0xDE}, {"apron",   12, 0xE7,0xE6,0xDE},
-    {"runway",    12, 0xB2,0xB5,0xD1}, {"taxiway", 12, 0xB2,0xB5,0xD1},
-    {"helipad",   11, 0xE7,0xE6,0xDE}, {"hangar",  12, 0xD9,0xD0,0xC9},
+// aerodrome = background (drawn before grass so lawns between runways show);
+// the rest sits on top of grass.
+static const StyleRule kAerowayBg[] = {
+    {"aerodrome", 10, 0xE7,0xE6,0xDE},
+};
+static const StyleRule kAerowayFg[] = {
+    {"apron",   12, 0xE7,0xE6,0xDE},
+    {"runway",  12, 0xB2,0xB5,0xD1}, {"taxiway", 12, 0xB2,0xB5,0xD1},
+    {"helipad", 11, 0xE7,0xE6,0xDE}, {"hangar",  12, 0xD9,0xD0,0xC9},
 };
 static const StyleRule kWater[] = {
     {"ocean",     6, 0xAA,0xD2,0xDF},
@@ -489,34 +494,36 @@ static const RoadStyle *findRoad(const std::string &cls) {
     return nullptr;
 }
 
-// Per-zoom full line width in px. -1 = not drawn at that zoom. Values carry
-// forward from the last defined zoom, so a flat run (e.g. z15==z16) is intended.
+// Per-zoom full line width in px, porté de OSM-carto roads.mss (report avant
+// -> zoom suivant ; -1 = non dessiné). Toute case s'écartant de roads.mss est
+// validée par l'utilisateur et marquée en commentaire inline.
 static float roadWidthForZoom(const std::string &cls, int z) {
     struct WZ { const char *cls; float z[14]; }; // index 0=z6 .. 13=z19
     static const WZ T[] = {
         //                  z6   z7   z8   z9  z10  z11  z12  z13  z14  z15  z16  z17  z18  z19
-        {"motorway",      {0.4f,0.8f,  1,1.4f,1.9f,  2,3.5f,  6,   6,  10,  10,  18,  21,  27}},
-        {"motorway_link", { -1,  -1,  -1,  -1,1.5f,1.5f,1.5f,  4,   4,7.8f,7.8f,  12,  13,  16}},
-        {"trunk",         {0.4f,0.6f,  1,1.4f,1.9f,1.9f,3.5f,  6,   6,  10,  10,  18,  21,  27}},
-        {"trunk_link",    { -1,  -1,  -1,  -1,1.5f,1.5f,1.5f,  4,   4,7.8f,7.8f,  12,  13,  16}},
-        {"primary",       { -1,   1,   1,1.4f,1.8f,1.8f,3.5f,  5,   5,  10,  10,  18,  21,  27}},
-        {"primary_link",  { -1,  -1,  -1,  -1,1.5f,1.5f,1.5f,  4,   4,7.8f,7.8f,  12,  13,  16}},
-        {"secondary",     { -1,  -1,  -1,  -1,1.1f,1.1f,3.5f,  5,   5,   9,  10,  18,  21,  27}},
-        {"secondary_link",{ -1,  -1,  -1,  -1,1.5f,1.5f,1.5f,  4,   4,   7,   7,  12,  13,  16}},
-        {"tertiary",      { -1,  -1,  -1,  -1,  -1,0.7f,2.5f,  4,   5,   9,  10,  18,  21,  27}},
-        {"tertiary_link", { -1,  -1,  -1,  -1,  -1,  -1,1.5f,  3,   3,   7,   7,  12,  13,  16}},
-        {"pedestrian",    { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   3,   5,   6,  12,  13,  17}},
-        {"residential",   { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   3,   5,   6,  12,  13,  17}},
-        {"living_street", { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   3,   5,   6,  12,  13,  17}},
-        {"unclassified",  { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   3,   3,   5,  12,  11,  18}},
-        {"service",       { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   2,   2,3.5f,   7,8.5f,  11}},
-        {"track",         { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   2,   3,   4,   6,   6,   8}},
-        {"path",          { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   1,   2,   2,   3,   4}},
-        {"footway",       { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   1,   2,   2,   3}},
-        {"cycleway",      { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   1,   2,   2,   3}},
-        {"bridleway",     { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   1,   2,   2,   3}},
-        {"steps",         { -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   1,   2,   2}},
-        {"rail",          { -1,  -1,  -1,   2,   2,   2,   2,   2,   2,   2,   3,   3,   4,   6}},
+        {"motorway",      {0.4f,0.8f,   1,1.4f,1.9f,   2,3.5f,   6,   6,  10,  10,  18,  21,  27}},
+        {"motorway_link", {  -1,  -1,  -1,  -1,  -1,  -1,1.5f,   4,   4,7.8f,7.8f,  12,  13,  16}},
+        {"trunk",         {0.4f,0.6f,   1,1.4f,1.9f,1.9f,3.5f,   6,   6,  10,  10,  18,  21,  27}},
+        {"trunk_link",    {  -1,  -1,  -1,  -1,  -1,  -1,1.5f,   4,   4,7.8f,7.8f,  12,  13,  16}},
+        {"primary",       {  -1,  -1,   1,1.4f,1.8f,1.8f,3.5f,   5,   5,  10,  10,  18,  21,  27}},
+        {"primary_link",  {  -1,  -1,  -1,  -1,  -1,  -1,1.5f,   4,   4,7.8f,7.8f,  12,  13,  16}},
+        {"secondary",     {  -1,  -1,  -1,   1,1.1f,1.1f,3.5f,   5,   5,   9,  10,  18,  21,  27}},
+        {"secondary_link",{  -1,  -1,  -1,  -1,  -1,  -1,1.5f,   4,   4,   7,   7,  12,  13,  16}},
+        {"tertiary",      {  -1,  -1,  -1,  -1,0.7f,0.7f,2.5f,   4,   5,   9,  10,  18,  21,  27}},
+        {"tertiary_link", {  -1,  -1,  -1,  -1,  -1,  -1,1.5f,   3,   3,   7,   7,  12,  13,  16}},
+        {"pedestrian",    {  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   3,   5,   6,  12,  13,  17}},
+        {"residential",   {  -1,  -1,  -1,  -1,  -1,  -1,0.5f,2.5f,   3,   5,   6,  12,  13,  17}},
+        {"living_street", {  -1,  -1,  -1,  -1,  -1,  -1,  -1,   2,   3,   5,   6,  12,  13,  17}},
+        {"unclassified",  {  -1,  -1,  -1,  -1,  -1,  -1,  -1,2.5f,   3,   5,   6,  12,  13,  17}},
+        {"service",       {  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,   2,   2,3.5f,   7,8.5f,  11}},
+        {"track",         {  -1,  -1,  -1,  -1,  -1,  -1,  -1,0.5f,0.5f,1.5f,1.5f,1.5f,1.5f,1.5f}},
+        {"path",          {  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,0.7f,   1,1.3f,1.3f,1.3f,1.6f}},
+        {"footway",       {  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,0.7f,   1,1.3f,1.3f,1.3f,1.6f}},
+        {"cycleway",      {  -1,  -1,  -1,  -1,  -1,  -1,  -1,0.7f,0.7f,0.9f,0.9f,0.9f,   1,1.3f}},
+        {"bridleway",     {  -1,  -1,  -1,  -1,  -1,  -1,  -1,0.3f,0.3f,1.2f,1.2f,1.2f,1.2f,1.2f}},
+        {"steps",         {  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,0.7f,   3,   3,   3,   3,   3}},
+        // rail : largeur du trait « dark » OSM ; le sur-tracé pointillé blanc n'est pas rendu (trait plein)
+        {"rail",          {  -1,  -1,0.8f,0.8f,0.8f,0.8f,   2,   3,   3,   3,   3,   3,   4,   4}},
     };
     if (z < 6) z = 6;
     if (z > 19) z = 19;
@@ -696,6 +703,41 @@ static void drawThickPolyButt(uint8_t *buf, int w, int h,
                 }
 }
 
+// Thick polyline with butt (square) ends and bevel joins. Each segment is filled
+// as its own rectangle and each interior corner as a small triangle, so nothing
+// relies on a single self-intersecting polygon (which carved triangle holes at
+// bends under even-odd fill). Overlaps overdraw the same colour, harmless.
+static void drawThickPolyMiter(uint8_t *buf, int w, int h,
+                               const std::vector<int> &px, const std::vector<int> &py,
+                               float width, uint8_t r, uint8_t g, uint8_t b) {
+    int n = (int)px.size();
+    if (n < 2) return;
+    float hw = width * 0.5f;
+    auto leftNormal = [&](int i, float &nx, float &ny) {   // left normal of segment i -> i+1, scaled to hw
+        float dx = px[i+1]-px[i], dy = py[i+1]-py[i];
+        float L = sqrtf(dx*dx+dy*dy); if (L < 1e-4f) L = 1e-4f;
+        nx = -dy/L * hw; ny = dx/L * hw;
+    };
+    for (int i = 0; i + 1 < n; i++) {                      // one rectangle per segment
+        float ox, oy; leftNormal(i, ox, oy);
+        std::vector<int> qx = { (int)lroundf(px[i]+ox), (int)lroundf(px[i+1]+ox),
+                                (int)lroundf(px[i+1]-ox), (int)lroundf(px[i]-ox) };
+        std::vector<int> qy = { (int)lroundf(py[i]+oy), (int)lroundf(py[i+1]+oy),
+                                (int)lroundf(py[i+1]-oy), (int)lroundf(py[i]-oy) };
+        fillPoly(buf, w, h, qx, qy, r, g, b);
+    }
+    for (int i = 1; i + 1 < n; i++) {                      // bevel corner at interior vertices
+        float ax, ay, bx, by; leftNormal(i-1, ax, ay); leftNormal(i, bx, by);
+        int vx = px[i], vy = py[i];
+        std::vector<int> t1x = { vx, (int)lroundf(vx+ax), (int)lroundf(vx+bx) };
+        std::vector<int> t1y = { vy, (int)lroundf(vy+ay), (int)lroundf(vy+by) };
+        fillPoly(buf, w, h, t1x, t1y, r, g, b);
+        std::vector<int> t2x = { vx, (int)lroundf(vx-ax), (int)lroundf(vx-bx) };
+        std::vector<int> t2y = { vy, (int)lroundf(vy-ay), (int)lroundf(vy-by) };
+        fillPoly(buf, w, h, t2x, t2y, r, g, b);
+    }
+}
+
 // ---- Line collector with per-feature class lookup ----------------------------
 struct StyledLineCollector {
     std::vector<int> px, py;
@@ -715,10 +757,12 @@ struct StyledLineCollector {
     bool buttCap = false;           // flat ends + round joins (bridge casing/fill underlay)
     float buttEndTrim = 0;          // recess casing ends so the fill leaves no black tab
     bool buttJoinDiscs = true;      // round-join discs (off for casing: would blob the ends)
+    bool miterJoin = false;         // butt ends + miter joins (filled polygon) instead of discs
     void linestring_end() {
         float lw = width * scale;
         if (buttCap && dashGap <= 0) {
-            drawThickPolyButt(buf,w,h,px,py,lw,r,g,b,buttEndTrim*scale,buttJoinDiscs);
+            if (miterJoin) drawThickPolyMiter(buf,w,h,px,py,lw,r,g,b);
+            else           drawThickPolyButt(buf,w,h,px,py,lw,r,g,b,buttEndTrim*scale,buttJoinDiscs);
             return;
         }
         if (dashGap <= 0) {
@@ -728,23 +772,25 @@ struct StyledLineCollector {
         }
         // Dashed: walk the polyline by arc length, drawing only the "on" runs.
         // Phase is continuous across segments so dashes don't restart at vertices.
-        float on = dashOn * scale, gap = dashGap * scale, cycle = on + gap;
-        float phase = 0;
+        // double accumulation is required: with a small dash, a float pos/phase
+        // can stop advancing near a cycle boundary (step < ULP) and spin forever.
+        double on = dashOn * scale, gap = dashGap * scale, cycle = on + gap;
+        double phase = 0;
         for (size_t i = 1; i < px.size(); i++) {
-            float ax = px[i-1], ay = py[i-1];
-            float ddx = px[i]-ax, ddy = py[i]-ay;
-            float seg = sqrtf(ddx*ddx + ddy*ddy);
-            if (seg < 0.5f) continue;
-            float ux = ddx/seg, uy = ddy/seg, pos = 0;
+            double ax = px[i-1], ay = py[i-1];
+            double ddx = px[i]-ax, ddy = py[i]-ay;
+            double seg = sqrt(ddx*ddx + ddy*ddy);
+            if (seg < 0.5) continue;
+            double ux = ddx/seg, uy = ddy/seg, pos = 0;
             while (pos < seg) {
-                float inCycle = fmodf(phase, cycle);
+                double inCycle = fmod(phase, cycle);
                 if (inCycle < on) {
-                    float dl = fminf(on - inCycle, seg - pos);
+                    double dl = fmin(on - inCycle, seg - pos);
                     drawWideLine(buf,w,h, (int)(ax+ux*pos),(int)(ay+uy*pos),
                                  (int)(ax+ux*(pos+dl)),(int)(ay+uy*(pos+dl)), lw,r,g,b);
                     pos += dl; phase += dl;
                 } else {
-                    float sk = fminf(cycle - inCycle, seg - pos);
+                    double sk = fmin(cycle - inCycle, seg - pos);
                     pos += sk; phase += sk;
                 }
             }
@@ -887,8 +933,9 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
     // background), then landcover (grass / farmland) ON TOP.
     renderPolyLayer("park",      kPark,         STYLE_LEN(kPark));       // national_park, nature_reserve
     renderPolyLayer("landuse",   kLanduse,      STYLE_LEN(kLanduse));     // residential / commercial / industrial background
+    renderPolyLayer("aeroway",   kAerowayBg,    STYLE_LEN(kAerowayBg));    // aerodrome fond, AVANT l'herbe
     renderPolyLayer("landcover", kLandcoverBg,  STYLE_LEN(kLandcoverBg)); // grass / farmland on top of urban
-    renderPolyLayer("aeroway",   kAeroway,      STYLE_LEN(kAeroway));
+    renderPolyLayer("aeroway",   kAerowayFg,    STYLE_LEN(kAerowayFg));    // pistes/taxiways/apron au-dessus de l'herbe
     renderPolyLayer("landcover", kLandcoverFg,  STYLE_LEN(kLandcoverFg)); // forest/wetland on top
     if (z >= 13) {
         vtzero::vector_tile t{mvt};
@@ -955,27 +1002,6 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 lc.r=lc.g=lc.b=0; lc.applyClass(cls);
                 if (lc.r==0 && lc.g==0 && lc.b==0) continue;
                 lc.width = ww;
-                vtzero::decode_linestring_geometry(feat.geometry(), lc);
-            }
-        }
-    }
-
-    // Pass 3b: aeroway lines — runways and taxiways are usually LINESTRING and are
-    // not covered by the polygon pass. Drawn from z12 up.
-    if (z >= 12) {
-        StyledLineCollector lc;
-        lc.scale = wScale; lc.sz=sz; lc.buf=buf; lc.w=w; lc.h=h; lc.zoom=z;
-        lc.table=nullptr; lc.tableLen=0; lc.roadTable=nullptr;
-        lc.r=0xB2; lc.g=0xB5; lc.b=0xD1;   // #b2b5d1
-        vtzero::vector_tile t{mvt};
-        while (auto lay = t.next_layer()) {
-            if (std::string(lay.name()) != "aeroway") continue;
-            while (auto feat = lay.next_feature()) {
-                if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
-                std::string cls = readClass(feat);
-                if (cls == "runway")       lc.width = (z>=14)?7:5;
-                else if (cls == "taxiway") lc.width = (z>=14)?3:2;
-                else continue;
                 vtzero::decode_linestring_geometry(feat.geometry(), lc);
             }
         }
@@ -1095,6 +1121,50 @@ static void renderTileBufCore(uint8_t *buf, int sz, int srcZ, int x, int y) {
                 }
               }
             lc.buttCap = false;
+        }
+
+        // Aeroway lines (runways/taxiways) drawn AFTER roads so service/minor roads
+        // don't paint over them. Centrelines sized to true ground width (constant
+        // grey aerodrome margin at every zoom); square ends + bevel joins.
+        if (z >= 12) {
+            StyledLineCollector la;
+            la.scale = wScale; la.sz=sz; la.buf=buf; la.w=w; la.h=h; la.zoom=z;
+            la.table=nullptr; la.tableLen=0; la.roadTable=nullptr;
+            la.r=0xB2; la.g=0xB5; la.b=0xD1;   // #b2b5d1
+            la.buttCap = true; la.miterJoin = true;
+            double mPerPx = 113369.0 / (double)(1 << z);   // metres/px, lat ~43.6
+            vtzero::vector_tile ta2{mvt};
+            while (auto lay = ta2.next_layer()) {
+                if (std::string(lay.name()) != "aeroway") continue;
+                while (auto feat = lay.next_feature()) {
+                    if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
+                    std::string cls = readClass(feat);
+                    if (cls == "runway")       la.width = (float)(45.0 / mPerPx);
+                    else if (cls == "taxiway") la.width = (float)(23.0 / mPerPx);
+                    else continue;
+                    vtzero::decode_linestring_geometry(feat.geometry(), la);
+                }
+            }
+        }
+
+        // Aerialways on top of roads/bridges (aerialways.mss, z>=12) : grey base
+        // line + sparse black dash = pylon ticks. Drawn last so cable cars read
+        // as crossing above the road network.
+        if (z >= 12) {
+            lc.buttCap = false;
+            vtzero::vector_tile ta{mvt};
+            while (auto lay = ta.next_layer()) {
+                if (std::string(lay.name()) != "transportation") continue;
+                while (auto feat = lay.next_feature()) {
+                    if (feat.geometry_type() != vtzero::GeomType::LINESTRING) continue;
+                    if (readClass(feat) != "aerialway") continue;
+                    lc.r=0x80; lc.g=0x80; lc.b=0x80; lc.width=1; lc.dashOn=0; lc.dashGap=0;
+                    vtzero::decode_linestring_geometry(feat.geometry(), lc);
+                    lc.r=lc.g=lc.b=0; lc.width=3; lc.dashOn=0.4f; lc.dashGap=13.0f;
+                    vtzero::decode_linestring_geometry(feat.geometry(), lc);
+                }
+            }
+            lc.dashOn=0; lc.dashGap=0;
         }
     }
 
