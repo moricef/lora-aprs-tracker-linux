@@ -1,0 +1,36 @@
+{
+  "version": 8,
+  "name": "test-pmtiles-francesud",
+  "sources": {
+    "omt": {
+      "type": "vector",
+      "url": "pmtiles://file:///home/fab2/.local/share/LoRa_Tracker/VectMaps/FranceSud/FranceSud.pmtiles"
+    }
+  },
+  "layers": [
+    { "id": "background", "type": "background",
+      "paint": { "background-color": "#f2efe9" } },
+    { "id": "landcover-grass", "type": "fill", "source": "omt", "source-layer": "landcover",
+      "filter": ["==", "class", "grass"],
+      "paint": { "fill-color": "#ceecb1" } },
+    { "id": "water", "type": "fill", "source": "omt", "source-layer": "water",
+      "paint": { "fill-color": "#aad2df" } },
+    { "id": "waterway", "type": "line", "source": "omt", "source-layer": "waterway",
+      "paint": { "line-color": "#aad2df", "line-width": 1.5 } },
+    { "id": "building", "type": "fill", "source": "omt", "source-layer": "building",
+      "minzoom": 13,
+      "paint": { "fill-color": "#d9d0c9" } },
+    { "id": "road-minor", "type": "line", "source": "omt", "source-layer": "transportation",
+      "filter": ["in", "class", "minor", "residential", "service", "unclassified", "living_street"],
+      "paint": { "line-color": "#ffffff", "line-width": 2 } },
+    { "id": "road-secondary", "type": "line", "source": "omt", "source-layer": "transportation",
+      "filter": ["in", "class", "secondary", "tertiary"],
+      "paint": { "line-color": "#f7fabf", "line-width": 3 } },
+    { "id": "road-primary", "type": "line", "source": "omt", "source-layer": "transportation",
+      "filter": ["in", "class", "primary", "trunk"],
+      "paint": { "line-color": "#fcd6a4", "line-width": 4 } },
+    { "id": "road-motorway", "type": "line", "source": "omt", "source-layer": "transportation",
+      "filter": ["==", "class", "motorway"],
+      "paint": { "line-color": "#e892a2", "line-width": 4 } }
+  ]
+}
