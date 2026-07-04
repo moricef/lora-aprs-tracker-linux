@@ -125,6 +125,7 @@ natif, claviers / dalles tactiles d'appareils portatifs.
 
 ## Licence
 
-Fourni en l'état pour expérimentations radioamateur. Voir les sources
-individuelles pour les attributions des licences amont (RadioLib, LVGL,
-vtzero, PMTiles, nlohmann/json, schémas tilemaker).
+Ce projet est publié sous licence MIT. Voir `LICENSE`.
+
+Voir les sources individuelles pour les attributions des licences amont
+(RadioLib, LVGL, vtzero, PMTiles, nlohmann/json, schémas tilemaker).
