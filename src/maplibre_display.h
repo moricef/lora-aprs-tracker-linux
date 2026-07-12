@@ -16,6 +16,9 @@ namespace MaplibreDisplay {
 // on failure. stylePath is a file:// URL to the MapLibre style JSON.
 lv_display_t *init(const char *stylePath, double lat, double lon, double zoom);
 
+// True once init() has succeeded and the MapLibre path is driving the display.
+bool isActive();
+
 // Move the MapLibre camera (called on GPS updates).
 void setCenter(double lat, double lon);
 void setZoom(double zoom);

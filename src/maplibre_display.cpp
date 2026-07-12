@@ -267,6 +267,8 @@ lv_display_t *init(const char *stylePath, double lat, double lon, double zoom) {
     return S->overlay;
 }
 
+bool isActive() { return S != nullptr; }
+
 void setCenter(double lat, double lon) {
     if (S && S->map) S->map->jumpTo(mbgl::CameraOptions().withCenter(mbgl::LatLng{lat, lon}));
 }
@@ -281,14 +283,11 @@ void renderTick() {
     // 1. MapLibre into framebuffer 0
     if (S->dirty.exchange(false)) S->frontend->render();
 
-    // 2. LVGL overlay into its texture
+    // 2. Compose the LVGL overlay texture. The widget refresh itself is driven
+    //    by the single lv_timer_handler() in the main loop (timers, input,
+    //    animations); here we only fix the opaque background LVGL writes and
+    //    re-upload, avoiding a second refresh pass.
     lv_draw_buf_t *dbuf = lv_display_get_buf_active(S->overlay);
-    if (dbuf && dbuf->data) memset(dbuf->data, 0, S->W * S->H * 4);
-    lv_obj_invalidate(lv_display_get_screen_active(S->overlay));
-    lv_display_t *prev = lv_display_get_default();
-    lv_display_set_default(S->overlay);
-    lv_refr_now(S->overlay);
-    lv_display_set_default(prev);
     if (dbuf && dbuf->data) {
         uint32_t *px = (uint32_t *)dbuf->data;
         for (int i = 0; i < S->W * S->H; i++) if (px[i] == 0xFFFFFFFF) px[i] = 0;

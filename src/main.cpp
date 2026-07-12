@@ -38,6 +38,9 @@
 #include "map_state.h"
 #include "map/map_view.h"
 #include "map/map_vector.h"
+#ifdef WITH_MAPLIBRE
+#include "maplibre_display.h"
+#endif
 #include "lora_aprs_logo.h"
 #include <sys/stat.h>
 #endif
@@ -284,17 +287,27 @@ static void setup() {
     fprintf(stderr, "[UI] lv_init...\n"); fflush(stderr);
     lv_init();
     lv_group_set_default(lv_group_create());
-    lv_display_t *disp = lv_linux_drm_create();
+    lv_display_t *disp = nullptr;
+#ifdef WITH_MAPLIBRE
+    const bool useMaplibre = getenv("TRACKER_MAPLIBRE") != nullptr;
+    if (useMaplibre) {
+        disp = MaplibreDisplay::init("file:///data/LoRa_Tracker/MapLibre/osm-bright.json",
+                                     43.5850, 1.4337, 13.0);
+        if (!disp) ESP_LOGE(TAG, "MapLibre init failed — falling back to lv_linux_drm");
+    }
+#endif
+    if (!disp) disp = lv_linux_drm_create();
     if (!disp) {
-        ESP_LOGE(TAG, "drm_create failed — /dev/dri/card0 inaccessible?");
+        ESP_LOGE(TAG, "display create failed — /dev/dri/card0 inaccessible?");
     } else {
-        lv_result_t drm_ok = lv_linux_drm_set_file(disp, "/dev/dri/card0", -1);
+#ifdef WITH_MAPLIBRE
+        if (!useMaplibre)
+#endif
+            lv_linux_drm_set_file(disp, "/dev/dri/card0", -1);
         lv_display_set_default(disp);
         lv_timer_handler();  // initialise le rendu display avant création widgets
         fprintf(stderr, "[UI] evdev...\n"); fflush(stderr);
-        // /dev/input/by-path/ contient le chemin stable Waveshare
-        const char *touchPath = "/dev/input/by-path/platform-c9100000.usb-usb-0:1.2:1.0-event";
-        // fallback event5 si by-path absent
+        const char *touchPath = "/dev/input/by-id/usb-WaveShare_WS170120_220211-event-if00";
         struct stat st;
         if (stat(touchPath, &st) != 0) touchPath = "/dev/input/event5";
         lv_indev_t *touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, touchPath);
@@ -481,7 +494,12 @@ static void loop() {
                 UIDashboard::updateGPS(gpsFix.lat, gpsFix.lon, gpsFix.alt,
                                        gpsFix.speed_kph, gpsFix.satellites, gpsFix.hdop);
                 UIDashboard::updateCallsign(currentBeacon->callsign.c_str());
-                MapView::setPosition(gpsFix.lat, gpsFix.lon);
+#ifdef WITH_MAPLIBRE
+                if (MaplibreDisplay::isActive())
+                    MaplibreDisplay::setCenter(gpsFix.lat, gpsFix.lon);
+                else
+#endif
+                    MapView::setPosition(gpsFix.lat, gpsFix.lon);
 #endif
             }
 #ifdef USE_LVGL_UI
@@ -517,6 +535,9 @@ static void loop() {
 #ifdef USE_LVGL_UI
     {
         uint32_t d = lv_timer_handler();
+#ifdef WITH_MAPLIBRE
+        if (MaplibreDisplay::isActive()) MaplibreDisplay::renderTick();
+#endif
         if (d == LV_NO_TIMER_READY) d = 5;
         usleep(d * 1000);
     }
