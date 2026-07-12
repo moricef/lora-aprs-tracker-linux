@@ -1,0 +1,49 @@
+# MapLibre + LVGL overlay on KMS/DRM (Pi). LVGL rebuilt here with LV_USE_EGL
+# (GLES2 glad) and LV_USE_GLFW off. Separate obj dir from the GLFW proto.
+ROOT    := ../..
+ML      ?= /home/adrasec09/maplibre-native
+MLBUILD ?= $(ML)/build-cross
+
+CXX := g++
+CC  := gcc
+LVCONF := -DLV_CONF_PATH='"$(abspath lv_conf_kms.h)"'
+OPT := -O2 -g
+
+INC := -I$(ROOT)/lib/lvgl -I$(ROOT)/lib/lvgl/src/drivers/opengles/glad/include
+INC += -I$(ML)/include -I$(ML)/platform/default/include
+INC += -I$(ML)/vendor/maplibre-native-base/include
+INC += $(foreach d,$(wildcard $(ML)/vendor/maplibre-native-base/deps/*/include),-I$(d))
+INC += -I/usr/include/libdrm -I/usr/include/freetype2
+
+LVGL_C := $(shell find $(ROOT)/lib/lvgl/src -name '*.c' | grep -v '/sdl/' | grep -v lv_draw_vector | sort)
+LVGL_O := $(patsubst $(ROOT)/lib/lvgl/%.c,obj_kms/lvgl/%.o,$(LVGL_C))
+
+LIBS  = $(MLBUILD)/libmbgl-core.a
+LIBS += $(MLBUILD)/libmbgl-vendor-parsedate.a
+LIBS += $(MLBUILD)/vendor/maplibre-tile-spec/cpp/libmlt-cpp.a
+LIBS += $(MLBUILD)/libmbgl-vendor-csscolorparser.a
+LIBS += $(MLBUILD)/libmbgl-harfbuzz.a
+LIBS += $(MLBUILD)/libmbgl-freetype.a
+LIBS += $(MLBUILD)/libmbgl-vendor-nunicode.a
+LIBS += $(MLBUILD)/libmbgl-vendor-sqlite.a
+
+LDFLAGS  = -lEGL -lGLESv2 -lgbm -lcurl -ljpeg -lpng -lz -lwebp -luv
+LDFLAGS += -licuuc -licui18n -licudata -lsqlite3 -ldrm -lfreetype -lpthread -lrt -ldl
+
+kms_lvgl: obj_kms/proto_kms_lvgl.o $(LVGL_O)
+	$(CXX) $^ $(LIBS) $(LIBS) -o $@ $(LDFLAGS)
+
+obj_kms/proto_kms_lvgl.o: proto_kms_lvgl.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) -std=gnu++20 $(OPT) -fno-rtti $(LVCONF) -DLV_CONF_INCLUDE_SIMPLE $(INC) -MMD -MP -c $< -o $@
+
+obj_kms/lvgl/%.o: $(ROOT)/lib/lvgl/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(OPT) $(LVCONF) $(INC) -MMD -MP -c $< -o $@
+
+clean:
+	rm -rf obj_kms kms_lvgl
+
+-include $(shell find obj_kms -name '*.d' 2>/dev/null)
+
+.PHONY: clean
