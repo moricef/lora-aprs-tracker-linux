@@ -17,4 +17,8 @@ void drawInto(lv_obj_t *canvas);
 // (no-op below ~10m movement threshold).
 void recordOwnPosition();
 
+// Read the own trace in chronological order for alternate renderers.
+int ownTraceSize();
+bool ownTracePoint(int chronologicalIndex, double *lat, double *lon);
+
 } // namespace MapTraces

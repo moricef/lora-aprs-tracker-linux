@@ -137,4 +137,15 @@ void recordOwnPosition() {
     if (ownTraceCount < OWN_TRACE_MAX) ownTraceCount++;
 }
 
+int ownTraceSize() { return ownTraceCount; }
+
+bool ownTracePoint(int chronologicalIndex, double *lat, double *lon) {
+    if (!lat || !lon || chronologicalIndex < 0 || chronologicalIndex >= ownTraceCount)
+        return false;
+    int idx = (ownTraceHead - ownTraceCount + chronologicalIndex + OWN_TRACE_MAX) % OWN_TRACE_MAX;
+    *lat = ownTrace[idx].lat;
+    *lon = ownTrace[idx].lon;
+    return true;
+}
+
 } // namespace MapTraces

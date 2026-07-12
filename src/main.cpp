@@ -295,7 +295,7 @@ static void setup() {
 #ifdef WITH_MAPLIBRE
     const bool useMaplibre = getenv("TRACKER_MAPLIBRE") != nullptr;
     if (useMaplibre) {
-        disp = MaplibreDisplay::init("file:///data/LoRa_Tracker/MapLibre/osm-bright.json",
+        disp = MaplibreDisplay::init("file:///data/LoRa_Tracker/MapLibre/maptiler-basic.json",
                                      43.5850, 1.4337, 13.0);
         if (!disp) ESP_LOGE(TAG, "MapLibre init failed — falling back to lv_linux_drm");
     }

@@ -52,8 +52,11 @@ static lv_obj_t *gpuScreen = nullptr;
 static lv_obj_t *gpuTouch = nullptr;
 static lv_timer_t *gpuMarkerTimer = nullptr;
 static lv_obj_t *gpuMarkers[MAP_STATIONS_MAX + 1] = {};
+static lv_obj_t *gpuTraceLines[MAP_STATIONS_MAX + 1] = {};
+static lv_point_precise_t gpuTracePoints[MAP_STATIONS_MAX + 1][201] = {};
 static bool gpuFollowGps = true;
 static void refreshGpuMarkers();
+static void refreshGpuTraces();
 #endif
 
 // Station markers and popup live in map_markers.cpp.
@@ -69,6 +72,7 @@ static void refreshGpuMarkers();
 void setPosition(double lat, double lon) {
   gpsLat = lat;
   gpsLon = lon;
+  MapTraces::recordOwnPosition();
 #ifdef WITH_MAPLIBRE
   if (MaplibreDisplay::isActive()) {
     if (gpuFollowGps) MaplibreDisplay::setCenter(lat, lon);
@@ -76,7 +80,6 @@ void setPosition(double lat, double lon) {
     return;
   }
 #endif
-  MapTraces::recordOwnPosition();
   if (!mapActive || !mapCont)
     return;
   // Redraw the dynamic layer (own marker + trace) over the cached tiles.
@@ -153,6 +156,7 @@ static void positionGpuMarker(int slot, int stationIdx, const char *callsign,
 
 static void refreshGpuMarkers() {
   if (!gpuScreen || !lv_obj_is_valid(gpuScreen) || !MaplibreDisplay::isActive()) return;
+  refreshGpuTraces();
   bool used[MAP_STATIONS_MAX + 1] = {};
   if (gpsLat != 0.0 || gpsLon != 0.0) {
     const char *own = (!Config.beacons.empty())
@@ -173,6 +177,69 @@ static void refreshGpuMarkers() {
   for (int i = 0; i <= MAP_STATIONS_MAX; ++i) {
     if (!used[i] && gpuMarkers[i] && lv_obj_is_valid(gpuMarkers[i]))
       lv_obj_add_flag(gpuMarkers[i], LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static lv_obj_t *ensureGpuTrace(int slot, lv_color_t color) {
+  if (slot < 0 || slot > MAP_STATIONS_MAX || !gpuScreen) return nullptr;
+  lv_obj_t *line = gpuTraceLines[slot];
+  if (!line || !lv_obj_is_valid(line)) {
+    line = lv_line_create(gpuScreen);
+    gpuTraceLines[slot] = line;
+    lv_obj_set_style_line_width(line, 3, 0);
+    lv_obj_set_style_line_rounded(line, true, 0);
+    lv_obj_set_style_line_opa(line, LV_OPA_80, 0);
+  }
+  lv_obj_set_style_line_color(line, color, 0);
+  return line;
+}
+
+static void setGpuTracePoints(int slot, int count, lv_color_t color) {
+  lv_obj_t *line = gpuTraceLines[slot];
+  if (count < 2) {
+    if (line && lv_obj_is_valid(line)) lv_obj_add_flag(line, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  line = ensureGpuTrace(slot, color);
+  lv_line_set_points(line, gpuTracePoints[slot], count);
+  lv_obj_remove_flag(line, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void refreshGpuTraces() {
+  if (!gpuScreen || !MaplibreDisplay::isActive()) return;
+  uint32_t now = millis();
+
+  int ownCount = 0;
+  for (int i = 0; i < MapTraces::ownTraceSize() && ownCount < 200; ++i) {
+    double lat = 0.0, lon = 0.0;
+    int x = 0, y = 0;
+    if (MapTraces::ownTracePoint(i, &lat, &lon) &&
+        MaplibreDisplay::project(lat, lon, &x, &y))
+      gpuTracePoints[0][ownCount++] = {(lv_value_precise_t)x, (lv_value_precise_t)y};
+  }
+  if ((gpsLat != 0.0 || gpsLon != 0.0) && ownCount < 201) {
+    int x = 0, y = 0;
+    if (MaplibreDisplay::project(gpsLat, gpsLon, &x, &y))
+      gpuTracePoints[0][ownCount++] = {(lv_value_precise_t)x, (lv_value_precise_t)y};
+  }
+  setGpuTracePoints(0, ownCount, lv_color_hex(0x9933ff));
+
+  for (int s = 0; s < MAP_STATIONS_MAX; ++s) {
+    MapStation *st = STATION_Utils::getMapStation(s);
+    int count = 0;
+    if (st && st->valid) {
+      for (int i = 0; i < st->traceCount && count < TRACE_MAX_POINTS; ++i) {
+        int idx = (st->traceHead - st->traceCount + i + TRACE_MAX_POINTS) % TRACE_MAX_POINTS;
+        if (now - st->trace[idx].time > 3600000) continue;
+        int x = 0, y = 0;
+        if (MaplibreDisplay::project(st->trace[idx].lat, st->trace[idx].lon, &x, &y))
+          gpuTracePoints[s + 1][count++] = {(lv_value_precise_t)x, (lv_value_precise_t)y};
+      }
+      int x = 0, y = 0;
+      if (count < 201 && MaplibreDisplay::project(st->latitude, st->longitude, &x, &y))
+        gpuTracePoints[s + 1][count++] = {(lv_value_precise_t)x, (lv_value_precise_t)y};
+    }
+    setGpuTracePoints(s + 1, count, lv_color_hex(0x0055ff));
   }
 }
 
@@ -203,6 +270,8 @@ static void gpuScreenDeleted(lv_event_t *) {
   gpuScreen = nullptr;
   gpuTouch = nullptr;
   memset(gpuMarkers, 0, sizeof(gpuMarkers));
+  memset(gpuTraceLines, 0, sizeof(gpuTraceLines));
+  MapTraces::destroy();
 }
 
 // Transparent map screen for the GPU path. MapLibre renders underneath every
