@@ -278,6 +278,9 @@ void setCenter(double lat, double lon) {
 void setZoom(double zoom) {
     if (S && S->map) S->map->jumpTo(mbgl::CameraOptions().withZoom(zoom));
 }
+double getZoom() {
+    return (S && S->map) ? S->map->getCameraOptions().zoom.value_or(13.0) : 13.0;
+}
 
 void renderTick() {
     if (!S) return;

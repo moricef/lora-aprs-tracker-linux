@@ -7,6 +7,11 @@
 
 namespace MapView {
     lv_obj_t *create(lv_obj_t *parent);
+#ifdef WITH_MAPLIBRE
+    // Transparent map screen for the GPU path: chrome only (buttons drive the
+    // MapLibre camera), no software MapEngine — the map shows through.
+    lv_obj_t *createGpuOverlay(lv_obj_t *parent);
+#endif
     void setPosition(double lat, double lon);
     void zoomIn();
     void zoomOut();

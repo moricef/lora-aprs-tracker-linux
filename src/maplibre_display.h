@@ -22,6 +22,7 @@ bool isActive();
 // Move the MapLibre camera (called on GPS updates).
 void setCenter(double lat, double lon);
 void setZoom(double zoom);
+double getZoom();
 
 // Render one frame: MapLibre into framebuffer 0, LVGL overlay on top, page-flip.
 // Pumps the MapLibre run loop so tiles keep loading.

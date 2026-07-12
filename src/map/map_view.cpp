@@ -20,6 +20,9 @@
 #include "ui_dashboard.h"
 #include "ui_messaging.h"
 #include "gpx_writer.h"
+#ifdef WITH_MAPLIBRE
+#include "maplibre_display.h"
+#endif
 #include <climits>
 #include <cstdio>
 #include <cstring>
@@ -77,6 +80,45 @@ void refreshStations() {
   if (mapActive && mapCont)
     MapEngine::recompose();
 }
+
+#ifdef WITH_MAPLIBRE
+// Transparent map screen for the GPU path. MapLibre renders underneath every
+// frame (renderTick); here we only add the chrome, whose buttons drive the
+// MapLibre camera. No MapEngine/MapLabels/MapInput.
+lv_obj_t *createGpuOverlay(lv_obj_t *parent) {
+  (void)parent;
+  lv_obj_t *scr = lv_obj_create(NULL);
+  lv_obj_set_style_bg_opa(scr, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(scr, 0, 0);
+  lv_obj_set_style_pad_all(scr, 0, 0);
+
+  lv_obj_t *tbar = lv_obj_create(scr);
+  lv_obj_set_size(tbar, lv_pct(100), 46);
+  lv_obj_align(tbar, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_bg_color(tbar, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(tbar, LV_OPA_40, 0);
+  lv_obj_set_style_border_width(tbar, 0, 0);
+  lv_obj_set_style_radius(tbar, 0, 0);
+  lv_obj_set_style_pad_all(tbar, 5, 0);
+  lv_obj_set_flex_flow(tbar, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(tbar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+  auto addBtn = [&](const char *sym, lv_event_cb_t cb) {
+    lv_obj_t *b = lv_btn_create(tbar);
+    lv_obj_set_size(b, 64, 36);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x16213e), 0);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text(l, sym);
+    lv_obj_center(l);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+  };
+  addBtn(LV_SYMBOL_LEFT,  [](lv_event_t *) { UIDashboard::returnToDashboard(); });
+  addBtn(LV_SYMBOL_PLUS,  [](lv_event_t *) { MaplibreDisplay::setZoom(MaplibreDisplay::getZoom() + 1); });
+  addBtn(LV_SYMBOL_MINUS, [](lv_event_t *) { MaplibreDisplay::setZoom(MaplibreDisplay::getZoom() - 1); });
+  addBtn(LV_SYMBOL_GPS,   [](lv_event_t *) { MaplibreDisplay::setCenter(gpsLat, gpsLon); });
+  return scr;
+}
+#endif
 
 // ============================================================
 // Callbacks boutons & pan

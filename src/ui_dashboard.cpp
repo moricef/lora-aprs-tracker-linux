@@ -10,6 +10,9 @@ static const char *TAG = "Dashboard";
 #include "ui_dashboard.h"
 #include "ui_common.h"
 #include "map/map_view.h"
+#ifdef WITH_MAPLIBRE
+#include "maplibre_display.h"
+#endif
 #include "ui_settings.h"
 #include "ui_popups.h"
 #include "ui_map_manager.h"
@@ -265,7 +268,12 @@ static void btn_map_clicked(lv_event_t *e) {
         lv_obj_del(MapState::screen_map);
         MapState::screen_map = nullptr;
     }
-    MapState::screen_map = MapView::create(NULL);
+#ifdef WITH_MAPLIBRE
+    if (MaplibreDisplay::isActive())
+        MapState::screen_map = MapView::createGpuOverlay(NULL);
+    else
+#endif
+        MapState::screen_map = MapView::create(NULL);
     lv_screen_load(MapState::screen_map);
     ESP_LOGD(TAG, "btn_map_clicked DONE");
 }
