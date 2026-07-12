@@ -251,6 +251,9 @@ lv_display_t *init(const char *stylePath, double lat, double lon, double zoom) {
 
     // Overlay display for the LVGL UI (caller builds widgets on it).
     S->overlay = lv_opengles_texture_create(S->W, S->H);
+    // Real alpha so transparent areas expose the map underneath — the texture
+    // display defaults to XRGB8888 (opaque), which forced the white color-key hack.
+    lv_display_set_color_format(S->overlay, LV_COLOR_FORMAT_ARGB8888);
     lv_obj_set_style_bg_opa(lv_display_get_screen_active(S->overlay), LV_OPA_TRANSP, 0);
     lv_display_set_render_mode(S->overlay, LV_DISPLAY_RENDER_MODE_FULL);
     S->overlay_tex = lv_opengles_texture_get_texture_id(S->overlay);
@@ -289,8 +292,6 @@ void renderTick() {
     //    re-upload, avoiding a second refresh pass.
     lv_draw_buf_t *dbuf = lv_display_get_buf_active(S->overlay);
     if (dbuf && dbuf->data) {
-        uint32_t *px = (uint32_t *)dbuf->data;
-        for (int i = 0; i < S->W * S->H; i++) if (px[i] == 0xFFFFFFFF) px[i] = 0;
         glBindTexture(GL_TEXTURE_2D, S->overlay_tex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, S->W, S->H, 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, dbuf->data);
         glBindTexture(GL_TEXTURE_2D, 0);
@@ -298,8 +299,9 @@ void renderTick() {
 
     // 3. Blend overlay, restore GL state for mbgl
     lv_area_t area = {0, 0, S->W - 1, S->H - 1};
+    // GL_BGRA_EXT upload already samples as correct RGB on V3D; no shader R/B swap.
     lv_opengles_render(S->overlay_tex, &area, LV_OPA_COVER, S->W, S->H, &area,
-                       false, false, lv_color_hex(0x000000), true, true);
+                       false, false, lv_color_hex(0x000000), true, false);
     glUseProgram(0);
     glBindVertexArrayOES(0);
     glBindTexture(GL_TEXTURE_2D, 0);
