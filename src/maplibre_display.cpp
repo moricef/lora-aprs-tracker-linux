@@ -30,6 +30,8 @@
 #include <poll.h>
 #include <cstdio>
 #include <cstring>
+#include <cerrno>
+#include <cmath>
 #include <memory>
 #include <atomic>
 
@@ -281,19 +283,43 @@ void setZoom(double zoom) {
 double getZoom() {
     return (S && S->map) ? S->map->getCameraOptions().zoom.value_or(13.0) : 13.0;
 }
+void moveBy(double dx, double dy) {
+    if (S && S->map) S->map->moveBy({dx, dy});
+}
+bool project(double lat, double lon, int *x, int *y) {
+    if (!S || !S->map || !x || !y) return false;
+    mbgl::ScreenCoordinate p = S->map->pixelForLatLng(mbgl::LatLng{lat, lon});
+    *x = (int)std::lround(p.x);
+    *y = (int)std::lround(p.y);
+    return p.x >= 0.0 && p.x < S->W && p.y >= 0.0 && p.y < S->H;
+}
 
 void renderTick() {
     if (!S) return;
+    // Ask MapLibre to generate a render update for whichever GBM buffer EGL
+    // selected for this frame.  Calling RendererFrontend::render() alone can
+    // reuse the previous update and leave the alternate scanout buffer stale.
+    S->map->triggerRepaint();
     S->runLoop->runOnce();
 
-    // 1. MapLibre into framebuffer 0
-    if (S->dirty.exchange(false)) S->frontend->render();
+    // 1. MapLibre into the current GBM back buffer.  EGL alternates scanout
+    // buffers; rendering only on MapLibre's dirty notification leaves the
+    // other buffer with an older screen, producing dashboard/map flicker and
+    // apparently ignored camera commands.
+    S->dirty.exchange(false);
+    S->frontend->render();
 
-    // 2. Compose the LVGL overlay texture. The widget refresh itself is driven
-    //    by the single lv_timer_handler() in the main loop (timers, input,
-    //    animations); here we only fix the opaque background LVGL writes and
-    //    re-upload, avoiding a second refresh pass.
+    // 2. Redraw the complete LVGL overlay on a cleared ARGB buffer.  Clearing
+    //    is essential: deleting an opaque widget (notably the splash screen)
+    //    must restore transparent pixels so the MapLibre framebuffer becomes
+    //    visible underneath it.
     lv_draw_buf_t *dbuf = lv_display_get_buf_active(S->overlay);
+    if (dbuf && dbuf->data) std::memset(dbuf->data, 0, S->W * S->H * 4);
+    lv_obj_invalidate(lv_display_get_screen_active(S->overlay));
+    lv_display_t *previousDisplay = lv_display_get_default();
+    lv_display_set_default(S->overlay);
+    lv_refr_now(S->overlay);
+    lv_display_set_default(previousDisplay);
     if (dbuf && dbuf->data) {
         glBindTexture(GL_TEXTURE_2D, S->overlay_tex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, S->W, S->H, 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, dbuf->data);
@@ -305,6 +331,7 @@ void renderTick() {
     // GL_BGRA_EXT upload already samples as correct RGB on V3D; no shader R/B swap.
     lv_opengles_render(S->overlay_tex, &area, LV_OPA_COVER, S->W, S->H, &area,
                        false, false, lv_color_hex(0x000000), true, false);
+
     glUseProgram(0);
     glBindVertexArrayOES(0);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -318,14 +345,27 @@ void renderTick() {
     if (!bo) return;
     uint32_t fb = fbForBo(S->kms.fd, bo);
     if (!S->crtc_set) {
-        drmModeSetCrtc(S->kms.fd, S->kms.crtc_id, fb, 0, 0, &S->kms.conn_id, 1, &S->kms.mode);
-        S->crtc_set = true;
+        int rc = drmModeSetCrtc(S->kms.fd, S->kms.crtc_id, fb, 0, 0,
+                                &S->kms.conn_id, 1, &S->kms.mode);
+        S->crtc_set = rc == 0;
+        if (rc != 0)
+            fprintf(stderr, "[maplibre] set-crtc failed: %s\n", strerror(errno));
     } else {
         int waiting = 1;
-        if (drmModePageFlip(S->kms.fd, S->kms.crtc_id, fb, DRM_MODE_PAGE_FLIP_EVENT, &waiting) == 0) {
+        int rc = drmModePageFlip(S->kms.fd, S->kms.crtc_id, fb,
+                                 DRM_MODE_PAGE_FLIP_EVENT, &waiting);
+        if (rc == 0) {
             drmEventContext ev{}; ev.version = 2; ev.page_flip_handler = page_flip_handler;
             struct pollfd pfd{S->kms.fd, POLLIN, 0};
             while (waiting) { if (poll(&pfd, 1, 100) > 0) drmHandleEvent(S->kms.fd, &ev); else break; }
+        } else {
+            int savedErrno = errno;
+            // Keep presentation alive even if this driver rejects an evented
+            // flip; modesetting the same CRTC is slower but deterministic.
+            drmModeSetCrtc(S->kms.fd, S->kms.crtc_id, fb, 0, 0,
+                           &S->kms.conn_id, 1, &S->kms.mode);
+            fprintf(stderr, "[maplibre] page-flip failed: %s; fallback=set-crtc\n",
+                    strerror(savedErrno));
         }
     }
     if (S->prev_bo) gbm_surface_release_buffer(g_gl.surf, S->prev_bo);

@@ -330,16 +330,16 @@ void UISettings::createSetupScreen() {
 
     // Title bar
     lv_obj_t *title_bar = lv_obj_create(screen_setup);
-    lv_obj_set_size(title_bar, UI_SCREEN_WIDTH, 35);
+    lv_obj_set_size(title_bar, UI_SCREEN_WIDTH, 60);
     lv_obj_set_pos(title_bar, 0, 0);
     lv_obj_set_style_bg_color(title_bar, lv_color_hex(UIColors::TEXT_PURPLE), 0);
     lv_obj_set_style_border_width(title_bar, 0, 0);
     lv_obj_set_style_radius(title_bar, 0, 0);
-    lv_obj_set_style_pad_all(title_bar, 5, 0);
+    lv_obj_set_style_pad_all(title_bar, 8, 0);
 
     // Back button
     lv_obj_t *btn_back = lv_btn_create(title_bar);
-    lv_obj_set_size(btn_back, 60, 25);
+    lv_obj_set_size(btn_back, 120, 44);
     lv_obj_set_style_bg_color(btn_back, lv_color_hex(UIColors::BG_HEADER), 0);
     lv_obj_add_event_cb(btn_back, btn_back_clicked, LV_EVENT_CLICKED, NULL);
     lv_obj_t *lbl_back = lv_label_create(btn_back);
@@ -350,51 +350,35 @@ void UISettings::createSetupScreen() {
     lv_obj_t *title = lv_label_create(title_bar);
     lv_label_set_text(title, "SETUP");
     lv_obj_set_style_text_color(title, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 20, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
 
     // Menu list
     lv_obj_t *list = lv_list_create(screen_setup);
-    lv_obj_set_size(list, UI_SCREEN_WIDTH - 10, UI_SCREEN_HEIGHT - 45);
-    lv_obj_set_pos(list, 5, 40);
+    lv_obj_set_size(list, UI_SCREEN_WIDTH - 16, UI_SCREEN_HEIGHT - 68);
+    lv_obj_set_pos(list, 8, 64);
     lv_obj_set_style_bg_color(list, lv_color_hex(UIColors::BG_DARKER), 0);
     lv_obj_set_style_border_color(list, lv_color_hex(UIColors::BG_HEADER), 0);
     lv_obj_set_style_radius(list, 8, 0);
 
     // Menu items
-    lv_obj_t *btn;
+    auto addSetupItem = [&](const char *symbol, const char *text, lv_event_cb_t callback) {
+        lv_obj_t *button = lv_list_add_btn(list, symbol, text);
+        lv_obj_set_height(button, 48);
+        lv_obj_set_style_text_font(button, &lv_font_montserrat_18, 0);
+        lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, NULL);
+    };
 
-
-    btn = lv_list_add_btn(list, LV_SYMBOL_WIFI, "LoRa Frequency");
-    lv_obj_add_event_cb(btn, setup_item_frequency, LV_EVENT_CLICKED, NULL);
-
-    btn = lv_list_add_btn(list, LV_SYMBOL_SHUFFLE, "LoRa Speed");
-    lv_obj_add_event_cb(btn, setup_item_speed, LV_EVENT_CLICKED, NULL);
-
-    btn = lv_list_add_btn(list, LV_SYMBOL_SETTINGS, "Display");
-    lv_obj_add_event_cb(btn, setup_item_display, LV_EVENT_CLICKED, NULL);
-
-    btn = lv_list_add_btn(list, LV_SYMBOL_AUDIO, "Sound");
-    lv_obj_add_event_cb(btn, setup_item_sound, LV_EVENT_CLICKED, NULL);
-
-    btn = lv_list_add_btn(list, LV_SYMBOL_LOOP, "Repeater");
-    lv_obj_add_event_cb(btn, setup_item_repeater, LV_EVENT_CLICKED, NULL);
-
-
-    btn = lv_list_add_btn(list, LV_SYMBOL_WIFI, "WiFi");
-    lv_obj_add_event_cb(btn, setup_item_wifi, LV_EVENT_CLICKED, NULL);
-
-    btn = lv_list_add_btn(list, LV_SYMBOL_BLUETOOTH, "Bluetooth");
-    lv_obj_add_event_cb(btn, setup_item_bluetooth, LV_EVENT_CLICKED, NULL);
-
-    btn = lv_list_add_btn(list, LV_SYMBOL_UPLOAD, "Web-Conf Mode");
-    lv_obj_add_event_cb(btn, setup_item_webconf, LV_EVENT_CLICKED, NULL);
-
-    btn = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Reboot");
-    lv_obj_add_event_cb(btn, setup_item_reboot, LV_EVENT_CLICKED, NULL);
-
-    btn = lv_list_add_btn(list, LV_SYMBOL_FILE, "About");
-    lv_obj_add_event_cb(btn, setup_item_about, LV_EVENT_CLICKED, NULL);
+    addSetupItem(LV_SYMBOL_WIFI,      "LoRa Frequency", setup_item_frequency);
+    addSetupItem(LV_SYMBOL_SHUFFLE,   "LoRa Speed",     setup_item_speed);
+    addSetupItem(LV_SYMBOL_SETTINGS,  "Display",        setup_item_display);
+    addSetupItem(LV_SYMBOL_AUDIO,     "Sound",          setup_item_sound);
+    addSetupItem(LV_SYMBOL_LOOP,      "Repeater",       setup_item_repeater);
+    addSetupItem(LV_SYMBOL_WIFI,      "WiFi",           setup_item_wifi);
+    addSetupItem(LV_SYMBOL_BLUETOOTH, "Bluetooth",      setup_item_bluetooth);
+    addSetupItem(LV_SYMBOL_UPLOAD,    "Web-Conf Mode",  setup_item_webconf);
+    addSetupItem(LV_SYMBOL_REFRESH,   "Reboot",         setup_item_reboot);
+    addSetupItem(LV_SYMBOL_FILE,      "About",          setup_item_about);
 
     ESP_LOGD(TAG, "Setup screen created");
 }

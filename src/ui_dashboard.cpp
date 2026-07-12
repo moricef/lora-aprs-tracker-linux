@@ -289,6 +289,10 @@ void createDashboard() {
     // lv_obj_create(NULL) qui peut creer un screen sans display valide sur ARM
     screen_main = lv_screen_active();
     lv_obj_set_style_bg_color(screen_main, lv_color_hex(0x1a1a2e), 0);
+    lv_obj_set_style_bg_opa(screen_main, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(screen_main, 0, 0);
+    lv_obj_set_style_border_width(screen_main, 0, 0);
+    lv_obj_set_style_pad_all(screen_main, 0, 0);
 
     // Status bar at top
     lv_obj_t *status_bar = lv_obj_create(screen_main);

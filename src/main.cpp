@@ -286,6 +286,10 @@ static void setup() {
 #ifdef USE_LVGL_UI
     fprintf(stderr, "[UI] lv_init...\n"); fflush(stderr);
     lv_init();
+    // The stock DRM driver installs its own LVGL tick callback, but the
+    // alternate EGL/KMS backend does not.  Give both paths a monotonic clock;
+    // lv_linux_drm_create() may harmlessly replace it on the software path.
+    lv_tick_set_cb(millis);
     lv_group_set_default(lv_group_create());
     lv_display_t *disp = nullptr;
 #ifdef WITH_MAPLIBRE
@@ -316,7 +320,14 @@ static void setup() {
             lv_evdev_set_calibration(touch, 0, 0, 1023, 599);
         }
         UIDashboard::createDashboard();
-        lv_obj_t *splash = showSplashScreen();
+        lv_obj_t *splash = nullptr;
+#ifdef WITH_MAPLIBRE
+        // Do not seed the persistent transparent GL texture with an opaque
+        // splash.  The software DRM path keeps its existing startup screen.
+        if (!MaplibreDisplay::isActive()) splash = showSplashScreen();
+#else
+        splash = showSplashScreen();
+#endif
         for (int i = 0; i < 60; i++) {
             lv_timer_handler();
 #ifdef WITH_MAPLIBRE
@@ -324,7 +335,19 @@ static void setup() {
 #endif
             usleep(50000);
         }
-        lv_obj_del(splash);
+        if (splash) {
+            lv_obj_add_flag(splash, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_invalidate(lv_screen_active());
+            for (int i = 0; i < 3; ++i) {
+                lv_timer_handler();
+#ifdef WITH_MAPLIBRE
+                if (MaplibreDisplay::isActive()) MaplibreDisplay::renderTick();
+#endif
+                usleep(16000);
+            }
+            lv_obj_del(splash);
+        }
+        fprintf(stderr, "[UI] splash removed, dashboard active\n"); fflush(stderr);
         { FILE *f = fopen("/tmp/ui_ok.txt", "w"); if (f) { fprintf(f, "DASH OK\n"); fclose(f); } }
         ESP_LOGI(TAG, "Display: %s 1024x600, touch=%s",
 #ifdef WITH_MAPLIBRE
@@ -506,12 +529,7 @@ static void loop() {
                 UIDashboard::updateGPS(gpsFix.lat, gpsFix.lon, gpsFix.alt,
                                        gpsFix.speed_kph, gpsFix.satellites, gpsFix.hdop);
                 UIDashboard::updateCallsign(currentBeacon->callsign.c_str());
-#ifdef WITH_MAPLIBRE
-                if (MaplibreDisplay::isActive())
-                    MaplibreDisplay::setCenter(gpsFix.lat, gpsFix.lon);
-                else
-#endif
-                    MapView::setPosition(gpsFix.lat, gpsFix.lon);
+                MapView::setPosition(gpsFix.lat, gpsFix.lon);
 #endif
             }
 #ifdef USE_LVGL_UI
