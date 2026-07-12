@@ -1410,9 +1410,17 @@
 #endif
 
 /** Use a generic OpenGL driver that can be used to embed in other applications or used with GLFW/EGL */
+/* Enabled only for the opt-in MapLibre GPU display path; the default
+ * lv_linux_drm software path is unaffected. LV_USE_EGL is set directly so the
+ * opengles driver picks its GLES2 glad without switching LV_LINUX_DRM_USE_EGL. */
+#ifdef WITH_MAPLIBRE
+#define LV_USE_OPENGLES   1
+#define LV_USE_EGL        1
+#else
 #define LV_USE_OPENGLES   0
+#endif
 #if LV_USE_OPENGLES
-    #define LV_USE_OPENGLES_DEBUG        1    /**< Enable or disable debug for opengles */
+    #define LV_USE_OPENGLES_DEBUG        0    /**< Enable or disable debug for opengles */
 #endif
 
 /** Use GLFW to open window on PC and handle mouse and keyboard. Requires*/

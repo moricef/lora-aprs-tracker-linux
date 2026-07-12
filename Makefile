@@ -9,6 +9,17 @@ CC       = gcc
 CXXFLAGS = -std=gnu++17 -Wall -O2 -g -DLV_CONF_INCLUDE_SIMPLE
 CFLAGS   = -O2 -g -DLV_CONF_INCLUDE_SIMPLE
 
+# Hardware pinout. Raspberry Pi 4B is the primary target; use
+# `make BOARD=odroid_c2` for the original Odroid wiring.
+BOARD ?= rpi4
+ifeq ($(BOARD),rpi4)
+  CXXFLAGS += -DBOARD_RPI4
+else ifeq ($(BOARD),odroid_c2)
+  CXXFLAGS += -DBOARD_ODROID_C2
+else
+  $(error Unsupported BOARD '$(BOARD)'; expected rpi4 or odroid_c2)
+endif
+
 # ---- L
 # ---- Dependances lib/ -------------------------------------------------------
 RADIO    = lib/RadioLib
@@ -41,6 +52,11 @@ SRCS += $(RADIO)/utils/FEC.cpp $(RADIO)/utils/Cryptography.cpp
 TARGET  = lora_aprs_tracker
 LDFLAGS = -lpthread -lgps -lm -lmicrohttpd -ldrm
 
+# WITH_MAPLIBRE (opt-in GPU display path) needs the LVGL UI too.
+ifdef WITH_MAPLIBRE
+  WITH_DISPLAY := 1
+endif
+
 # ── WITH_DISPLAY=1 ─────────────────────────────────────────────────────────
 ifdef WITH_DISPLAY
   CXXFLAGS += -DUSE_LVGL_UI
@@ -71,6 +87,31 @@ ifdef WITH_DISPLAY
   SRCS += $(LVGL_C)
 endif
 
+# ── WITH_MAPLIBRE=1 (opt-in) ───────────────────────────────────────────────
+# GPU display path: MapLibre base map + LVGL overlay on EGL/KMS. The mbgl
+# archives are cross-compiled ARM64 (see maplibre/proto). maplibre_display.cpp
+# is the only TU that pulls mbgl headers, compiled apart (C++20, -fno-rtti).
+ifdef WITH_MAPLIBRE
+  CXXFLAGS += -DWITH_MAPLIBRE
+  CFLAGS   += -DWITH_MAPLIBRE
+  ML      ?= /home/adrasec09/maplibre-native
+  MLBUILD ?= $(ML)/build-cross
+  INC += -Ilib/lvgl/src/drivers/opengles/glad/include
+  ML_INC := -I$(ML)/include -I$(ML)/platform/default/include -I$(ML)/vendor/maplibre-native-base/include
+  ML_INC += $(foreach d,$(wildcard $(ML)/vendor/maplibre-native-base/deps/*/include),-I$(d))
+  SRCS += src/maplibre_display.cpp
+  ML_LIBS := $(MLBUILD)/libmbgl-core.a \
+    $(MLBUILD)/libmbgl-vendor-parsedate.a \
+    $(MLBUILD)/vendor/maplibre-tile-spec/cpp/libmlt-cpp.a \
+    $(MLBUILD)/libmbgl-vendor-csscolorparser.a \
+    $(MLBUILD)/libmbgl-harfbuzz.a \
+    $(MLBUILD)/libmbgl-freetype.a \
+    $(MLBUILD)/libmbgl-vendor-nunicode.a \
+    $(MLBUILD)/libmbgl-vendor-sqlite.a
+  LDFLAGS += $(ML_LIBS) $(ML_LIBS) -lEGL -lGLESv2 -lgbm -lcurl -ljpeg -lpng -lwebp -luv \
+             -licuuc -licui18n -licudata -lsqlite3 -lrt -ldl
+endif
+
 OBJS := $(SRCS:.cpp=.o)
 OBJS := $(OBJS:.c=.o)
 DEPS := $(OBJS:.o=.d)
@@ -84,6 +125,10 @@ $(TARGET): $(OBJS)
 # -MMD -MP : génère un .d par objet listant ses en-têtes, pour que make
 # recompile quand un header change (sans ça, modifier un .h ne déclenche
 # aucune recompilation et le binaire garde l'ancienne valeur).
+# mbgl headers require C++20 and are built without RTTI; compile this TU apart.
+src/maplibre_display.o: src/maplibre_display.cpp
+	$(CXX) -std=gnu++20 -Wall -O2 -g -fno-rtti -DWITH_MAPLIBRE -DLV_CONF_INCLUDE_SIMPLE $(INC) $(ML_INC) -MMD -MP -c $< -o $@
+
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(INC) -MMD -MP -c $< -o $@
 
