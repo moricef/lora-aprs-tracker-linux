@@ -128,7 +128,14 @@
 #define LV_DRAW_BUF_STRIDE_ALIGN                1
 
 /** Align start address of draw_buf addresses to this bytes*/
+/* lv_opengles_texture allocates its draw buffer with plain lv_malloc (16-byte
+ * aligned), which trips the alignment assert when this is 64. Match it for the
+ * MapLibre overlay path; the default path keeps 64. */
+#ifdef WITH_MAPLIBRE
+#define LV_DRAW_BUF_ALIGN                       16
+#else
 #define LV_DRAW_BUF_ALIGN                       64
+#endif
 
 /** Using matrix for transformations.
  * Requirements:
