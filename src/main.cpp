@@ -301,7 +301,7 @@ static void setup() {
         ESP_LOGE(TAG, "display create failed — /dev/dri/card0 inaccessible?");
     } else {
 #ifdef WITH_MAPLIBRE
-        if (!useMaplibre)
+        if (!MaplibreDisplay::isActive())
 #endif
             lv_linux_drm_set_file(disp, "/dev/dri/card0", -1);
         lv_display_set_default(disp);
@@ -317,10 +317,22 @@ static void setup() {
         }
         UIDashboard::createDashboard();
         lv_obj_t *splash = showSplashScreen();
-        for (int i = 0; i < 60; i++) { lv_timer_handler(); usleep(50000); }
+        for (int i = 0; i < 60; i++) {
+            lv_timer_handler();
+#ifdef WITH_MAPLIBRE
+            if (MaplibreDisplay::isActive()) MaplibreDisplay::renderTick();
+#endif
+            usleep(50000);
+        }
         lv_obj_del(splash);
         { FILE *f = fopen("/tmp/ui_ok.txt", "w"); if (f) { fprintf(f, "DASH OK\n"); fclose(f); } }
-        ESP_LOGI(TAG, "Display: fbdev 1024x600, touch=%s", touch ? "OK" : "none");
+        ESP_LOGI(TAG, "Display: %s 1024x600, touch=%s",
+#ifdef WITH_MAPLIBRE
+                 MaplibreDisplay::isActive() ? "MapLibre EGL/KMS" : "LVGL DRM software",
+#else
+                 "LVGL DRM software",
+#endif
+                 touch ? "OK" : "none");
     }
 #endif
 
@@ -539,6 +551,9 @@ static void loop() {
         if (MaplibreDisplay::isActive()) MaplibreDisplay::renderTick();
 #endif
         if (d == LV_NO_TIMER_READY) d = 5;
+#ifdef WITH_MAPLIBRE
+        if (MaplibreDisplay::isActive() && d > 16) d = 16;
+#endif
         usleep(d * 1000);
     }
 #else
@@ -576,6 +591,9 @@ int main(int argc, char** argv) {
     LoRa_Utils::sleepRadio();
     APRS_IS_Utils::disconnect();
     WEBCONF::stop();
+#ifdef WITH_MAPLIBRE
+    MaplibreDisplay::shutdown();
+#endif
     ESP_LOGI(TAG, "Done.");
     return 0;
 }
