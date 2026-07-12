@@ -268,12 +268,9 @@ static void btn_map_clicked(lv_event_t *e) {
         lv_obj_del(MapState::screen_map);
         MapState::screen_map = nullptr;
     }
-#ifdef WITH_MAPLIBRE
-    if (MaplibreDisplay::isActive())
-        MapState::screen_map = MapView::createGpuOverlay(NULL);
-    else
-#endif
-        MapState::screen_map = MapView::create(NULL);
+    // create() handles both the software map and the GPU (MapLibre) map,
+    // branching internally on MaplibreDisplay::isActive().
+    MapState::screen_map = MapView::create(NULL);
     lv_screen_load(MapState::screen_map);
     ESP_LOGD(TAG, "btn_map_clicked DONE");
 }
