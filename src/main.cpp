@@ -584,7 +584,12 @@ static void loop() {
         if (MaplibreDisplay::isActive()) {
             if (screenshotRequested) {
                 screenshotRequested = false;
-                MaplibreDisplay::requestScreenshot("/tmp/screenshot.png");
+                // Timestamped name so successive SIGUSR2 don't overwrite.
+                char shot[64];
+                time_t t = time(nullptr);
+                struct tm *lt = localtime(&t);
+                strftime(shot, sizeof(shot), "/tmp/screenshot_%Y%m%d_%H%M%S.png", lt);
+                MaplibreDisplay::requestScreenshot(shot);
             }
             MaplibreDisplay::renderTick();
         }
