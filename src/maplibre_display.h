@@ -21,6 +21,9 @@ lv_display_t *init(const char *stylePath, double lat, double lon, double zoom);
 // True once init() has succeeded and the MapLibre path is driving the display.
 bool isActive();
 
+// Capture the next composed frame to a PNG file (via SIGUSR2 from the loop).
+void requestScreenshot(const char *path);
+
 // Move the MapLibre camera (called on GPS updates).
 void setCenter(double lat, double lon);
 void setZoom(double zoom);

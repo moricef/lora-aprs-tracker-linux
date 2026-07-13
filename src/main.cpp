@@ -97,11 +97,14 @@ extern SmartBeaconValues currentSmartBeaconValues;
 
 static volatile bool running = true;
 static volatile bool reloadConfig = false;
+static volatile bool screenshotRequested = false;
 
 static void sigHandler(int sig) {
     if (sig == SIGUSR1) {
         sendUpdate = true;
         ESP_LOGI(TAG, "SIGUSR1 → beacon triggered");
+    } else if (sig == SIGUSR2) {
+        screenshotRequested = true;
     } else if (sig == SIGHUP) {
         reloadConfig = true;
     } else {
@@ -232,6 +235,7 @@ static void setup() {
     signal(SIGINT,  sigHandler);
     signal(SIGTERM, sigHandler);
     signal(SIGUSR1, sigHandler);
+    signal(SIGUSR2, sigHandler);
     signal(SIGHUP,  sigHandler);
 
     ESP_LOGI(TAG, "=== LoRa APRS Tracker Linux ===");
@@ -577,7 +581,13 @@ static void loop() {
     {
         uint32_t d = lv_timer_handler();
 #ifdef WITH_MAPLIBRE
-        if (MaplibreDisplay::isActive()) MaplibreDisplay::renderTick();
+        if (MaplibreDisplay::isActive()) {
+            if (screenshotRequested) {
+                screenshotRequested = false;
+                MaplibreDisplay::requestScreenshot("/tmp/screenshot.png");
+            }
+            MaplibreDisplay::renderTick();
+        }
 #endif
         if (d == LV_NO_TIMER_READY) d = 5;
 #ifdef WITH_MAPLIBRE

@@ -34,6 +34,10 @@
 #include <cmath>
 #include <memory>
 #include <atomic>
+#include <string>
+#include <vector>
+#include <fstream>
+#include <mbgl/util/image.hpp>
 
 extern "C" {
     typedef void (*GLADapiproc)(void);
@@ -203,6 +207,7 @@ struct State {
     struct gbm_bo *prev_bo = nullptr;
     bool crtc_set = false;
     int W = 0, H = 0;
+    std::string shotPath;
 };
 State *S = nullptr;
 
@@ -282,6 +287,10 @@ lv_display_t *init(const char *stylePath, double lat, double lon, double zoom) {
 }
 
 bool isActive() { return S != nullptr; }
+
+void requestScreenshot(const char *path) {
+    if (S && path) S->shotPath = path;
+}
 
 void setCenter(double lat, double lon) {
     if (S && S->map) S->map->jumpTo(mbgl::CameraOptions().withCenter(mbgl::LatLng{lat, lon}));
@@ -376,6 +385,20 @@ void renderTick() {
     glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 0);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // Screenshot request (SIGUSR2): read the just-composed frame before present.
+    if (!S->shotPath.empty()) {
+        std::vector<uint8_t> b(S->W * S->H * 4);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, S->W, S->H, GL_RGBA, GL_UNSIGNED_BYTE, b.data());
+        mbgl::PremultipliedImage im({(uint32_t)S->W, (uint32_t)S->H});
+        for (int y = 0; y < S->H; y++)  // GL origin bottom-left → flip to top-left
+            memcpy(im.data.get() + y * S->W * 4, b.data() + (S->H - 1 - y) * S->W * 4, S->W * 4);
+        std::string png = mbgl::encodePNG(im);
+        std::ofstream(S->shotPath, std::ios::binary).write(png.data(), png.size());
+        fprintf(stderr, "[maplibre] screenshot -> %s (%zu bytes)\n", S->shotPath.c_str(), png.size());
+        S->shotPath.clear();
+    }
 
     // 4. Present
     eglSwapBuffers(g_gl.dpy, g_gl.egl_surf);
