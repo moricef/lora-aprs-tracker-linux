@@ -51,6 +51,7 @@ static lv_obj_t *ibarMap = nullptr;
 
 #ifdef WITH_MAPLIBRE
 static lv_obj_t *gpuScreen = nullptr;
+static lv_obj_t *gpuMapLayer = nullptr;
 static lv_obj_t *gpuTouch = nullptr;
 static lv_timer_t *gpuMarkerTimer = nullptr;
 static lv_obj_t *gpuMarkers[MAP_STATIONS_MAX + 1] = {};
@@ -63,6 +64,7 @@ static uint32_t gpuLastInertiaMs = 0;
 static int gpuLongPressedStation = -2;
 static void refreshGpuMarkers();
 static void refreshGpuTraces();
+static int gpuMapOriginY() { return fullscreenMap ? 0 : 45; }
 static void refreshGpuInfoBar() {
   if (!infoLabel) return;
   double lat = centerLat, lon = centerLon;
@@ -166,10 +168,10 @@ static void gpuMarkerClicked(lv_event_t *e) {
 }
 
 static lv_obj_t *ensureGpuMarker(int slot, int stationIdx) {
-  if (slot < 0 || slot > MAP_STATIONS_MAX || !gpuScreen) return nullptr;
+  if (slot < 0 || slot > MAP_STATIONS_MAX || !gpuMapLayer) return nullptr;
   lv_obj_t *marker = gpuMarkers[slot];
   if (!marker || !lv_obj_is_valid(marker)) {
-    marker = lv_obj_create(gpuScreen);
+    marker = lv_obj_create(gpuMapLayer);
     gpuMarkers[slot] = marker;
     lv_obj_set_size(marker, 92, 44);
     lv_obj_set_style_bg_opa(marker, LV_OPA_TRANSP, 0);
@@ -245,7 +247,7 @@ static void positionGpuMarker(int slot, int stationIdx, const char *callsign,
   else lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
   lv_label_set_text(callsignLabel, callsign);
   lv_obj_remove_flag(marker, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_set_pos(marker, x - 46, y - 12);
+  lv_obj_set_pos(marker, x - 46, y - gpuMapOriginY() - 12);
 }
 
 static void refreshGpuMarkers() {
@@ -298,10 +300,10 @@ static void refreshGpuMarkers() {
 }
 
 static lv_obj_t *ensureGpuTrace(int slot, lv_color_t color) {
-  if (slot < 0 || slot > MAP_STATIONS_MAX || !gpuScreen) return nullptr;
+  if (slot < 0 || slot > MAP_STATIONS_MAX || !gpuMapLayer) return nullptr;
   lv_obj_t *line = gpuTraceLines[slot];
   if (!line || !lv_obj_is_valid(line)) {
-    line = lv_line_create(gpuScreen);
+    line = lv_line_create(gpuMapLayer);
     gpuTraceLines[slot] = line;
     lv_obj_set_style_line_width(line, 3, 0);
     lv_obj_set_style_line_rounded(line, true, 0);
@@ -323,8 +325,9 @@ static void setGpuTracePoints(int slot, int count, lv_color_t color) {
 }
 
 static void refreshGpuTraces() {
-  if (!gpuScreen || !MaplibreDisplay::isActive()) return;
+  if (!gpuMapLayer || !MaplibreDisplay::isActive()) return;
   uint32_t now = millis();
+  const int originY = gpuMapOriginY();
 
   int ownCount = 0;
   for (int i = 0; i < MapTraces::ownTraceSize() && ownCount < 200; ++i) {
@@ -332,12 +335,12 @@ static void refreshGpuTraces() {
     int x = 0, y = 0;
     if (MapTraces::ownTracePoint(i, &lat, &lon) &&
         MaplibreDisplay::project(lat, lon, &x, &y))
-      gpuTracePoints[0][ownCount++] = {(lv_value_precise_t)x, (lv_value_precise_t)y};
+      gpuTracePoints[0][ownCount++] = {(lv_value_precise_t)x, (lv_value_precise_t)(y - originY)};
   }
   if ((gpsLat != 0.0 || gpsLon != 0.0) && ownCount < 201) {
     int x = 0, y = 0;
     if (MaplibreDisplay::project(gpsLat, gpsLon, &x, &y))
-      gpuTracePoints[0][ownCount++] = {(lv_value_precise_t)x, (lv_value_precise_t)y};
+      gpuTracePoints[0][ownCount++] = {(lv_value_precise_t)x, (lv_value_precise_t)(y - originY)};
   }
   setGpuTracePoints(0, ownCount, lv_color_hex(0x9933ff));
 
@@ -350,11 +353,11 @@ static void refreshGpuTraces() {
         if (now - st->trace[idx].time > 3600000) continue;
         int x = 0, y = 0;
         if (MaplibreDisplay::project(st->trace[idx].lat, st->trace[idx].lon, &x, &y))
-          gpuTracePoints[s + 1][count++] = {(lv_value_precise_t)x, (lv_value_precise_t)y};
+          gpuTracePoints[s + 1][count++] = {(lv_value_precise_t)x, (lv_value_precise_t)(y - originY)};
       }
       int x = 0, y = 0;
       if (count < 201 && MaplibreDisplay::project(st->latitude, st->longitude, &x, &y))
-        gpuTracePoints[s + 1][count++] = {(lv_value_precise_t)x, (lv_value_precise_t)y};
+        gpuTracePoints[s + 1][count++] = {(lv_value_precise_t)x, (lv_value_precise_t)(y - originY)};
     }
     setGpuTracePoints(s + 1, count, lv_color_hex(0x0055ff));
   }
@@ -431,6 +434,7 @@ static void gpuScreenDeleted(lv_event_t *) {
   MaplibreDisplay::getCenter(&centerLat, &centerLon);
   zoom = (int)(MaplibreDisplay::getZoom() + 0.5);
   gpuScreen = nullptr;
+  gpuMapLayer = nullptr;
   gpuTouch = nullptr;
   gpuPanActive = false;
   gpuVelX = gpuVelY = 0.0f;
@@ -486,13 +490,13 @@ void toggleFullscreen() {
     if (fullscreenMap) {
       lv_obj_add_flag(tbarMap, LV_OBJ_FLAG_HIDDEN);
       lv_obj_add_flag(ibarMap, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_set_size(gpuTouch, CONT_W, 600);
-      lv_obj_set_pos(gpuTouch, 0, 0);
+      lv_obj_set_size(gpuMapLayer, CONT_W, 600);
+      lv_obj_set_pos(gpuMapLayer, 0, 0);
     } else {
       lv_obj_clear_flag(tbarMap, LV_OBJ_FLAG_HIDDEN);
       lv_obj_clear_flag(ibarMap, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_set_size(gpuTouch, CONT_W, MAP_H);
-      lv_obj_set_pos(gpuTouch, 0, 45);
+      lv_obj_set_size(gpuMapLayer, CONT_W, MAP_H);
+      lv_obj_set_pos(gpuMapLayer, 0, 45);
     }
     refreshGpuMarkers();
     lv_refr_now(NULL);
@@ -696,12 +700,24 @@ lv_obj_t *create(lv_obj_t *) {
     // no software MapEngine/MapLabels/MapInput.
     lv_obj_set_style_bg_opa(scr, LV_OPA_TRANSP, 0);
     gpuScreen = scr;
+    fullscreenMap = false;
     gpuFollowGps = mapFollowGps;
     lv_obj_add_event_cb(scr, gpuScreenDeleted, LV_EVENT_DELETE, nullptr);
 
-    gpuTouch = lv_obj_create(scr);
-    lv_obj_set_size(gpuTouch, CONT_W, MAP_H);
-    lv_obj_set_pos(gpuTouch, 0, 45);
+    // All moving overlays live in this clipped map viewport. They can no
+    // longer draw over or receive touches through the fixed chrome.
+    gpuMapLayer = lv_obj_create(scr);
+    lv_obj_set_size(gpuMapLayer, CONT_W, MAP_H);
+    lv_obj_set_pos(gpuMapLayer, 0, 45);
+    lv_obj_set_style_bg_opa(gpuMapLayer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(gpuMapLayer, 0, 0);
+    lv_obj_set_style_pad_all(gpuMapLayer, 0, 0);
+    lv_obj_clear_flag(gpuMapLayer, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(gpuMapLayer, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+
+    gpuTouch = lv_obj_create(gpuMapLayer);
+    lv_obj_set_size(gpuTouch, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_pos(gpuTouch, 0, 0);
     lv_obj_set_style_bg_opa(gpuTouch, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(gpuTouch, 0, 0);
     lv_obj_set_style_pad_all(gpuTouch, 0, 0);
