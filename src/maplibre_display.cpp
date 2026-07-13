@@ -296,6 +296,14 @@ double getZoom() {
 void moveBy(double dx, double dy) {
     if (S && S->map) S->map->moveBy({dx, dy});
 }
+bool getCenter(double *lat, double *lon) {
+    if (!S || !S->map || !lat || !lon) return false;
+    const auto camera = S->map->getCameraOptions();
+    if (!camera.center) return false;
+    *lat = camera.center->latitude();
+    *lon = camera.center->longitude();
+    return true;
+}
 bool project(double lat, double lon, int *x, int *y) {
     if (!S || !S->map || !x || !y) return false;
     mbgl::ScreenCoordinate p = S->map->pixelForLatLng(mbgl::LatLng{lat, lon});
@@ -343,7 +351,20 @@ void renderTick() {
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
-    // 3. Blend overlay, restore GL state for mbgl
+    // 3. Blend the overlay in a deterministic full-screen GL state. MapLibre
+    // leaves scissor/stencil/depth configured according to the last rendered
+    // tile or symbol layer. Reusing that state clipped or shifted the LVGL
+    // top/bottom bars depending on the visible map area.
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, S->W, S->H);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glActiveTexture(GL_TEXTURE0);
+    glBlendEquation(GL_FUNC_ADD);
+
     lv_area_t area = {0, 0, S->W - 1, S->H - 1};
     // GL_BGRA_EXT upload already samples as correct RGB on V3D; no shader R/B swap.
     lv_opengles_render(S->overlay_tex, &area, LV_OPA_COVER, S->W, S->H, &area,

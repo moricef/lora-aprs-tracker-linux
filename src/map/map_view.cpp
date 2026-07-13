@@ -46,6 +46,8 @@ static lv_obj_t *titleLabel = nullptr;
 static lv_obj_t *infoLabel = nullptr;
 static lv_obj_t *mapCont = nullptr;
 static lv_obj_t *btnRecenter = nullptr;
+static lv_obj_t *tbarMap = nullptr;
+static lv_obj_t *ibarMap = nullptr;
 
 #ifdef WITH_MAPLIBRE
 static lv_obj_t *gpuScreen = nullptr;
@@ -55,9 +57,25 @@ static lv_obj_t *gpuMarkers[MAP_STATIONS_MAX + 1] = {};
 static lv_obj_t *gpuTraceLines[MAP_STATIONS_MAX + 1] = {};
 static lv_point_precise_t gpuTracePoints[MAP_STATIONS_MAX + 1][201] = {};
 static bool gpuFollowGps = true;
+static bool gpuPanActive = false;
+static float gpuVelX = 0.0f, gpuVelY = 0.0f;
+static uint32_t gpuLastInertiaMs = 0;
+static int gpuLongPressedStation = -2;
 static void refreshGpuMarkers();
 static void refreshGpuTraces();
+static void refreshGpuInfoBar() {
+  if (!infoLabel) return;
+  double lat = centerLat, lon = centerLon;
+  MaplibreDisplay::getCenter(&lat, &lon);
+  char text[128];
+  snprintf(text, sizeof(text), "Lat:%.4f  Lon:%.4f  Stn:%d",
+           lat, lon, mapStationsCount);
+  lv_label_set_text(infoLabel, text);
+}
 static void setGpuZoom(int delta) {
+  gpuFollowGps = false;
+  mapFollowGps = false;
+  markFollowGpsDisabled();
   double target = MaplibreDisplay::getZoom() + delta;
   if (target < zoomMin) target = zoomMin;
   if (target > zoomMax) target = zoomMax;
@@ -129,6 +147,21 @@ void refreshStations() {
 #ifdef WITH_MAPLIBRE
 static void gpuMarkerClicked(lv_event_t *e) {
   int idx = (int)(intptr_t)lv_event_get_user_data(e);
+  if (lv_event_get_code(e) == LV_EVENT_LONG_PRESSED) {
+    gpuLongPressedStation = idx;
+    if (idx >= 0) {
+      MapStation *st = STATION_Utils::getMapStation(idx);
+      if (st && st->valid) {
+        MapMarkers::closeStationPopup();
+        UIMessaging::openComposeWithCallsign(st->callsign);
+      }
+    }
+    return;
+  }
+  if (gpuLongPressedStation == idx) {
+    gpuLongPressedStation = -2;
+    return;
+  }
   MapMarkers::showStationPopup(idx);
 }
 
@@ -145,6 +178,8 @@ static lv_obj_t *ensureGpuMarker(int slot, int stationIdx) {
     lv_obj_clear_flag(marker, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(marker, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(marker, gpuMarkerClicked, LV_EVENT_CLICKED,
+                        (void *)(intptr_t)stationIdx);
+    lv_obj_add_event_cb(marker, gpuMarkerClicked, LV_EVENT_LONG_PRESSED,
                         (void *)(intptr_t)stationIdx);
 
     lv_obj_t *icon = lv_image_create(marker);                 // child 0
@@ -251,6 +286,15 @@ static void refreshGpuMarkers() {
     if (!used[i] && gpuMarkers[i] && lv_obj_is_valid(gpuMarkers[i]))
       lv_obj_add_flag(gpuMarkers[i], LV_OBJ_FLAG_HIDDEN);
   }
+  // Camera coordinates and station count can both change while this screen
+  // stays open; keep the information bar synchronized with the GPU map.
+  refreshGpuInfoBar();
+
+  // Markers and traces are created dynamically on gpuScreen, after the map
+  // chrome. Keep the fixed bars above those overlays; otherwise dense station
+  // areas can paint over (and receive touches through) the top/bottom bars.
+  if (tbarMap && lv_obj_is_valid(tbarMap)) lv_obj_move_foreground(tbarMap);
+  if (ibarMap && lv_obj_is_valid(ibarMap)) lv_obj_move_foreground(ibarMap);
 }
 
 static lv_obj_t *ensureGpuTrace(int slot, lv_color_t color) {
@@ -318,30 +362,78 @@ static void refreshGpuTraces() {
 
 static void gpuTouchCb(lv_event_t *e) {
   static lv_point_t last{};
+  static uint32_t lastMs = 0;
   lv_indev_t *indev = lv_indev_get_act();
   if (!indev) return;
   lv_point_t p{};
   lv_indev_get_point(indev, &p);
   lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_PRESSED) {
+  if (code == LV_EVENT_DOUBLE_CLICKED) {
+    toggleFullscreen();
+  } else if (code == LV_EVENT_PRESSED) {
     last = p;
+    lastMs = millis();
+    gpuPanActive = true;
+    gpuVelX = gpuVelY = 0.0f;
     MapMarkers::closeStationPopup();
   } else if (code == LV_EVENT_PRESSING) {
     int dx = p.x - last.x, dy = p.y - last.y;
+    uint32_t now = millis();
+    uint32_t dt = now - lastMs;
     last = p;
+    lastMs = now;
     if (dx || dy) {
       gpuFollowGps = false;
+      mapFollowGps = false;
+      markFollowGpsDisabled();
+      if (dt > 0) {
+        constexpr float weight = 0.7f;
+        gpuVelX = gpuVelX * (1.0f - weight) + ((float)dx / dt) * weight;
+        gpuVelY = gpuVelY * (1.0f - weight) + ((float)dy / dt) * weight;
+      }
       MaplibreDisplay::moveBy(dx, dy);
       refreshGpuMarkers();
     }
+  } else if (code == LV_EVENT_RELEASED) {
+    gpuPanActive = false;
+    gpuLastInertiaMs = millis();
+    refreshGpuInfoBar();
+  }
+}
+
+static void gpuTimerTick(lv_timer_t *) {
+  static uint8_t refreshDivider = 0;
+  if (!gpuPanActive && (gpuVelX != 0.0f || gpuVelY != 0.0f)) {
+    uint32_t now = millis();
+    uint32_t dt = now - gpuLastInertiaMs;
+    gpuLastInertiaMs = now;
+    if (dt > 0 && dt < 100) {
+      int dx = (int)(gpuVelX * dt);
+      int dy = (int)(gpuVelY * dt);
+      if (dx || dy) MaplibreDisplay::moveBy(dx, dy);
+      gpuVelX *= 0.85f;
+      gpuVelY *= 0.85f;
+      if (gpuVelX > -0.01f && gpuVelX < 0.01f) gpuVelX = 0.0f;
+      if (gpuVelY > -0.01f && gpuVelY < 0.01f) gpuVelY = 0.0f;
+      refreshGpuMarkers();
+      return;
+    }
+  }
+  if (++refreshDivider >= 5) {
+    refreshDivider = 0;
+    refreshGpuMarkers();
   }
 }
 
 static void gpuScreenDeleted(lv_event_t *) {
   if (gpuMarkerTimer) { lv_timer_del(gpuMarkerTimer); gpuMarkerTimer = nullptr; }
   MapMarkers::closeStationPopup();
+  MaplibreDisplay::getCenter(&centerLat, &centerLon);
+  zoom = (int)(MaplibreDisplay::getZoom() + 0.5);
   gpuScreen = nullptr;
   gpuTouch = nullptr;
+  gpuPanActive = false;
+  gpuVelX = gpuVelY = 0.0f;
   memset(gpuMarkers, 0, sizeof(gpuMarkers));
   memset(gpuTraceLines, 0, sizeof(gpuTraceLines));
   MapTraces::destroy();
@@ -387,11 +479,26 @@ static void zoomCb(lv_event_t *e) {
 
 // Tile reposition lives in MapEngine::repositionAll().
 
-static lv_obj_t *tbarMap = nullptr;
-static lv_obj_t *ibarMap = nullptr;
-
 void toggleFullscreen() {
   fullscreenMap = !fullscreenMap;
+#ifdef WITH_MAPLIBRE
+  if (MaplibreDisplay::isActive()) {
+    if (fullscreenMap) {
+      lv_obj_add_flag(tbarMap, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(ibarMap, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_set_size(gpuTouch, CONT_W, 600);
+      lv_obj_set_pos(gpuTouch, 0, 0);
+    } else {
+      lv_obj_clear_flag(tbarMap, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_clear_flag(ibarMap, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_set_size(gpuTouch, CONT_W, MAP_H);
+      lv_obj_set_pos(gpuTouch, 0, 45);
+    }
+    refreshGpuMarkers();
+    lv_refr_now(NULL);
+    return;
+  }
+#endif
   if (fullscreenMap) {
     lv_obj_add_flag(tbarMap, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ibarMap, LV_OBJ_FLAG_HIDDEN);
@@ -602,6 +709,8 @@ lv_obj_t *create(lv_obj_t *) {
     lv_obj_add_flag(gpuTouch, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(gpuTouch, gpuTouchCb, LV_EVENT_PRESSED, nullptr);
     lv_obj_add_event_cb(gpuTouch, gpuTouchCb, LV_EVENT_PRESSING, nullptr);
+    lv_obj_add_event_cb(gpuTouch, gpuTouchCb, LV_EVENT_RELEASED, nullptr);
+    lv_obj_add_event_cb(gpuTouch, gpuTouchCb, LV_EVENT_DOUBLE_CLICKED, nullptr);
 
     char zg[16];
     snprintf(zg, sizeof(zg), "MAP (Z%d)", (int)(MaplibreDisplay::getZoom() + 0.5));
@@ -609,7 +718,7 @@ lv_obj_t *create(lv_obj_t *) {
 
     refreshGpuMarkers();
     if (!gpuMarkerTimer)
-      gpuMarkerTimer = lv_timer_create([](lv_timer_t *) { refreshGpuMarkers(); }, 250, nullptr);
+      gpuMarkerTimer = lv_timer_create(gpuTimerTick, 50, nullptr);
     mapActive = true;
     return scr;
   }

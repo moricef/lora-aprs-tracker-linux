@@ -26,6 +26,7 @@ void setCenter(double lat, double lon);
 void setZoom(double zoom);
 double getZoom();
 void moveBy(double dx, double dy);
+bool getCenter(double *lat, double *lon);
 bool project(double lat, double lon, int *x, int *y);
 
 // Render one frame: MapLibre into framebuffer 0, LVGL overlay on top, page-flip.
