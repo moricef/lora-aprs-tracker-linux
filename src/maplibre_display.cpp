@@ -56,7 +56,10 @@ struct Kms {
 
     bool init(const char *path) {
         fd = open(path, O_RDWR | O_CLOEXEC);
-        if (fd < 0) { perror("[maplibre] open card0"); return false; }
+        if (fd < 0) {
+            fprintf(stderr, "[maplibre] open %s failed: %s\n", path, strerror(errno));
+            return false;
+        }
         if (drmSetMaster(fd) != 0)
             fprintf(stderr, "[maplibre] drmSetMaster failed (%s)\n", strerror(errno));
         drmModeRes *res = drmModeGetResources(fd);
@@ -244,7 +247,13 @@ namespace MaplibreDisplay {
 
 lv_display_t *init(const char *stylePath, double lat, double lon, double zoom) {
     S = new State();
-    if (!S->kms.init("/dev/dri/card0")) { fprintf(stderr, "[maplibre] KMS init failed\n"); return nullptr; }
+    // DRM card numbering is not stable across boots on the Pi 4: vc4-drm can
+    // be card0 or card1 depending on whether V3D probes first.  This udev link
+    // always targets the vc4 display device, while card0 may be render-only.
+    if (!S->kms.init("/dev/dri/by-path/platform-gpu-card")) {
+        fprintf(stderr, "[maplibre] KMS init failed\n");
+        return nullptr;
+    }
     if (!initGl()) { fprintf(stderr, "[maplibre] GL init failed\n"); S->kms.restore(); return nullptr; }
     if (!gladLoadGLES2((GLADloadfunc)eglGetProcAddress)) { fprintf(stderr, "[maplibre] gladLoadGLES2 failed\n"); return nullptr; }
     fprintf(stderr, "[maplibre] GL_RENDERER: %s\n", glGetString(GL_RENDERER));
@@ -281,7 +290,8 @@ void setZoom(double zoom) {
     if (S && S->map) S->map->jumpTo(mbgl::CameraOptions().withZoom(zoom));
 }
 double getZoom() {
-    return (S && S->map) ? S->map->getCameraOptions().zoom.value_or(13.0) : 13.0;
+    return (S && S->map) ? S->map->getCameraOptions().zoom.value_or(DEFAULT_ZOOM)
+                         : DEFAULT_ZOOM;
 }
 void moveBy(double dx, double dy) {
     if (S && S->map) S->map->moveBy({dx, dy});
@@ -301,6 +311,13 @@ void renderTick() {
     // reuse the previous update and leave the alternate scanout buffer stale.
     S->map->triggerRepaint();
     S->runLoop->runOnce();
+
+    // lv_timer_handler() in the main loop flushes the LVGL overlay and leaves
+    // the pixel-store row length set; MapLibre's glyph-atlas uploads below then
+    // land corrupted (accented glyphs, added to the atlas once their labels
+    // appear, render as tofu boxes). Reset before rendering the map.
+    glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 
     // 1. MapLibre into the current GBM back buffer.  EGL alternates scanout
     // buffers; rendering only on MapLibre's dirty notification leaves the

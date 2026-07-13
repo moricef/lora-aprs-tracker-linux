@@ -37,6 +37,8 @@
 #include "ui_popups.h"
 #include "map_state.h"
 #include "map/map_view.h"
+#include "map/map_io.h"
+#include "map/map_state.h"
 #include "map/map_vector.h"
 #ifdef WITH_MAPLIBRE
 #include "maplibre_display.h"
@@ -293,10 +295,18 @@ static void setup() {
     lv_group_set_default(lv_group_create());
     lv_display_t *disp = nullptr;
 #ifdef WITH_MAPLIBRE
-    const bool useMaplibre = getenv("TRACKER_MAPLIBRE") != nullptr;
+    // MapLibre GPU is the default display now; TRACKER_NO_MAPLIBRE forces the
+    // legacy software renderer as a fallback.
+    const bool useMaplibre = getenv("TRACKER_NO_MAPLIBRE") == nullptr;
     if (useMaplibre) {
-        disp = MaplibreDisplay::init("file:///data/LoRa_Tracker/MapLibre/maptiler-basic.json",
-                                     43.5850, 1.4337, 13.0);
+        // Share the same initial viewport as the legacy map.  MapState starts
+        // at Z7 and keeps the last zoom for subsequent map openings.
+        MapIO::discoverRegion();
+        MapIO::discoverZooms();
+        MapIO::discoverDefaultPosition();
+        disp = MaplibreDisplay::init("file:///data/LoRa_Tracker/MapLibre/osm-bright.json",
+                                     MapState::centerLat, MapState::centerLon,
+                                     MapState::zoom);
         if (!disp) ESP_LOGE(TAG, "MapLibre init failed — falling back to lv_linux_drm");
     }
 #endif
@@ -307,7 +317,8 @@ static void setup() {
 #ifdef WITH_MAPLIBRE
         if (!MaplibreDisplay::isActive())
 #endif
-            lv_linux_drm_set_file(disp, "/dev/dri/card0", -1);
+            // Stable udev link: card0/card1 ordering changes across Pi boots.
+            lv_linux_drm_set_file(disp, "/dev/dri/by-path/platform-gpu-card", -1);
         lv_display_set_default(disp);
         lv_timer_handler();  // initialise le rendu display avant création widgets
         fprintf(stderr, "[UI] evdev...\n"); fflush(stderr);
@@ -609,6 +620,9 @@ int main(int argc, char** argv) {
     LoRa_Utils::sleepRadio();
     APRS_IS_Utils::disconnect();
     WEBCONF::stop();
+#ifdef USE_LVGL_UI
+    MapVector::stopWorker();
+#endif
 #ifdef WITH_MAPLIBRE
     MaplibreDisplay::shutdown();
 #endif

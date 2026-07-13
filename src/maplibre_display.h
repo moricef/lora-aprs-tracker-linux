@@ -11,6 +11,8 @@
 
 namespace MaplibreDisplay {
 
+constexpr double DEFAULT_ZOOM = 7.0;
+
 // Takes DRM master on card0, sets up EGL/GBM + MapLibre + an LVGL overlay
 // texture display. Returns the overlay display (build the UI on it), or NULL
 // on failure. stylePath is a file:// URL to the MapLibre style JSON.
