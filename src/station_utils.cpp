@@ -8,7 +8,6 @@
 #include "lora_utils.h"
 #include "aprs_is_utils.h"
 #include "storage_utils.h"
-#include "gpx_writer.h"
 #include "smartbeacon_utils.h"
 #include "linux_stubs.h"
 #ifdef USE_LVGL_UI
@@ -315,12 +314,6 @@ namespace STATION_Utils {
         sendUpdate  = false;
         if (currentBeacon->gpsEcoMode) gpsShouldSleep = true;
 
-        GPXWriter::addPoint((float)gpsFix.lat, (float)gpsFix.lon,
-                            gpsFix.valid_altitude ? (float)gpsFix.alt : 0.0f,
-                            gpsFix.valid_location ? (float)gpsFix.hdop : 99.0f,
-                            gpsFix.valid_speed ? (float)gpsFix.speed_kph : 0.0f,
-                            gpsFix.year, gpsFix.month, gpsFix.date,
-                            gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
     }
 
     void saveIndex(uint8_t type, uint8_t index) {

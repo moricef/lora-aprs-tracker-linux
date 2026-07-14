@@ -27,6 +27,7 @@
 #include "map_state.h"
 #include "webconf_httpd.h"
 #include "notification_utils.h"
+#include "gpx_writer.h"
 #include <APRSPacketLib.h>
 
 #ifdef USE_LVGL_UI
@@ -540,9 +541,11 @@ static void loop() {
     MSG_Utils::clean15SegBuffer();
 
     STATION_Utils::checkListenedStationsByTimeAndDelete();
+    int mapStationCountBeforeCleanup = mapStationsCount;
     STATION_Utils::cleanOldMapStations();
 #ifdef USE_LVGL_UI
-    MapView::refreshStations();
+    if (!packet.text.isEmpty() || mapStationsCount != mapStationCountBeforeCleanup)
+        MapView::refreshStations();
     UIMessaging::refreshConversationIfActive();
 #endif
 
@@ -554,6 +557,16 @@ static void loop() {
         bool gps_loc_update  = GPS_Utils::hasNewFix() && gpsFix.valid_location;
         bool gps_time_update = GPS_Utils::hasNewFix() && gpsFix.valid_time;
         GPS_Utils::setDateFromData();
+
+        // GPX recording follows GNSS fixes only. APRS beacon timing must not
+        // affect the recorded track density.
+        if (gps_loc_update && GPXWriter::isRecording()) {
+            GPXWriter::addPoint((float)gpsFix.lat, (float)gpsFix.lon,
+                                gpsFix.valid_altitude ? (float)gpsFix.alt : 0.0f,
+                                (float)gpsFix.hdop,
+                                gpsFix.year, gpsFix.month, gpsFix.date,
+                                gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
+        }
 
         int currentSpeed = gpsFix.valid_speed ? (int)gpsFix.speed_kph : 0;
 
@@ -669,6 +682,7 @@ int main(int argc, char** argv) {
     fflush(stdout);
     while (running) loop();
 
+    GPXWriter::stopRecording();
     NOTIFICATION_Utils::shutDownBeep();
     BluetoothClassic::stop();
     BluetoothBLE::stop();

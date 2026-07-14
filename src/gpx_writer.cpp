@@ -18,6 +18,12 @@ bool isRecording() {
 bool startRecording(int year, int month, int day, int hour, int minute) {
     if (recording) return true;
 
+    if (year < 2000 || month < 1 || month > 12 || day < 1 || day > 31 ||
+        hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+        ESP_LOGE(TAG, "Cannot start recording without a valid GNSS date and time");
+        return false;
+    }
+
     mkdir("/data/LoRa_Tracker/gpx", 0755);
 
     char filename[256];
@@ -39,7 +45,7 @@ bool startRecording(int year, int month, int day, int hour, int minute) {
     fprintf(f, "    <trkseg>\n");
     fclose(f);
 
-    strncpy(currentFilePath, filename, sizeof(currentFilePath) - 1);
+    snprintf(currentFilePath, sizeof(currentFilePath), "%s", filename);
     recording = true;
     ESP_LOGI(TAG, "Recording started: %s", filename);
     return true;
@@ -61,7 +67,7 @@ void stopRecording() {
     currentFilePath[0] = '\0';
 }
 
-void addPoint(float lat, float lon, float alt, float hdop, float speed,
+void addPoint(float lat, float lon, float alt, float hdop,
               int year, int month, int day, int hour, int minute, int second) {
     if (!recording) return;
 
@@ -79,7 +85,6 @@ void addPoint(float lat, float lon, float alt, float hdop, float speed,
     if (timestamp[0])
         fprintf(f, "        <time>%s</time>\n", timestamp);
     fprintf(f, "        <hdop>%.1f</hdop>\n", hdop);
-    fprintf(f, "        <speed>%.1f</speed>\n", speed);
     fprintf(f, "      </trkpt>\n");
     fclose(f);
 }

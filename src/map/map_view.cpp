@@ -70,6 +70,7 @@ static bool gpuMarkerVisible[MAP_STATIONS_MAX + 1] = {};
 static int gpuExpandedClusterSlot = -1;
 static bool gpuFollowGps = true;
 static bool gpuPanActive = false;
+static bool gpuStationsDirty = false;
 static float gpuVelX = 0.0f, gpuVelY = 0.0f;
 static uint32_t gpuLastInertiaMs = 0;
 static int gpuLongPressedStation = -2;
@@ -84,7 +85,8 @@ static void refreshGpuInfoBar() {
   char text[128];
   snprintf(text, sizeof(text), "Lat:%.4f  Lon:%.4f  Stn:%d",
            lat, lon, mapStationsCount);
-  lv_label_set_text(infoLabel, text);
+  if (strcmp(lv_label_get_text(infoLabel), text) != 0)
+    lv_label_set_text(infoLabel, text);
 }
 static void setGpuZoom(int delta) {
   collapseGpuSpiderfy();
@@ -151,7 +153,10 @@ void zoomOut() {
 void refreshStations() {
 #ifdef WITH_MAPLIBRE
   if (MaplibreDisplay::isActive()) {
-    refreshGpuMarkers();
+    // Defer station widget updates to the UI timer. Rebuilding every marker
+    // while an RX frame is being parsed produces a long frame at exactly the
+    // moment the dashboard and counters are updated.
+    gpuStationsDirty = true;
     return;
   }
 #endif
@@ -457,11 +462,9 @@ static void refreshGpuMarkers() {
   // stays open; keep the information bar synchronized with the GPU map.
   refreshGpuInfoBar();
 
-  // Markers and traces are created dynamically on gpuScreen, after the map
-  // chrome. Keep the fixed bars above those overlays; otherwise dense station
-  // areas can paint over (and receive touches through) the top/bottom bars.
-  if (tbarMap && lv_obj_is_valid(tbarMap)) lv_obj_move_foreground(tbarMap);
-  if (ibarMap && lv_obj_is_valid(ibarMap)) lv_obj_move_foreground(ibarMap);
+  // gpuMapLayer is clipped to the map viewport, so its dynamic children can
+  // never overlap the fixed bars. Reordering the bars on every refresh caused
+  // avoidable full-object invalidation and visible jitter at the bottom edge.
 }
 
 static lv_obj_t *ensureGpuTrace(int slot, lv_color_t color) {
@@ -592,7 +595,8 @@ static void gpuTimerTick(lv_timer_t *) {
       return;
     }
   }
-  if (++refreshDivider >= 5) {
+  if (gpuStationsDirty || ++refreshDivider >= 5) {
+    gpuStationsDirty = false;
     refreshDivider = 0;
     refreshGpuMarkers();
   }
@@ -608,6 +612,7 @@ static void gpuScreenDeleted(lv_event_t *) {
   gpuTouch = nullptr;
   gpuLoadingCover = nullptr;
   gpuPanActive = false;
+  gpuStationsDirty = false;
   gpuVelX = gpuVelY = 0.0f;
   memset(gpuMarkers, 0, sizeof(gpuMarkers));
   memset(gpuTraceLines, 0, sizeof(gpuTraceLines));
@@ -832,7 +837,8 @@ lv_obj_t *create(lv_obj_t *) {
       GPXWriter::stopRecording();
       lv_obj_set_style_bg_color(btnGPX, lv_color_hex(0x16213e), 0);
     } else {
-      bool ok = GPXWriter::startRecording(gpsFix.year, gpsFix.month, gpsFix.date,
+      bool ok = gpsFix.valid_location && gpsFix.valid_date && gpsFix.valid_time &&
+                GPXWriter::startRecording(gpsFix.year, gpsFix.month, gpsFix.date,
                                           gpsFix.hours, gpsFix.minutes);
       if (ok)
         lv_obj_set_style_bg_color(btnGPX, lv_color_hex(0xff6600), 0);
