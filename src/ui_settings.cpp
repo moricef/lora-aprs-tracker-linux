@@ -39,6 +39,11 @@ static const char *TAG = "UISettings";
 #include "storage_utils.h"
 #include "wifi_utils.h"
 #include "display.h"
+#if !defined(ARDUINO)
+#include "linux_connectivity.h"
+#include "bluetooth_classic.h"
+#include "bluetooth_ble.h"
+#endif
 
 // External variables from main code
 extern Configuration Config;
@@ -325,6 +330,7 @@ void UISettings::createSetupScreen() {
     if (screen_setup) { lv_obj_del(screen_setup); screen_setup = nullptr; }
     screen_setup = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_setup, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_setup, LV_OPA_COVER, 0);
     lv_obj_add_event_cb(screen_setup, setup_gesture_cb, LV_EVENT_GESTURE, NULL);
     lv_obj_clear_flag(screen_setup, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
@@ -408,6 +414,7 @@ static void freq_item_clicked(lv_event_t *e) {
 void UISettings::createFreqScreen() {
     screen_freq = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_freq, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_freq, LV_OPA_COVER, 0);
 
     // Title bar
     lv_obj_t *title_bar = lv_obj_create(screen_freq);
@@ -490,6 +497,7 @@ static void speed_item_clicked(lv_event_t *e) {
 void UISettings::createSpeedScreen() {
     screen_speed = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_speed, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_speed, LV_OPA_COVER, 0);
 
     // Title bar
     lv_obj_t *title_bar = lv_obj_create(screen_speed);
@@ -674,6 +682,7 @@ static void brightness_slider_released(lv_event_t *e) {
 void UISettings::createDisplayScreen() {
     screen_display = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_display, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_display, LV_OPA_COVER, 0);
 
     // Title bar
     lv_obj_t *title_bar = lv_obj_create(screen_display);
@@ -870,6 +879,7 @@ static void station_beep_changed(lv_event_t *e) {
 void UISettings::createSoundScreen() {
     screen_sound = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_sound, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_sound, LV_OPA_COVER, 0);
 
     // Title bar
     lv_obj_t *title_bar = lv_obj_create(screen_sound);
@@ -1045,6 +1055,25 @@ static void wifi_switch_changed(lv_event_t *e) {
     bool is_on = lv_obj_has_state(sw, LV_STATE_CHECKED);
     extern int wifiRetryCount;
 
+#if !defined(ARDUINO)
+    const bool ok = LinuxConnectivity::setWifiEnabled(is_on);
+    const auto status = LinuxConnectivity::getWifiStatus();
+    WiFiUserDisabled = !status.enabled;
+    WiFiConnected = status.connected;
+    WiFiEcoMode = false;
+    Config.wifiEnabled = status.enabled;
+    Config.writeFile();
+    update_wifi_screen_status();
+    if (!ok && wifi_status_label) {
+        lv_label_set_text(wifi_status_label, "NetworkManager error");
+        lv_obj_set_style_text_color(wifi_status_label, lv_color_hex(0xff6b6b), 0);
+    }
+    UIDashboard::updateWiFi(WiFiConnected, status.rssi);
+    ESP_LOGI(TAG, "Linux WiFi: enabled=%d connected=%d ip=%s",
+             status.enabled, status.connected, status.ip.c_str());
+    return;
+#endif
+
     if (is_on) {
         ESP_LOGI(TAG, "WiFi: User enabled");
 
@@ -1099,6 +1128,52 @@ static void wifi_switch_changed(lv_event_t *e) {
 
 static void update_wifi_screen_status() {
     if (!screen_wifi) return;
+
+#if !defined(ARDUINO)
+    const auto status = LinuxConnectivity::getWifiStatus();
+    WiFiUserDisabled = !status.enabled;
+    WiFiConnected = status.connected;
+    WiFiEcoMode = false;
+
+    if (wifi_switch) {
+        if (status.enabled) lv_obj_add_state(wifi_switch, LV_STATE_CHECKED);
+        else lv_obj_clear_state(wifi_switch, LV_STATE_CHECKED);
+    }
+    if (wifi_status_label) {
+        if (!status.enabled) {
+            lv_label_set_text(wifi_status_label, "OFF");
+            lv_obj_set_style_text_color(wifi_status_label, lv_color_hex(0xff6b6b), 0);
+        } else if (status.connected) {
+            lv_label_set_text(wifi_status_label, "Connected");
+            lv_obj_set_style_text_color(wifi_status_label, lv_color_hex(UIColors::TEXT_GREEN), 0);
+        } else {
+            lv_label_set_text(wifi_status_label, "Disconnected");
+            lv_obj_set_style_text_color(wifi_status_label, lv_color_hex(0xffa500), 0);
+        }
+    }
+    if (wifi_ip_row) {
+        if (status.connected) {
+            lv_obj_clear_flag(wifi_ip_row, LV_OBJ_FLAG_HIDDEN);
+            if (wifi_ip_label) lv_label_set_text(wifi_ip_label, status.ip.c_str());
+        } else {
+            lv_obj_add_flag(wifi_ip_row, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (wifi_rssi_row) {
+        if (status.connected) {
+            lv_obj_clear_flag(wifi_rssi_row, LV_OBJ_FLAG_HIDDEN);
+            if (wifi_rssi_label) {
+                char rssi[16];
+                snprintf(rssi, sizeof(rssi), "%d dBm", status.rssi);
+                lv_label_set_text(wifi_rssi_label, rssi);
+            }
+        } else {
+            lv_obj_add_flag(wifi_rssi_row, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    UIDashboard::updateWiFi(status.connected, status.rssi);
+    return;
+#endif
 
     if (wifi_switch) {
         if (WiFiUserDisabled) {
@@ -1167,6 +1242,7 @@ static void repeater_switch_changed(lv_event_t *e) {
 void UISettings::createRepeaterScreen() {
     screen_repeater = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_repeater, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_repeater, LV_OPA_COVER, 0);
 
     // Title bar
     lv_obj_t *title_bar = lv_obj_create(screen_repeater);
@@ -1251,6 +1327,7 @@ void UISettings::createRepeaterScreen() {
 void UISettings::createWifiScreen() {
     screen_wifi = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_wifi, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_wifi, LV_OPA_COVER, 0);
 
     // Title bar (cyan)
     lv_obj_t *title_bar = lv_obj_create(screen_wifi);
@@ -1385,7 +1462,7 @@ void UISettings::createWifiScreen() {
     update_wifi_screen_status();
 
     // Start update timer
-    wifi_update_timer = lv_timer_create(wifi_screen_timer_cb, 1000, NULL);
+    wifi_update_timer = lv_timer_create(wifi_screen_timer_cb, 2000, NULL);
 
     ESP_LOGD(TAG, "WiFi settings screen created");
 }
@@ -1396,6 +1473,42 @@ void UISettings::createWifiScreen() {
 
 static void update_bluetooth_screen_status() {
     if (!screen_bluetooth) return;
+
+#if !defined(ARDUINO)
+    const auto status = LinuxConnectivity::getBluetoothStatus();
+    bluetoothActive = status.powered;
+    bluetoothConnected = status.connected;
+    if (bluetooth_switch) {
+        if (status.powered) lv_obj_add_state(bluetooth_switch, LV_STATE_CHECKED);
+        else lv_obj_clear_state(bluetooth_switch, LV_STATE_CHECKED);
+    }
+    if (bluetooth_status_label) {
+        if (!status.powered) {
+            lv_label_set_text(bluetooth_status_label, "OFF");
+            lv_obj_set_style_text_color(bluetooth_status_label, lv_color_hex(0xff6b6b), 0);
+        } else if (status.connected) {
+            lv_label_set_text(bluetooth_status_label, "Connected");
+            lv_obj_set_style_text_color(bluetooth_status_label, lv_color_hex(UIColors::TEXT_GREEN), 0);
+        } else {
+            lv_label_set_text(bluetooth_status_label, "ON (waiting)");
+            lv_obj_set_style_text_color(bluetooth_status_label, lv_color_hex(0xffa500), 0);
+        }
+    }
+    if (bluetooth_device_row) {
+        if (status.connected) {
+            lv_obj_clear_flag(bluetooth_device_row, LV_OBJ_FLAG_HIDDEN);
+            if (bluetooth_device_label) {
+                const std::string &text = status.deviceName.empty()
+                                              ? status.deviceAddress : status.deviceName;
+                lv_label_set_text(bluetooth_device_label, text.c_str());
+            }
+        } else {
+            lv_obj_add_flag(bluetooth_device_row, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    UIDashboard::updateBluetooth();
+    return;
+#endif
 
     if (bluetooth_switch) {
         if (bluetoothActive) {
@@ -1487,6 +1600,33 @@ static void bluetooth_switch_changed(lv_event_t *e) {
     lv_obj_t *sw = (lv_obj_t*)lv_event_get_target(e);
     bool is_on = lv_obj_has_state(sw, LV_STATE_CHECKED);
 
+#if !defined(ARDUINO)
+    if (!is_on) {
+        BluetoothClassic::stop();
+        BluetoothBLE::stop();
+    }
+    bool ok = LinuxConnectivity::setBluetoothEnabled(is_on);
+    if (is_on) {
+        if (Config.bluetooth.useBLE)
+            ok = BluetoothBLE::start(Config.bluetooth.deviceName.c_str(), Config.bluetooth.useKISS) && ok;
+        else
+            ok = BluetoothClassic::start(Config.bluetooth.deviceName.c_str(), Config.bluetooth.useKISS) && ok;
+    }
+    const auto status = LinuxConnectivity::getBluetoothStatus();
+    bluetoothActive = status.powered;
+    bluetoothConnected = status.connected;
+    Config.bluetooth.active = status.powered;
+    Config.writeFile();
+    update_bluetooth_screen_status();
+    if (!ok && bluetooth_status_label) {
+        lv_label_set_text(bluetooth_status_label, "BlueZ error");
+        lv_obj_set_style_text_color(bluetooth_status_label, lv_color_hex(0xff6b6b), 0);
+    }
+    ESP_LOGI(TAG, "Linux Bluetooth: powered=%d connected=%d",
+             status.powered, status.connected);
+    return;
+#endif
+
     if (is_on) {
         ESP_LOGI(TAG, "Bluetooth: Scheduling ON");
         bluetoothActive = true;
@@ -1513,6 +1653,7 @@ static void bluetooth_switch_changed(lv_event_t *e) {
 void UISettings::createBluetoothScreen() {
     screen_bluetooth = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_bluetooth, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_bluetooth, LV_OPA_COVER, 0);
 
     // Title bar (purple)
     lv_obj_t *title_bar = lv_obj_create(screen_bluetooth);
@@ -1656,7 +1797,7 @@ void UISettings::createBluetoothScreen() {
     }
 
     // Start update timer
-    bluetooth_update_timer = lv_timer_create(bluetooth_screen_timer_cb, 1000, NULL);
+    bluetooth_update_timer = lv_timer_create(bluetooth_screen_timer_cb, 2000, NULL);
 
     ESP_LOGD(TAG, "Bluetooth settings screen created");
 }
@@ -1702,6 +1843,7 @@ static void webconf_close_cb(lv_event_t *e) {
 void UISettings::openWebConf() {
     screen_webconf = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_webconf, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_webconf, LV_OPA_COVER, 0);
 
     lv_obj_t *title_bar = lv_obj_create(screen_webconf);
     lv_obj_set_size(title_bar, UI_SCREEN_WIDTH, 35);
@@ -1777,6 +1919,7 @@ void UISettings::showBootWebConfig() {
     // Create web-conf screen
     screen_webconf = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_webconf, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_webconf, LV_OPA_COVER, 0);
 
     // Title bar (orange)
     lv_obj_t *title_bar = lv_obj_create(screen_webconf);
@@ -1897,6 +2040,7 @@ void UISettings::showBootWebConfig() {
 void UISettings::createAboutScreen() {
     screen_about = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_about, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_about, LV_OPA_COVER, 0);
 
     // Title bar
     lv_obj_t *title_bar = lv_obj_create(screen_about);

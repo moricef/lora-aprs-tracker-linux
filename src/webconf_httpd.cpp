@@ -121,8 +121,12 @@ static void applyAndSave(const std::map<std::string,std::string>& f) {
     Config.wifiAPs[1].password       = str("wifi.AP.1.password",       Config.wifiAPs[1].password.c_str());
 
     Config.bluetooth.active          = has("bluetooth.active");
-    Config.bluetooth.useBLE          = has("bluetooth.useBLE");
-    Config.bluetooth.useKISS         = has("bluetooth.useKISS");
+    Config.bluetooth.useBLE          = f.count("bluetooth.transport")
+                                          ? str("bluetooth.transport") == "ble"
+                                          : has("bluetooth.useBLE");
+    Config.bluetooth.useKISS         = f.count("bluetooth.protocol")
+                                          ? str("bluetooth.protocol") == "kiss"
+                                          : has("bluetooth.useKISS");
     Config.bluetooth.deviceName      = str("bluetooth.deviceName",     Config.bluetooth.deviceName.c_str());
 
     Config.lora.repeaterMode         = has("loraConfig.repeaterMode");

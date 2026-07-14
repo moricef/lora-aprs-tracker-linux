@@ -20,6 +20,9 @@
 #include "msg_utils.h"
 #include "aprs_is_utils.h"
 #include "linux_stubs.h"
+#include "linux_connectivity.h"
+#include "bluetooth_classic.h"
+#include "bluetooth_ble.h"
 #include "FreeRTOS.h"
 #include "map_state.h"
 #include "webconf_httpd.h"
@@ -283,6 +286,13 @@ static void setup() {
 
     GPS_Utils::setup();
     LoRa_Utils::setup();
+    if (Config.bluetooth.active) {
+        LinuxConnectivity::setBluetoothEnabled(true);
+        if (Config.bluetooth.useBLE)
+            BluetoothBLE::start(Config.bluetooth.deviceName.c_str(), Config.bluetooth.useKISS);
+        else
+            BluetoothClassic::start(Config.bluetooth.deviceName.c_str(), Config.bluetooth.useKISS);
+    }
     APRS_IS_Utils::setup();
     WEBCONF::start(8080);
     NOTIFICATION_Utils::start();
@@ -334,7 +344,17 @@ static void setup() {
             lv_indev_set_display(touch, disp);
             lv_evdev_set_calibration(touch, 0, 0, 1023, 599);
         }
+        // Seed the dashboard from Linux instead of the ESP compatibility
+        // globals, which all start false regardless of the real radios.
+        const auto wifiStatus = LinuxConnectivity::getWifiStatus();
+        const auto bluetoothStatus = LinuxConnectivity::getBluetoothStatus();
+        WiFiConnected = wifiStatus.connected;
+        WiFiUserDisabled = !wifiStatus.enabled;
+        bluetoothActive = bluetoothStatus.powered;
+        bluetoothConnected = bluetoothStatus.connected;
         UIDashboard::createDashboard();
+        UIDashboard::updateWiFi(WiFiConnected, wifiStatus.rssi);
+        UIDashboard::updateBluetooth();
         lv_obj_t *splash = nullptr;
 #ifdef WITH_MAPLIBRE
         // Do not seed the persistent transparent GL texture with an opaque
@@ -401,6 +421,10 @@ static void setup() {
 static void loop() {
     if (reloadConfig) {
         reloadConfig = false;
+        const bool oldBtActive = Config.bluetooth.active;
+        const bool oldUseBle = Config.bluetooth.useBLE;
+        const bool oldUseKiss = Config.bluetooth.useKISS;
+        const std::string oldBtName = Config.bluetooth.deviceName.c_str();
         Config.reload();
         myBeaconsSize   = (int)Config.beacons.size();
         loraIndexSize   = (int)Config.loraTypes.size();
@@ -408,6 +432,18 @@ static void loop() {
         currentLoRaType = &Config.loraTypes[loraIndex];
         miceActive = APRSPacketLib::validateMicE(currentBeacon->micE);
         LoRa_Utils::processPendingChanges();
+        if (oldBtActive != Config.bluetooth.active || oldUseBle != Config.bluetooth.useBLE ||
+            oldUseKiss != Config.bluetooth.useKISS || oldBtName != Config.bluetooth.deviceName.c_str()) {
+            BluetoothClassic::stop();
+            BluetoothBLE::stop();
+            LinuxConnectivity::setBluetoothEnabled(Config.bluetooth.active);
+            if (Config.bluetooth.active) {
+                if (Config.bluetooth.useBLE)
+                    BluetoothBLE::start(Config.bluetooth.deviceName.c_str(), Config.bluetooth.useKISS);
+                else
+                    BluetoothClassic::start(Config.bluetooth.deviceName.c_str(), Config.bluetooth.useKISS);
+            }
+        }
         ESP_LOGI(TAG, "Config reloaded: %s  %.3f MHz",
                  currentBeacon->callsign.c_str(),
                  (float)currentLoRaType->frequency / 1000000.0f);
@@ -485,6 +521,8 @@ static void loop() {
         // Forward raw frame to stdout for dashboard pipe
         printf("RX RSSI:%d SNR:%.1f %s\n", packet.rssi, packet.snr, rawFrame.c_str());
         fflush(stdout);
+        if (Config.bluetooth.useBLE) BluetoothBLE::sendToClient(rawFrame.c_str());
+        else BluetoothClassic::sendToClient(rawFrame.c_str());
 
 #ifdef USE_LVGL_UI
         {
@@ -632,6 +670,8 @@ int main(int argc, char** argv) {
     while (running) loop();
 
     NOTIFICATION_Utils::shutDownBeep();
+    BluetoothClassic::stop();
+    BluetoothBLE::stop();
     LoRa_Utils::sleepRadio();
     APRS_IS_Utils::disconnect();
     WEBCONF::stop();

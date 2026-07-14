@@ -21,6 +21,10 @@ lv_display_t *init(const char *stylePath, double lat, double lon, double zoom);
 // True once init() has succeeded and the MapLibre path is driving the display.
 bool isActive();
 
+// True after MapLibre has produced its first complete map frame. Used to keep
+// the first map opening covered while tiles/glyph atlases are initialized.
+bool isReady();
+
 // Capture the next composed frame to a PNG file (via SIGUSR2 from the loop).
 void requestScreenshot(const char *path);
 

@@ -217,8 +217,8 @@ function loadSettings(settings) {
     // BLUETOOTH
     document.getElementById("bluetooth.active").checked                 = settings.bluetooth.active;
     document.getElementById("bluetooth.deviceName").value               = settings.bluetooth.deviceName;
-    document.getElementById("bluetooth.useBLE").checked                 = settings.bluetooth.useBLE;
-    document.getElementById("bluetooth.useKISS").checked                = settings.bluetooth.useKISS;
+    document.getElementById("bluetooth.transport").value                = settings.bluetooth.useBLE ? "ble" : "classic";
+    document.getElementById("bluetooth.protocol").value                 = settings.bluetooth.useKISS ? "kiss" : "tnc2";
     // Hide BLE/BT Classic option if board doesn't support BT Classic
     if (!settings.bluetooth.hasBTClassic) {
         document.getElementById("btClassicOption").style.display = "none";
@@ -434,8 +434,8 @@ document.getElementById('reboot').addEventListener('click', function (e) {
 // Bluetooth Switches
 const BluetoothActiveCheckbox   = document.querySelector('input[name="bluetooth.active"]');
 const BluetoothDeviceName       = document.querySelector('input[name="bluetooth.deviceName"]');
-const BluetoothUseBle           = document.querySelector('input[name="bluetooth.useBLE"]');
-const BluetoothUseKiss          = document.querySelector('input[name="bluetooth.useKISS"]');
+const BluetoothUseBle           = document.querySelector('[name="bluetooth.transport"]');
+const BluetoothUseKiss          = document.querySelector('[name="bluetooth.protocol"]');
 BluetoothActiveCheckbox.addEventListener("change", function () {
     BluetoothDeviceName.disabled    = !this.checked;
     BluetoothUseBle.disabled        = !this.checked;

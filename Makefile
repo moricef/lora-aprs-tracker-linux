@@ -32,10 +32,12 @@ INC += -Ilib/PMTiles/cpp -Ilib/vtzero/include -Ilib/protozero/include
 INC += -I$(RADIO) -I$(RADIO)/modules/SX126x
 INC += -I$(RADIO)/utils -I$(RADIO)/protocols/PhysicalLayer
 INC += -I/usr/include/libdrm
+INC += $(shell pkg-config --cflags gio-2.0)
 
 # ---- Sources headless (toujours compilés) -----------------------------------
 SRCS  = src/main.cpp
-SRCS += src/arduino_compat.cpp src/linux_hal.cpp src/lora_utils.cpp
+SRCS += src/arduino_compat.cpp src/linux_hal.cpp src/linux_connectivity.cpp
+SRCS += src/bluetooth_classic.cpp src/bluetooth_ble.cpp src/kiss_utils.cpp src/lora_utils.cpp
 SRCS += src/gps_utils.cpp src/configuration.cpp src/smartbeacon_utils.cpp
 SRCS += src/station_utils.cpp src/storage_utils.cpp src/msg_utils.cpp
 SRCS += src/aprs_is_utils.cpp src/webconf_httpd.cpp src/notification_utils.cpp
@@ -50,7 +52,7 @@ SRCS += $(RADIO)/utils/Utils.cpp $(RADIO)/utils/CRC.cpp
 SRCS += $(RADIO)/utils/FEC.cpp $(RADIO)/utils/Cryptography.cpp
 
 TARGET  = lora_aprs_tracker
-LDFLAGS = -lpthread -lgps -lm -lmicrohttpd -ldrm
+LDFLAGS = -lpthread -lgps -lm -lmicrohttpd -ldrm -lbluetooth $(shell pkg-config --libs gio-2.0)
 
 # WITH_MAPLIBRE (opt-in GPU display path) needs the LVGL UI too.
 ifdef WITH_MAPLIBRE

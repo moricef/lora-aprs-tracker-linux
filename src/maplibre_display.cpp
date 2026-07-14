@@ -1,6 +1,8 @@
 #include "maplibre_display.h"
 #ifdef WITH_MAPLIBRE
 
+#include "map_state.h"
+
 #include "src/drivers/opengles/lv_opengles_driver.h"
 #include "src/drivers/opengles/lv_opengles_texture.h"
 #include "src/drivers/opengles/glad/include/glad/gles2.h"
@@ -188,6 +190,11 @@ private:
 };
 
 struct Observer : public mbgl::MapObserver {
+    std::atomic<bool> ready{false};
+    void onWillStartLoadingMap() override { ready = false; }
+    void onDidFinishRenderingMap(RenderMode mode) override {
+        if (mode == RenderMode::Full) ready = true;
+    }
     void onDidFailLoadingMap(mbgl::MapLoadError, const std::string &m) override {
         fprintf(stderr, "[maplibre] map load fail: %s\n", m.c_str());
     }
@@ -287,6 +294,7 @@ lv_display_t *init(const char *stylePath, double lat, double lon, double zoom) {
 }
 
 bool isActive() { return S != nullptr; }
+bool isReady() { return S && S->observer.ready.load(); }
 
 void requestScreenshot(const char *path) {
     if (S && path) S->shotPath = path;
@@ -323,10 +331,13 @@ bool project(double lat, double lon, int *x, int *y) {
 
 void renderTick() {
     if (!S) return;
-    // Ask MapLibre to generate a render update for whichever GBM buffer EGL
-    // selected for this frame.  Calling RendererFrontend::render() alone can
-    // reuse the previous update and leave the alternate scanout buffer stale.
-    S->map->triggerRepaint();
+    const bool mapVisible = MapState::screen_map &&
+        lv_display_get_screen_active(S->overlay) == MapState::screen_map;
+
+    // Keep MapLibre's run loop alive while another UI page is displayed so
+    // style/tile requests can complete in the background.  Only request and
+    // compose a map frame when the MAP screen is actually active.
+    if (mapVisible) S->map->triggerRepaint();
     S->runLoop->runOnce();
 
     // lv_timer_handler() in the main loop flushes the LVGL overlay and leaves
@@ -336,12 +347,20 @@ void renderTick() {
     glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 0);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 
-    // 1. MapLibre into the current GBM back buffer.  EGL alternates scanout
-    // buffers; rendering only on MapLibre's dirty notification leaves the
-    // other buffer with an older screen, producing dashboard/map flicker and
-    // apparently ignored camera commands.
-    S->dirty.exchange(false);
-    S->frontend->render();
+    // 1. EGL alternates scanout buffers. Render the map into every MAP frame;
+    // on all other pages erase the GPU base explicitly. Depending on LVGL
+    // alpha alone allowed the map to flash through Settings during redraws.
+    if (mapVisible) {
+        S->dirty.exchange(false);
+        S->frontend->render();
+    } else {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, S->W, S->H);
+        glDisable(GL_SCISSOR_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glClearColor(0x1a / 255.0f, 0x1a / 255.0f, 0x2e / 255.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
 
     // 2. Redraw the complete LVGL overlay on a cleared ARGB buffer.  Clearing
     //    is essential: deleting an opaque widget (notably the splash screen)

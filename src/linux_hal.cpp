@@ -5,16 +5,50 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+#include <glob.h>
 #include <sys/ioctl.h>
 #include <linux/spi/spidev.h>
 
 // ---- GPIO helpers ----
 
+static uint32_t gpioSysfsPin(uint32_t pin) {
+#if defined(BOARD_RPI4)
+    static uint32_t bcmBase = UINT32_MAX;
+    if (bcmBase == UINT32_MAX) {
+        bcmBase = 0;
+        glob_t matches{};
+        if (glob("/sys/class/gpio/gpiochip*", 0, nullptr, &matches) == 0) {
+            for (size_t i = 0; i < matches.gl_pathc; ++i) {
+                char path[256], label[64] = {0};
+                snprintf(path, sizeof(path), "%s/label", matches.gl_pathv[i]);
+                FILE *f = fopen(path, "r");
+                if (!f) continue;
+                (void)fgets(label, sizeof(label), f);
+                fclose(f);
+                if (strncmp(label, "pinctrl-bcm2711", 15) != 0) continue;
+                snprintf(path, sizeof(path), "%s/base", matches.gl_pathv[i]);
+                f = fopen(path, "r");
+                if (f) {
+                    unsigned int base = 0;
+                    if (fscanf(f, "%u", &base) == 1) bcmBase = base;
+                    fclose(f);
+                }
+                break;
+            }
+        }
+        globfree(&matches);
+    }
+    return bcmBase + pin;
+#else
+    return pin;
+#endif
+}
+
 void LinuxHal::gpioExport(uint32_t pin) {
     char buf[16];
     int fd = ::open("/sys/class/gpio/export", O_WRONLY);
     if (fd < 0) return;
-    int n = snprintf(buf, sizeof(buf), "%u", pin);
+    int n = snprintf(buf, sizeof(buf), "%u", gpioSysfsPin(pin));
     (void)!write(fd, buf, n);
     ::close(fd);
     usleep(100000);
@@ -22,7 +56,7 @@ void LinuxHal::gpioExport(uint32_t pin) {
 
 static void gpioSetDir(uint32_t pin, const char *dir) {
     char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/direction", pin);
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/direction", gpioSysfsPin(pin));
     int fd = ::open(path, O_WRONLY);
     if (fd < 0) return;
     (void)!write(fd, dir, strlen(dir));
@@ -31,7 +65,7 @@ static void gpioSetDir(uint32_t pin, const char *dir) {
 
 static void gpioWrite(uint32_t pin, int val) {
     char path[64]; char c = val ? '1' : '0';
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/value", pin);
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/value", gpioSysfsPin(pin));
     int fd = ::open(path, O_WRONLY);
     if (fd < 0) return;
     (void)!write(fd, &c, 1);
@@ -40,7 +74,7 @@ static void gpioWrite(uint32_t pin, int val) {
 
 static int gpioRead(uint32_t pin) {
     char path[64], buf[2] = {0};
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/value", pin);
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/value", gpioSysfsPin(pin));
     int fd = ::open(path, O_RDONLY);
     if (fd < 0) return -1;
     (void)!read(fd, buf, 1);
@@ -50,7 +84,7 @@ static int gpioRead(uint32_t pin) {
 
 int LinuxHal::gpioGetFd(uint32_t pin) {
     char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/value", pin);
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/value", gpioSysfsPin(pin));
     return ::open(path, O_RDONLY);
 }
 
@@ -125,7 +159,7 @@ void LinuxHal::attachInterrupt(uint32_t interruptNum, void (*interruptCb)(void),
 
     // Configure edge detection
     char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/edge", interruptNum);
+    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/edge", gpioSysfsPin(interruptNum));
     int fd = ::open(path, O_WRONLY);
     if (fd >= 0) {
         (void)!write(fd, "rising", 6);

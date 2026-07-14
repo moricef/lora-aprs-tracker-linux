@@ -7,14 +7,24 @@
 #include "configuration.h"
 #include "storage_utils.h"
 #include "notification_utils.h"
+#include "bluetooth_classic.h"
+#include "bluetooth_ble.h"
 
 static const char* TAG = "LoRa";
 
-// Odroid C2 — HT-RA62 pins on gpiochip
+#if defined(BOARD_RPI4)
+#define PIN_CS   8
+#define PIN_DIO1 23
+#define PIN_RST  25
+#define PIN_BUSY 24
+#elif defined(BOARD_ODROID_C2)
 #define PIN_CS   622
 #define PIN_DIO1 605
 #define PIN_RST  609
 #define PIN_BUSY 610
+#else
+#error "Select a supported board in the Makefile"
+#endif
 
 extern Configuration Config;
 extern LoraType*     currentLoRaType;
@@ -168,6 +178,8 @@ namespace LoRa_Utils {
         if (state == RADIOLIB_ERR_NONE) {
             STORAGE_Utils::updateTxStats();
             NOTIFICATION_Utils::beaconTxBeep();
+            if (Config.bluetooth.useBLE) BluetoothBLE::sendToClient(newPacket.c_str());
+            else BluetoothClassic::sendToClient(newPacket.c_str());
         } else {
             ESP_LOGE(TAG, "TX failed: %d", state);
         }

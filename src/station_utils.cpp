@@ -11,7 +11,7 @@
 #include "gpx_writer.h"
 #include "smartbeacon_utils.h"
 #include "linux_stubs.h"
-#ifndef ARDUINO
+#ifdef USE_LVGL_UI
 #include "ui_popups.h"
 #endif
 
@@ -119,6 +119,20 @@ namespace STATION_Utils {
 
     void addMapStation(const String& callsign, float lat, float lon, const String& symbol, const String& overlay, int rssi) {
         if (lat == 0.0f && lon == 0.0f) return;
+
+
+        // Our own beacon can come back through a digipeater or APRS-IS. It is
+        // already represented by the GNSS marker and own trace, so adding the
+        // echoed frame to mapStations[] creates a duplicate marker (visible when
+        // spiderfied), an incorrect station count and a second trace.
+        String stationCall = callsign;
+        stationCall.trim();
+        if (currentBeacon) {
+            String ownCall = currentBeacon->callsign;
+            ownCall.trim();
+            if (!ownCall.isEmpty() && stationCall == ownCall) return;
+        }
+
         for (int i = 0; i < MAP_STATIONS_MAX; i++) {
             if (mapStations[i].valid && mapStations[i].callsign == callsign) {
                 float dlat = fabsf(mapStations[i].latitude - lat);
@@ -284,7 +298,7 @@ namespace STATION_Utils {
 
         ESP_LOGI(TAG, "TX: %s", packet.c_str());
         printf("TX:%s\n", packet.c_str()); fflush(stdout);
-#ifndef ARDUINO
+#ifdef USE_LVGL_UI
         UIPopups::showTxPacket(packet.c_str());
 #endif
         LoRa_Utils::sendNewPacket(packet);

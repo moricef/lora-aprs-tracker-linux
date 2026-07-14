@@ -23,7 +23,9 @@
 #ifdef WITH_MAPLIBRE
 #include "maplibre_display.h"
 #endif
+#include <algorithm>
 #include <climits>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -53,10 +55,19 @@ static lv_obj_t *ibarMap = nullptr;
 static lv_obj_t *gpuScreen = nullptr;
 static lv_obj_t *gpuMapLayer = nullptr;
 static lv_obj_t *gpuTouch = nullptr;
+static lv_obj_t *gpuLoadingCover = nullptr;
 static lv_timer_t *gpuMarkerTimer = nullptr;
 static lv_obj_t *gpuMarkers[MAP_STATIONS_MAX + 1] = {};
 static lv_obj_t *gpuTraceLines[MAP_STATIONS_MAX + 1] = {};
 static lv_point_precise_t gpuTracePoints[MAP_STATIONS_MAX + 1][201] = {};
+static lv_obj_t *gpuSpiderLines[MAP_STATIONS_MAX + 1] = {};
+static lv_point_precise_t gpuSpiderPoints[MAP_STATIONS_MAX + 1][2] = {};
+static int gpuMarkerAnchorX[MAP_STATIONS_MAX + 1] = {};
+static int gpuMarkerAnchorY[MAP_STATIONS_MAX + 1] = {};
+static int gpuMarkerCluster[MAP_STATIONS_MAX + 1] = {};
+static int gpuMarkerClusterSize[MAP_STATIONS_MAX + 1] = {};
+static bool gpuMarkerVisible[MAP_STATIONS_MAX + 1] = {};
+static int gpuExpandedClusterSlot = -1;
 static bool gpuFollowGps = true;
 static bool gpuPanActive = false;
 static float gpuVelX = 0.0f, gpuVelY = 0.0f;
@@ -64,6 +75,7 @@ static uint32_t gpuLastInertiaMs = 0;
 static int gpuLongPressedStation = -2;
 static void refreshGpuMarkers();
 static void refreshGpuTraces();
+static void collapseGpuSpiderfy();
 static int gpuMapOriginY() { return fullscreenMap ? 0 : 45; }
 static void refreshGpuInfoBar() {
   if (!infoLabel) return;
@@ -75,6 +87,7 @@ static void refreshGpuInfoBar() {
   lv_label_set_text(infoLabel, text);
 }
 static void setGpuZoom(int delta) {
+  collapseGpuSpiderfy();
   gpuFollowGps = false;
   mapFollowGps = false;
   markFollowGpsDisabled();
@@ -149,6 +162,7 @@ void refreshStations() {
 #ifdef WITH_MAPLIBRE
 static void gpuMarkerClicked(lv_event_t *e) {
   int idx = (int)(intptr_t)lv_event_get_user_data(e);
+  const int slot = idx + 1;
   if (lv_event_get_code(e) == LV_EVENT_LONG_PRESSED) {
     gpuLongPressedStation = idx;
     if (idx >= 0) {
@@ -164,7 +178,47 @@ static void gpuMarkerClicked(lv_event_t *e) {
     gpuLongPressedStation = -2;
     return;
   }
+  if (slot >= 0 && slot <= MAP_STATIONS_MAX &&
+      gpuMarkerClusterSize[slot] > 1) {
+    const bool alreadyExpanded = gpuExpandedClusterSlot >= 0 &&
+        gpuMarkerCluster[gpuExpandedClusterSlot] == gpuMarkerCluster[slot];
+    if (!alreadyExpanded) {
+      gpuExpandedClusterSlot = slot;
+      MapMarkers::closeStationPopup();
+      refreshGpuMarkers();
+      return;
+    }
+  }
   MapMarkers::showStationPopup(idx);
+}
+
+static void collapseGpuSpiderfy() {
+  gpuExpandedClusterSlot = -1;
+  for (int slot = 0; slot <= MAP_STATIONS_MAX; ++slot) {
+    lv_obj_t *line = gpuSpiderLines[slot];
+    if (line && lv_obj_is_valid(line)) lv_obj_add_flag(line, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *marker = gpuMarkers[slot];
+    if (gpuMarkerVisible[slot] && marker && lv_obj_is_valid(marker))
+      lv_obj_set_pos(marker, gpuMarkerAnchorX[slot] - 46,
+                     gpuMarkerAnchorY[slot] - 12);
+  }
+}
+
+static lv_obj_t *ensureGpuSpiderLine(int slot) {
+  if (slot < 0 || slot > MAP_STATIONS_MAX || !gpuMapLayer) return nullptr;
+  lv_obj_t *line = gpuSpiderLines[slot];
+  if (!line || !lv_obj_is_valid(line)) {
+    line = lv_line_create(gpuMapLayer);
+    gpuSpiderLines[slot] = line;
+    lv_obj_set_style_line_width(line, 2, 0);
+    lv_obj_set_style_line_color(line, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_line_opa(line, LV_OPA_90, 0);
+    lv_obj_set_style_line_rounded(line, true, 0);
+    // gpuTouch is child 0.  Keep connector lines above it, but below all
+    // station markers so they remain readable and receive the click.
+    lv_obj_move_to_index(line, 1);
+  }
+  return line;
 }
 
 static lv_obj_t *ensureGpuMarker(int slot, int stationIdx) {
@@ -247,12 +301,122 @@ static void positionGpuMarker(int slot, int stationIdx, const char *callsign,
   else lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
   lv_label_set_text(callsignLabel, callsign);
   lv_obj_remove_flag(marker, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_set_pos(marker, x - 46, y - gpuMapOriginY() - 12);
+  gpuMarkerVisible[slot] = true;
+  gpuMarkerAnchorX[slot] = x;
+  gpuMarkerAnchorY[slot] = y - gpuMapOriginY();
+  lv_obj_set_pos(marker, gpuMarkerAnchorX[slot] - 46,
+                 gpuMarkerAnchorY[slot] - 12);
+}
+
+static int findGpuClusterRoot(int slot) {
+  while (gpuMarkerCluster[slot] != slot) {
+    gpuMarkerCluster[slot] = gpuMarkerCluster[gpuMarkerCluster[slot]];
+    slot = gpuMarkerCluster[slot];
+  }
+  return slot;
+}
+
+static void unionGpuClusters(int a, int b) {
+  a = findGpuClusterRoot(a);
+  b = findGpuClusterRoot(b);
+  if (a != b) gpuMarkerCluster[b] = a;
+}
+
+static void layoutGpuMarkerClusters() {
+  constexpr int overlapDistance = 48;
+  constexpr double pi = 3.14159265358979323846;
+
+  for (int slot = 0; slot <= MAP_STATIONS_MAX; ++slot) {
+    gpuMarkerCluster[slot] = slot;
+    gpuMarkerClusterSize[slot] = gpuMarkerVisible[slot] ? 1 : 0;
+    lv_obj_t *line = gpuSpiderLines[slot];
+    if (line && lv_obj_is_valid(line)) lv_obj_add_flag(line, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  // Connected components are intentional: A may overlap B and B overlap C
+  // even when A and C are just outside the threshold.  They must expand as
+  // one group or two markers would remain superposed.
+  for (int a = 0; a <= MAP_STATIONS_MAX; ++a) {
+    if (!gpuMarkerVisible[a]) continue;
+    for (int b = a + 1; b <= MAP_STATIONS_MAX; ++b) {
+      if (!gpuMarkerVisible[b]) continue;
+      const int dx = gpuMarkerAnchorX[a] - gpuMarkerAnchorX[b];
+      const int dy = gpuMarkerAnchorY[a] - gpuMarkerAnchorY[b];
+      if (dx * dx + dy * dy <= overlapDistance * overlapDistance)
+        unionGpuClusters(a, b);
+    }
+  }
+
+  int sizes[MAP_STATIONS_MAX + 1] = {};
+  for (int slot = 0; slot <= MAP_STATIONS_MAX; ++slot) {
+    if (!gpuMarkerVisible[slot]) continue;
+    gpuMarkerCluster[slot] = findGpuClusterRoot(slot);
+    ++sizes[gpuMarkerCluster[slot]];
+  }
+  for (int slot = 0; slot <= MAP_STATIONS_MAX; ++slot)
+    gpuMarkerClusterSize[slot] = gpuMarkerVisible[slot]
+                                     ? sizes[gpuMarkerCluster[slot]] : 0;
+
+  if (gpuExpandedClusterSlot < 0 ||
+      gpuExpandedClusterSlot > MAP_STATIONS_MAX ||
+      !gpuMarkerVisible[gpuExpandedClusterSlot] ||
+      gpuMarkerClusterSize[gpuExpandedClusterSlot] < 2) {
+    gpuExpandedClusterSlot = -1;
+    return;
+  }
+
+  const int root = gpuMarkerCluster[gpuExpandedClusterSlot];
+  const int count = sizes[root];
+  int centerX = 0, centerY = 0;
+  for (int slot = 0; slot <= MAP_STATIONS_MAX; ++slot) {
+    if (gpuMarkerVisible[slot] && gpuMarkerCluster[slot] == root) {
+      centerX += gpuMarkerAnchorX[slot];
+      centerY += gpuMarkerAnchorY[slot];
+    }
+  }
+  centerX /= count;
+  centerY /= count;
+
+  const int layerW = lv_obj_get_width(gpuMapLayer);
+  const int layerH = lv_obj_get_height(gpuMapLayer);
+  int member = 0;
+  for (int slot = 0; slot <= MAP_STATIONS_MAX; ++slot) {
+    if (!gpuMarkerVisible[slot] || gpuMarkerCluster[slot] != root) continue;
+
+    // Eight stations per ring keeps adjacent symbols separated. Very dense
+    // groups grow outwards ring by ring instead of piling the overflow onto
+    // the same angles.
+    const int ring = member / 8;
+    const int ringStart = ring * 8;
+    const int ringCount = std::min(8, count - ringStart);
+    const int ringIndex = member - ringStart;
+    const double angle = -pi / 2.0 + (2.0 * pi * ringIndex) / ringCount;
+    const int radius = 42 + ring * 34;
+    int displayX = centerX + (int)std::lround(std::cos(angle) * radius);
+    int displayY = centerY + (int)std::lround(std::sin(angle) * radius);
+    displayX = std::max(46, std::min(layerW - 46, displayX));
+    displayY = std::max(12, std::min(layerH - 32, displayY));
+
+    lv_obj_set_pos(gpuMarkers[slot], displayX - 46, displayY - 12);
+    gpuSpiderPoints[slot][0] = {
+        (lv_value_precise_t)gpuMarkerAnchorX[slot],
+        (lv_value_precise_t)gpuMarkerAnchorY[slot]};
+    gpuSpiderPoints[slot][1] = {
+        (lv_value_precise_t)displayX, (lv_value_precise_t)displayY};
+    lv_obj_t *line = ensureGpuSpiderLine(slot);
+    if (line) {
+      lv_line_set_points(line, gpuSpiderPoints[slot], 2);
+      lv_obj_remove_flag(line, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_move_foreground(gpuMarkers[slot]);
+    ++member;
+  }
 }
 
 static void refreshGpuMarkers() {
   if (!gpuScreen || !lv_obj_is_valid(gpuScreen) || !MaplibreDisplay::isActive()) return;
   refreshGpuTraces();
+  memset(gpuMarkerVisible, 0, sizeof(gpuMarkerVisible));
   bool used[MAP_STATIONS_MAX + 1] = {};
   if (gpsLat != 0.0 || gpsLon != 0.0) {
     const char *own = (!Config.beacons.empty())
@@ -288,6 +452,7 @@ static void refreshGpuMarkers() {
     if (!used[i] && gpuMarkers[i] && lv_obj_is_valid(gpuMarkers[i]))
       lv_obj_add_flag(gpuMarkers[i], LV_OBJ_FLAG_HIDDEN);
   }
+  layoutGpuMarkerClusters();
   // Camera coordinates and station count can both change while this screen
   // stays open; keep the information bar synchronized with the GPU map.
   refreshGpuInfoBar();
@@ -374,6 +539,7 @@ static void gpuTouchCb(lv_event_t *e) {
   if (code == LV_EVENT_DOUBLE_CLICKED) {
     toggleFullscreen();
   } else if (code == LV_EVENT_PRESSED) {
+    collapseGpuSpiderfy();
     last = p;
     lastMs = millis();
     gpuPanActive = true;
@@ -406,6 +572,10 @@ static void gpuTouchCb(lv_event_t *e) {
 
 static void gpuTimerTick(lv_timer_t *) {
   static uint8_t refreshDivider = 0;
+  if (gpuLoadingCover && MaplibreDisplay::isReady()) {
+    lv_obj_del(gpuLoadingCover);
+    gpuLoadingCover = nullptr;
+  }
   if (!gpuPanActive && (gpuVelX != 0.0f || gpuVelY != 0.0f)) {
     uint32_t now = millis();
     uint32_t dt = now - gpuLastInertiaMs;
@@ -436,10 +606,14 @@ static void gpuScreenDeleted(lv_event_t *) {
   gpuScreen = nullptr;
   gpuMapLayer = nullptr;
   gpuTouch = nullptr;
+  gpuLoadingCover = nullptr;
   gpuPanActive = false;
   gpuVelX = gpuVelY = 0.0f;
   memset(gpuMarkers, 0, sizeof(gpuMarkers));
   memset(gpuTraceLines, 0, sizeof(gpuTraceLines));
+  memset(gpuSpiderLines, 0, sizeof(gpuSpiderLines));
+  memset(gpuMarkerVisible, 0, sizeof(gpuMarkerVisible));
+  gpuExpandedClusterSlot = -1;
   MapTraces::destroy();
 }
 
@@ -728,11 +902,32 @@ lv_obj_t *create(lv_obj_t *) {
     lv_obj_add_event_cb(gpuTouch, gpuTouchCb, LV_EVENT_RELEASED, nullptr);
     lv_obj_add_event_cb(gpuTouch, gpuTouchCb, LV_EVENT_DOUBLE_CLICKED, nullptr);
 
+    // The first MapLibre frame after a reboot builds tile buffers, glyph
+    // atlases and both KMS scanout buffers. Keep those intermediate frames
+    // hidden; otherwise they appear as a short flicker on first map entry.
+    if (!MaplibreDisplay::isReady()) {
+      gpuLoadingCover = lv_obj_create(gpuMapLayer);
+      lv_obj_set_size(gpuLoadingCover, LV_PCT(100), LV_PCT(100));
+      lv_obj_set_pos(gpuLoadingCover, 0, 0);
+      lv_obj_set_style_bg_color(gpuLoadingCover, lv_color_hex(0x1a1a2e), 0);
+      lv_obj_set_style_bg_opa(gpuLoadingCover, LV_OPA_COVER, 0);
+      lv_obj_set_style_border_width(gpuLoadingCover, 0, 0);
+      lv_obj_set_style_radius(gpuLoadingCover, 0, 0);
+      lv_obj_clear_flag(gpuLoadingCover, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_add_flag(gpuLoadingCover, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_t *loading = lv_label_create(gpuLoadingCover);
+      lv_label_set_text(loading, "Chargement de la carte...");
+      lv_obj_set_style_text_color(loading, lv_color_hex(0xaaaaaa), 0);
+      lv_obj_set_style_text_font(loading, &lv_font_montserrat_16, 0);
+      lv_obj_center(loading);
+    }
+
     char zg[16];
     snprintf(zg, sizeof(zg), "MAP (Z%d)", (int)(MaplibreDisplay::getZoom() + 0.5));
     lv_label_set_text(titleLabel, zg);
 
     refreshGpuMarkers();
+    if (gpuLoadingCover) lv_obj_move_foreground(gpuLoadingCover);
     if (!gpuMarkerTimer)
       gpuMarkerTimer = lv_timer_create(gpuTimerTick, 50, nullptr);
     mapActive = true;

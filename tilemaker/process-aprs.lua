@@ -147,14 +147,15 @@ function node_function()
 		local cap = Find("capital")
 		local capital = capitalLevel(cap)
 		local rank = calcRank(place, pop, capital)
-		-- Critères OSM-carto (project.mml + placenames.mss). FEATURES = OSM.
-		-- score OMT = (pop ou défaut city=100000/town=1000/autre=1) × (capital=4 ? 2),
-		-- écrit en attribut → départage de collision côté renderer (score, pas pop).
-		-- city : minzoom par score. town : tous dès z9. village/suburb z12,
-		-- hamlet/quarter z14. borough/locality/neighbourhood/islet/square/island/
-		-- isolated_dwelling/farm : non écrits (OSM ne les rend pas en placename).
+		-- Les agglomérations sont classées par population, indépendamment de leur
+		-- catégorie OSM city/town/village. La catégorie ne fournit qu'une valeur
+		-- de secours quand population=* manque. Le même score pilote le minzoom et
+		-- l'ordre de collision des labels.
+		-- Suburb reste à z12, hamlet/quarter à z14. Borough/locality/
+		-- neighbourhood/islet/square/island/isolated_dwelling/farm ne sont pas
+		-- écrits (OSM ne les rend pas en placename à ces zooms).
 		local base = (place=="city" and 100000) or (place=="town" and 1000) or 1
-		local score = (pop>0 and pop or base) * (cap=="4" and 2 or 1)
+		local score = pop>0 and pop or base
 		local mz = -1
 		if     place == "continent" then mz=0
 		elseif place == "country"   then
@@ -163,13 +164,15 @@ function node_function()
 			else                     rank=3; mz=3 end
 		elseif place == "state"     then mz=4
 		elseif place == "province"  then mz=5
-		elseif place == "city"      then
-			if     score >= 3000000 then mz=4
-			elseif score >= 400000  then mz=5
-			elseif score >= 70000   then mz=6
-			else                         mz=7 end
-		elseif place == "town"      then mz=9
-		elseif place == "village"   then mz=12
+		elseif place == "city" or place == "town" or place == "village" then
+			if     score >= 1000000 then mz=4
+			elseif score >= 500000  then mz=5
+			elseif score >= 100000  then mz=6
+			elseif score >= 50000   then mz=8
+			elseif score >= 15000   then mz=9
+			elseif score >= 5000    then mz=10
+			elseif score >= 750     then mz=11
+			else                         mz=12 end
 		elseif place == "suburb"    then mz=12
 		elseif place == "hamlet"    then mz=14
 		elseif place == "quarter"   then mz=14
