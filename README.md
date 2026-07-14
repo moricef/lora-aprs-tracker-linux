@@ -118,6 +118,7 @@ buzzer GPIO, hardware keyboards / touch panels of handheld devices.
 
 ## License
 
-Provided as-is for amateur radio experimentation. See individual sources
-for upstream license attributions (RadioLib, LVGL, vtzero, PMTiles,
-nlohmann/json, tilemaker schemas).
+This project is licensed under the MIT License. See `LICENSE`.
+
+See individual sources for upstream license attributions (RadioLib, LVGL,
+vtzero, PMTiles, nlohmann/json, tilemaker schemas).
