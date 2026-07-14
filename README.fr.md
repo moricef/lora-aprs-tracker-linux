@@ -12,16 +12,17 @@ d'un firmware existant et l'adapte à un environnement Linux + LVGL sur
 - **LoRa SX1262** via RadioLib sous Linux (SPI via `spidev`, GPIO/IRQ via
   sysfs, voir `LinuxHal`). RX/TX, digipeating, encodage de trames MicE
   et Base91.
-- **Rendu carte vectorielle offline** : PMTiles + MVT décodés via
-  `vtzero`, dessinés directement dans un canvas ARGB8888 LVGL. 100 %
-  logiciel, aucun GPU requis. Labels avec rotation glyphe-par-glyphe
-  sur cours d'eau, et raréfaction progressive des labels lieux par
-  ladder population.
+- **Rendu carte vectorielle offline** : MapLibre Native sur le GPU V3D du
+  Raspberry Pi 4 via EGL/GBM/KMS, avec l'interface LVGL compositée en overlay.
+  Le renderer logiciel PMTiles/MVT reste disponible pour l'Odroid et comme
+  solution de repli.
 - **Overzoom vectoriel** : le pmtiles s'arrête à z14 ; le renderer
   redessine n'importe quelle sous-région jusqu'au z17 — net car la
   géométrie est rerasterisée, pas une image étirée.
 - **gpsd** pour position / vitesse / cap, et SmartBeacon complet.
 - **APRS-IS** uplink TCP.
+- **Bluetooth Classic SPP et BLE GATT**, configurables en TNC2 ou KISS.
+- **WebConf HTTP** sur le port 8080 pour modifier la configuration du tracker.
 - **Conversations et messagerie** (ACK, dedup, persistance dans
   `/data/LoRa_Tracker/`).
 - **UI LVGL 9** : dashboard, écran messagerie, écran réglages, écran
@@ -32,8 +33,8 @@ d'un firmware existant et l'adapte à un environnement Linux + LVGL sur
 
 | Carte | Notes |
 |---|---|
-| Raspberry Pi 4B (1 Go) | Cible principale. v3d / Vulkan disponibles mais non utilisés. |
-| Odroid C2 (2 Go) | Mali-450 non utilisé — renderer SW uniquement. Plus lent mais fonctionnel. |
+| Raspberry Pi 4B (1 Go) | Cible principale. MapLibre accéléré par V3D/GLES via EGL/GBM/KMS. |
+| Odroid C2 (2 Go) | Renderer PMTiles/MVT logiciel historique. |
 
 Radio LoRa : tout module SX1262 câblé en SPI + GPIO DIO1/RESET/BUSY. Testé
 avec un HT-RA62 (433 MHz).
@@ -41,13 +42,18 @@ avec un HT-RA62 (433 MHz).
 ## Compilation
 
 ```bash
-sudo apt install build-essential libgps-dev nlohmann-json3-dev \
-                 libdrm-dev libfreetype-dev libmicrohttpd-dev libpng-dev
-make WITH_DISPLAY=1 -j$(nproc)
+sudo apt install build-essential pkg-config git gpsd libgps-dev \
+  nlohmann-json3-dev libdrm-dev libfreetype-dev libmicrohttpd-dev \
+  libpng-dev zlib1g-dev libegl-dev libgles-dev libgbm-dev \
+  libcurl4-openssl-dev libjpeg-dev libwebp-dev libuv1-dev libicu-dev \
+  libsqlite3-dev libglib2.0-dev libbluetooth-dev bluez
+
+make WITH_MAPLIBRE=1 -j$(nproc)
 ```
 
-`WITH_DISPLAY=0` produit un tracker headless (LoRa + gpsd + APRS-IS, sans
-UI).
+`WITH_MAPLIBRE=1` attend les archives ARM64 de MapLibre Native sous
+`$MLBUILD` (`ML` et `MLBUILD` sont surchargeables dans la commande `make`).
+`WITH_DISPLAY=1` conserve le renderer logiciel sans MapLibre.
 
 ## Exécution
 
@@ -57,8 +63,9 @@ UI).
 
 Au premier lancement, `/data/LoRa_Tracker/tracker_conf.json` est créé.
 Éditer callsign / symbole beacon / chemins / profil radio dedans. Le
-backend display utilise DRM/KMS par défaut (fallback fbdev) ; le
-pointing device passe par evdev.
+Sur un build `WITH_MAPLIBRE=1`, MapLibre est le mode par défaut. La variable
+`TRACKER_NO_MAPLIBRE=1` force le renderer logiciel de secours. Le tactile
+passe par evdev.
 
 Le chemin du fichier pmtiles est lu depuis le fichier de config ; générer
 ce pmtiles avec `tilemaker` à partir des scripts fournis (voir plus bas).
@@ -103,6 +110,8 @@ src/map/
 ├── map_view.{h,cpp}       écran LVGL (titlebar, boutons, lifecycle)
 ├── map_vector.{h,cpp}     décodage PMTiles + MVT, rasterisation vecto
 └── map_coordinate_math.{h,cpp}  lat/lon ↔ tuile/pixel
+
+src/maplibre_display.{h,cpp}  backend MapLibre EGL/GBM/KMS du Raspberry Pi
 ```
 
 Le reste du projet (APRS, LoRa, gpsd, messagerie, configuration, stockage,
@@ -116,12 +125,13 @@ Fonctionnel de bout en bout sur Raspberry Pi 4B :
 - Position gpsd avec accès thread-safe
 - Uplink APRS-IS + reconnexion
 - Persistance stations, contacts, GPX
-- UI LVGL : dashboard, messagerie, réglages, carte (vecto + overzoom)
-- Carte : pan/zoom/inertie, marqueurs stations, popup info, enregistrement GPX
+- UI LVGL : dashboard, messagerie, réglages, carte MapLibre + overzoom
+- Carte : pan/zoom/inertie, traces APRS/GNSS, marqueurs et spiderfy, plein écran
+- Bluetooth Classic/BLE avec transport APRS TNC2 ou KISS
+- WebConf HTTP sur le port 8080
 
 Non porté (sans pertinence pour la cible Linux) :
-BLE, WiFi AP + WebConfig, monitoring batterie, deep sleep, GPIO buzzer
-natif, claviers / dalles tactiles d'appareils portatifs.
+monitoring batterie, deep sleep et claviers d'appareils portatifs.
 
 ## Licence
 
