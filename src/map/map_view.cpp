@@ -295,6 +295,17 @@ static lv_obj_t *ensureGpuMarker(int slot, int stationIdx) {
     lv_obj_set_style_text_font(callsignLabel,
                                cf ? cf : &lv_font_montserrat_12, 0);
     lv_obj_align(callsignLabel, LV_ALIGN_TOP_MID, 0, 34);
+
+    lv_obj_t *badge = lv_label_create(marker);                 // child 4
+    lv_obj_set_style_text_color(badge, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(badge, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_bg_color(badge, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_hor(badge, 4, 0);
+    lv_obj_set_style_pad_ver(badge, 1, 0);
+    lv_obj_align(badge, LV_ALIGN_TOP_MID, 24, 0);
+    lv_obj_add_flag(badge, LV_OBJ_FLAG_HIDDEN);
   }
   return marker;
 }
@@ -393,10 +404,31 @@ static void layoutGpuMarkerClusters() {
   if (gpuExpandedClusterSlot < 0 ||
       gpuExpandedClusterSlot > MAP_STATIONS_MAX ||
       !gpuMarkerVisible[gpuExpandedClusterSlot] ||
-      gpuMarkerClusterSize[gpuExpandedClusterSlot] < 2) {
+      gpuMarkerClusterSize[gpuExpandedClusterSlot] < 2)
     gpuExpandedClusterSlot = -1;
-    return;
+  const int expandedRoot = (gpuExpandedClusterSlot >= 0)
+                               ? gpuMarkerCluster[gpuExpandedClusterSlot] : -1;
+
+  // Collapsed stacks show a single marker carrying the member count; the
+  // superposed duplicates blurred both the overlay char and the callsign.
+  for (int slot = 0; slot <= MAP_STATIONS_MAX; ++slot) {
+    if (!gpuMarkerVisible[slot]) continue;
+    lv_obj_t *marker = gpuMarkers[slot];
+    if (!marker || !lv_obj_is_valid(marker)) continue;
+    lv_obj_t *badge = lv_obj_get_child(marker, 4);
+    const int slotRoot = gpuMarkerCluster[slot];
+    const bool stacked = gpuMarkerClusterSize[slot] >= 2 && slotRoot != expandedRoot;
+    if (stacked && slot != slotRoot) lv_obj_add_flag(marker, LV_OBJ_FLAG_HIDDEN);
+    if (badge) {
+      if (stacked && slot == slotRoot) {
+        lv_label_set_text_fmt(badge, "%d", gpuMarkerClusterSize[slot]);
+        lv_obj_remove_flag(badge, LV_OBJ_FLAG_HIDDEN);
+      } else {
+        lv_obj_add_flag(badge, LV_OBJ_FLAG_HIDDEN);
+      }
+    }
   }
+  if (gpuExpandedClusterSlot < 0) return;
 
   const int root = gpuMarkerCluster[gpuExpandedClusterSlot];
   const int count = sizes[root];
@@ -419,9 +451,37 @@ static void layoutGpuMarkerClusters() {
 
   const int layerW = lv_obj_get_width(gpuMapLayer);
   const int layerH = lv_obj_get_height(gpuMapLayer);
-  int member = 0;
+
+  // Members keep their geographic bearing on the ring: sorted by azimuth
+  // from the cluster centre, then spread evenly starting at the offset that
+  // best matches the true bearings, so a station south of the group expands
+  // to the southern side.
+  int members[MAP_STATIONS_MAX + 1];
+  double bearings[MAP_STATIONS_MAX + 1];
+  int n = 0;
   for (int slot = 0; slot <= MAP_STATIONS_MAX; ++slot) {
     if (!gpuMarkerVisible[slot] || gpuMarkerCluster[slot] != root) continue;
+    members[n] = slot;
+    bearings[n] = std::atan2((double)(gpuMarkerAnchorY[slot] - centerY),
+                             (double)(gpuMarkerAnchorX[slot] - centerX));
+    ++n;
+  }
+  for (int i = 1; i < n; ++i) {
+    int ms = members[i];
+    double bs = bearings[i];
+    int j = i;
+    while (j > 0 && bearings[j - 1] > bs) {
+      members[j] = members[j - 1];
+      bearings[j] = bearings[j - 1];
+      --j;
+    }
+    members[j] = ms;
+    bearings[j] = bs;
+  }
+
+  double ringOffset = -pi / 2.0;
+  for (int member = 0; member < n; ++member) {
+    const int slot = members[member];
 
     // Eight stations per ring keeps adjacent symbols separated. Very dense
     // groups grow outwards ring by ring instead of piling the overflow onto
@@ -430,8 +490,23 @@ static void layoutGpuMarkerClusters() {
     const int ringStart = ring * 8;
     const int ringCount = std::min(8, count - ringStart);
     const int ringIndex = member - ringStart;
-    const double angle = -pi / 2.0 + (2.0 * pi * ringIndex) / ringCount;
-    const int radius = 32 + ring * 28;
+    if (ringIndex == 0) {
+      double sx = 0.0, sy = 0.0;
+      for (int m = 0; m < ringCount; ++m) {
+        const double dev = bearings[ringStart + m] - (2.0 * pi * m) / ringCount;
+        sx += std::cos(dev);
+        sy += std::sin(dev);
+      }
+      if (sx != 0.0 || sy != 0.0) ringOffset = std::atan2(sy, sx);
+    }
+    const double angle = ringOffset + (2.0 * pi * ringIndex) / ringCount;
+    // Ring radius grows just enough for neighbouring callsign labels
+    // (~72 px wide) not to overlap, staying tight for small groups.
+    const double chordNeeded = 72.0;
+    const double fit = (ringCount >= 2)
+        ? chordNeeded / (2.0 * std::sin(pi / ringCount)) : 32.0;
+    const int radius =
+        (int)std::lround(std::min(72.0, std::max(32.0, fit))) + ring * 28;
     int displayX = centerX + (int)std::lround(std::cos(angle) * radius);
     int displayY = centerY + (int)std::lround(std::sin(angle) * radius);
     displayX = std::max(46, std::min(layerW - 46, displayX));
@@ -449,7 +524,6 @@ static void layoutGpuMarkerClusters() {
       lv_obj_remove_flag(line, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_move_foreground(gpuMarkers[slot]);
-    ++member;
   }
 }
 
