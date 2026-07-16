@@ -3,7 +3,13 @@
 #include "ui_common.h"
 #include "map_state.h"
 
+#include <deque>
+#include <mutex>
+
 namespace UIPopups {
+
+static std::mutex pending_mutex;
+static std::deque<std::string> pending_tx;
 
 static lv_obj_t *makePopup(lv_obj_t *parent,
                             int w, int h,
@@ -64,6 +70,21 @@ void showTxPacket(const std::string &packet) {
     lv_refr_now(NULL);
     tx_timer = lv_timer_create(hide_tx, 3000, nullptr);
     lv_timer_set_repeat_count(tx_timer, 1);
+}
+
+void queueTxPacket(const std::string &packet) {
+    std::lock_guard<std::mutex> lock(pending_mutex);
+    if (pending_tx.size() >= 16) pending_tx.pop_front();
+    pending_tx.push_back(packet);
+}
+
+void processPending() {
+    std::deque<std::string> tx;
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        tx.swap(pending_tx);
+    }
+    for (const auto &packet : tx) showTxPacket(packet);
 }
 
 // ── RX ───────────────────────────────────────────────────────────────────────

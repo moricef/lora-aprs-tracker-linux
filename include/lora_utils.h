@@ -55,7 +55,7 @@ namespace LoRa_Utils {
     DataRateConfig getDataRateConfig(int dataRate);
     int getNextDataRate(int currentDataRate);
     void setup();
-    void sendNewPacket(const String& newPacket);
+    void sendNewPacket(const String& newPacket, bool showTx = false);
     void wakeRadio();
     ReceivedLoRaPacket receiveFromSleep();
     ReceivedLoRaPacket receivePacket();

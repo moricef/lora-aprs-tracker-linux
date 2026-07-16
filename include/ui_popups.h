@@ -6,6 +6,8 @@ namespace UIPopups {
     void hideMapLoading();
     void closeAll();
     void showTxPacket(const std::string &packet);
+    void queueTxPacket(const std::string &packet);
+    void processPending();
     void showRxPacket(const std::string &packet);
     void showCapsLockPopup(bool en);
 }

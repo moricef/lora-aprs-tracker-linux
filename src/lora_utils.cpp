@@ -9,6 +9,9 @@
 #include "notification_utils.h"
 #include "bluetooth_classic.h"
 #include "bluetooth_ble.h"
+#ifdef USE_LVGL_UI
+#include "ui_popups.h"
+#endif
 
 static const char* TAG = "LoRa";
 
@@ -169,7 +172,7 @@ namespace LoRa_Utils {
                  freq, currentLoRaType->spreadingFactor, currentLoRaType->signalBandwidth/1000);
     }
 
-    void sendNewPacket(const String& newPacket) {
+    void sendNewPacket(const String& newPacket, bool showTx) {
         if (!loraInitOk) return;
         ESP_LOGI(TAG, "TX → %s", newPacket.c_str());
         std::string pkt = "\x3c\xff\x01" + std::string(newPacket.c_str());
@@ -178,6 +181,9 @@ namespace LoRa_Utils {
         if (state == RADIOLIB_ERR_NONE) {
             STORAGE_Utils::updateTxStats();
             NOTIFICATION_Utils::beaconTxBeep();
+#ifdef USE_LVGL_UI
+            if (showTx) UIPopups::queueTxPacket(newPacket.c_str());
+#endif
             if (Config.bluetooth.useBLE) BluetoothBLE::sendToClient(newPacket.c_str());
             else BluetoothClassic::sendToClient(newPacket.c_str());
         } else {

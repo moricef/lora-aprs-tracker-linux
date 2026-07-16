@@ -100,7 +100,7 @@ void processTnc2(std::string value) {
     while (!value.empty() && (value.front() == '\r' || value.front() == '\n')) value.erase(0, 1);
     if (value.empty()) return;
     ESP_LOGI("BLE", "RX TNC2: %s", value.c_str());
-    LoRa_Utils::sendNewPacket(String(value.c_str()));
+    LoRa_Utils::sendNewPacket(String(value.c_str()), true);
 }
 
 void processWrite(const uint8_t *data, size_t size) {
@@ -127,7 +127,7 @@ void processWrite(const uint8_t *data, size_t size) {
         String decoded = KISS_Utils::decodeKISS(frame, dataFrame);
         if (dataFrame && !decoded.isEmpty()) {
             ESP_LOGI("BLE", "RX KISS: %s", decoded.c_str());
-            LoRa_Utils::sendNewPacket(decoded);
+            LoRa_Utils::sendNewPacket(decoded, true);
         }
     }
 }

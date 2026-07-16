@@ -23,6 +23,7 @@
 #include "linux_connectivity.h"
 #include "bluetooth_classic.h"
 #include "bluetooth_ble.h"
+#include "bluetooth_agent.h"
 #include "FreeRTOS.h"
 #include "map_state.h"
 #include "webconf_httpd.h"
@@ -289,6 +290,7 @@ static void setup() {
     LoRa_Utils::setup();
     if (Config.bluetooth.active) {
         LinuxConnectivity::setBluetoothEnabled(true);
+        BluetoothAgent::start();
         if (Config.bluetooth.useBLE)
             BluetoothBLE::start(Config.bluetooth.deviceName.c_str(), Config.bluetooth.useKISS);
         else
@@ -437,8 +439,10 @@ static void loop() {
             oldUseKiss != Config.bluetooth.useKISS || oldBtName != Config.bluetooth.deviceName.c_str()) {
             BluetoothClassic::stop();
             BluetoothBLE::stop();
+            BluetoothAgent::stop();
             LinuxConnectivity::setBluetoothEnabled(Config.bluetooth.active);
             if (Config.bluetooth.active) {
+                BluetoothAgent::start();
                 if (Config.bluetooth.useBLE)
                     BluetoothBLE::start(Config.bluetooth.deviceName.c_str(), Config.bluetooth.useKISS);
                 else
@@ -629,6 +633,7 @@ static void loop() {
     STORAGE_Utils::checkStatsSave();
 
 #ifdef USE_LVGL_UI
+    UIPopups::processPending();
     static uint32_t lastBluetoothUiRefresh = 0;
     if (millis() - lastBluetoothUiRefresh >= 500) {
         UIDashboard::updateBluetooth();

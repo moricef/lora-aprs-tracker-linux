@@ -113,7 +113,7 @@ void processTnc2Line(std::string line) {
     while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
     if (line.empty()) return;
     ESP_LOGI("BT-SPP", "RX TNC2: %s", line.c_str());
-    LoRa_Utils::sendNewPacket(String(line.c_str()));
+    LoRa_Utils::sendNewPacket(String(line.c_str()), true);
 }
 
 void processKissBuffer(std::string &buffer) {
@@ -133,7 +133,7 @@ void processKissBuffer(std::string &buffer) {
         String decoded = KISS_Utils::decodeKISS(frame, dataFrame);
         if (dataFrame && !decoded.isEmpty()) {
             ESP_LOGI("BT-SPP", "RX KISS: %s", decoded.c_str());
-            LoRa_Utils::sendNewPacket(decoded);
+            LoRa_Utils::sendNewPacket(decoded, true);
         }
     }
 }

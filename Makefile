@@ -37,7 +37,7 @@ INC += $(shell pkg-config --cflags gio-2.0)
 # ---- Sources headless (toujours compilés) -----------------------------------
 SRCS  = src/main.cpp
 SRCS += src/arduino_compat.cpp src/linux_hal.cpp src/linux_connectivity.cpp
-SRCS += src/bluetooth_classic.cpp src/bluetooth_ble.cpp src/kiss_utils.cpp src/lora_utils.cpp
+SRCS += src/bluetooth_agent.cpp src/bluetooth_classic.cpp src/bluetooth_ble.cpp src/kiss_utils.cpp src/lora_utils.cpp
 SRCS += src/gps_utils.cpp src/configuration.cpp src/smartbeacon_utils.cpp
 SRCS += src/station_utils.cpp src/storage_utils.cpp src/msg_utils.cpp
 SRCS += src/aprs_is_utils.cpp src/webconf_httpd.cpp src/notification_utils.cpp

@@ -1,0 +1,17 @@
+[Unit]
+Description=LoRa APRS Tracker with LVGL display
+Wants=network-online.target gpsd.service bluetooth.service
+After=network-online.target gpsd.service bluetooth.service
+
+[Service]
+Type=simple
+User=adrasec09
+Group=adrasec09
+WorkingDirectory=/home/adrasec09/linux_tracker
+ExecStart=/home/adrasec09/linux_tracker/lora_aprs_tracker
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
