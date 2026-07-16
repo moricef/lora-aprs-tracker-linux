@@ -53,42 +53,43 @@ static void* gpsThread(void*) {
             ESP_LOGE(TAG, "gpsd connection lost");
             break;
         }
-        if (gpsData.fix.mode >= MODE_2D) {
-            pthread_mutex_lock(&_gpsMutex);
-            gpsFix.mode            = gpsData.fix.mode;
-            gpsFix.lat             = gpsData.fix.latitude;
-            gpsFix.lon             = gpsData.fix.longitude;
-            gpsFix.valid_location  = true;
-            if (!isnan(gpsData.fix.altitude)) {
-                gpsFix.alt             = gpsData.fix.altitude;
-                gpsFix.valid_altitude  = true;
-            }
-            if (!isnan(gpsData.fix.speed)) {
-                gpsFix.speed_kph      = gpsData.fix.speed * 3.6;
-                gpsFix.valid_speed    = true;
-            }
-            if (!isnan(gpsData.fix.track)) {
-                gpsFix.heading        = (float)gpsData.fix.track;
-                gpsFix.valid_heading  = true;
-            }
-            if (!isnan(gpsData.fix.epx) && !isnan(gpsData.fix.epy))
-                gpsFix.hdop = sqrt(gpsData.fix.epx*gpsData.fix.epx + gpsData.fix.epy*gpsData.fix.epy);
-            gpsFix.satellites = gpsData.satellites_used;
+        pthread_mutex_lock(&_gpsMutex);
 
-            _newFix = true;
-            pthread_mutex_unlock(&_gpsMutex);
-        } else {
-            pthread_mutex_lock(&_gpsMutex);
-            gpsFix.mode           = gpsData.fix.mode;
-            gpsFix.valid_location = false;
-            if (gpsData.satellites_used > 0)
-                gpsFix.satellites = gpsData.satellites_used;
-            pthread_mutex_unlock(&_gpsMutex);
+        if (gpsData.set & MODE_SET) {
+            gpsFix.mode = gpsData.fix.mode;
+            if (gpsData.fix.mode < MODE_2D) gpsFix.valid_location = false;
         }
 
-        // GPS time from satellite (available even without 2D fix)
-        if (gpsData.fix.time.tv_sec > 0) {
-            pthread_mutex_lock(&_gpsMutex);
+        if ((gpsData.set & LATLON_SET) && gpsData.fix.mode >= MODE_2D &&
+            isfinite(gpsData.fix.latitude) && isfinite(gpsData.fix.longitude)) {
+            gpsFix.lat = gpsData.fix.latitude;
+            gpsFix.lon = gpsData.fix.longitude;
+            gpsFix.valid_location = true;
+            _newFix = true;
+        }
+
+        if ((gpsData.set & ALTITUDE_SET) && isfinite(gpsData.fix.altMSL)) {
+            gpsFix.alt = gpsData.fix.altMSL;
+            gpsFix.valid_altitude = true;
+        }
+        if ((gpsData.set & SPEED_SET) && isfinite(gpsData.fix.speed)) {
+            gpsFix.speed_kph = gpsData.fix.speed * 3.6;
+            gpsFix.valid_speed = true;
+        }
+        if ((gpsData.set & TRACK_SET) && isfinite(gpsData.fix.track)) {
+            gpsFix.heading = (float)gpsData.fix.track;
+            gpsFix.valid_heading = true;
+        }
+        if (gpsData.set & DOP_SET) {
+            if (isfinite(gpsData.dop.hdop)) gpsFix.hdop = gpsData.dop.hdop;
+            if (isfinite(gpsData.dop.vdop)) gpsFix.vdop = gpsData.dop.vdop;
+            if (isfinite(gpsData.dop.pdop)) gpsFix.pdop = gpsData.dop.pdop;
+        }
+        if (gpsData.set & SATELLITE_SET)
+            gpsFix.satellites = gpsData.satellites_used;
+
+        // GPS time from satellite (available even without a 2D fix).
+        if ((gpsData.set & TIME_SET) && gpsData.fix.time.tv_sec > 0) {
             time_t gpsSec = (time_t)gpsData.fix.time.tv_sec;
             struct tm* t = gmtime(&gpsSec);
             gpsFix.hours   = t->tm_hour;
@@ -98,8 +99,8 @@ static void* gpsThread(void*) {
             gpsFix.month   = t->tm_mon + 1;
             gpsFix.year    = 1900 + t->tm_year;
             gpsFix.valid_time = gpsFix.valid_date = true;
-            pthread_mutex_unlock(&_gpsMutex);
         }
+        pthread_mutex_unlock(&_gpsMutex);
     }
     gps_stream(&gpsData, WATCH_DISABLE, nullptr);
     gps_close(&gpsData);
