@@ -31,6 +31,8 @@ void requestScreenshot(const char *path);
 // Move the MapLibre camera (called on GPS updates).
 void setCenter(double lat, double lon);
 void setZoom(double zoom);
+// Zoom to an absolute level while holding the given screen point fixed (pinch).
+void zoomAround(double zoom, double anchorX, double anchorY);
 double getZoom();
 void moveBy(double dx, double dy);
 bool getCenter(double *lat, double *lon);

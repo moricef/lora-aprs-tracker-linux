@@ -14,6 +14,7 @@
 #include "map/map_input.h"
 #include "map/map_labels.h"
 #include "map/map_traces.h"
+#include "map/map_pinch.h"
 #include "map_vector.h"
 #include "gps_utils.h"
 #include "station_utils.h"
@@ -74,6 +75,11 @@ static bool gpuStationsDirty = false;
 static float gpuVelX = 0.0f, gpuVelY = 0.0f;
 static uint32_t gpuLastInertiaMs = 0;
 static int gpuLongPressedStation = -2;
+static bool gpuPinchActive = false;
+static float gpuPinchDist0 = 0.0f;
+static double gpuPinchZoom0 = 0.0;
+static uint32_t gpuPinchEndMs = 0;
+static bool gpuPanReseed = false;
 static void refreshGpuMarkers();
 static void refreshGpuTraces();
 static void collapseGpuSpiderfy();
@@ -539,7 +545,11 @@ static void gpuTouchCb(lv_event_t *e) {
   lv_point_t p{};
   lv_indev_get_point(indev, &p);
   lv_event_code_t code = lv_event_get_code(e);
+  // While two fingers are down the pinch owns the gesture; LVGL still emits a
+  // single-pointer stream for finger 1 that must not pan the map.
+  if (gpuPinchActive) { gpuPanReseed = true; return; }
   if (code == LV_EVENT_DOUBLE_CLICKED) {
+    if (millis() - gpuPinchEndMs < 400) return;
     toggleFullscreen();
   } else if (code == LV_EVENT_PRESSED) {
     collapseGpuSpiderfy();
@@ -549,6 +559,14 @@ static void gpuTouchCb(lv_event_t *e) {
     gpuVelX = gpuVelY = 0.0f;
     MapMarkers::closeStationPopup();
   } else if (code == LV_EVENT_PRESSING) {
+    // The finger left over after a pinch release keeps its old anchor; re-seed
+    // it once instead of applying the stale delta, which would jump the map.
+    if (gpuPanReseed) {
+      gpuPanReseed = false;
+      last = p;
+      lastMs = millis();
+      return;
+    }
     int dx = p.x - last.x, dy = p.y - last.y;
     uint32_t now = millis();
     uint32_t dt = now - lastMs;
@@ -568,6 +586,10 @@ static void gpuTouchCb(lv_event_t *e) {
     }
   } else if (code == LV_EVENT_RELEASED) {
     gpuPanActive = false;
+    if (millis() - gpuPinchEndMs < 400) {
+      gpuVelX = gpuVelY = 0.0f;
+      return;
+    }
     gpuLastInertiaMs = millis();
     refreshGpuInfoBar();
   }
@@ -579,6 +601,47 @@ static void gpuTimerTick(lv_timer_t *) {
     lv_obj_del(gpuLoadingCover);
     gpuLoadingCover = nullptr;
   }
+
+  // Two-finger pinch zoom, anchored on the finger midpoint. The evdev reader
+  // runs in parallel because the LVGL pointer only reports one finger. Zoom is
+  // recomputed from the start distance each frame, so it does not drift.
+  float pdist = 0.0f, pmx = 0.0f, pmy = 0.0f;
+  int fingers = MapPinch::poll(&pdist, &pmx, &pmy);
+  if (fingers >= 2) {
+    if (!gpuPinchActive) {
+      gpuPinchActive = true;
+      gpuPinchDist0 = pdist;
+      gpuPinchZoom0 = MaplibreDisplay::getZoom();
+      gpuPanActive = false;
+      gpuVelX = gpuVelY = 0.0f;
+      collapseGpuSpiderfy();
+      gpuFollowGps = false;
+      mapFollowGps = false;
+      markFollowGpsDisabled();
+      MapMarkers::closeStationPopup();
+    } else if (pdist > 1.0f && gpuPinchDist0 > 1.0f) {
+      double target = gpuPinchZoom0 + std::log2(pdist / gpuPinchDist0);
+      if (target < zoomMin) target = zoomMin;
+      if (target > zoomMax) target = zoomMax;
+      MaplibreDisplay::zoomAround(target, pmx, pmy);
+      zoom = (int)(target + 0.5);
+      if (titleLabel) {
+        char text[16];
+        snprintf(text, sizeof(text), "MAP (Z%d)", zoom);
+        lv_label_set_text(titleLabel, text);
+      }
+      refreshGpuMarkers();
+    }
+    return;
+  }
+  if (gpuPinchActive) {
+    gpuPinchActive = false;
+    gpuPinchEndMs = millis();
+    gpuPanReseed = true;
+    gpuLastInertiaMs = millis();
+    refreshGpuInfoBar();
+  }
+
   if (!gpuPanActive && (gpuVelX != 0.0f || gpuVelY != 0.0f)) {
     uint32_t now = millis();
     uint32_t dt = now - gpuLastInertiaMs;
@@ -604,6 +667,9 @@ static void gpuTimerTick(lv_timer_t *) {
 
 static void gpuScreenDeleted(lv_event_t *) {
   if (gpuMarkerTimer) { lv_timer_del(gpuMarkerTimer); gpuMarkerTimer = nullptr; }
+  MapPinch::stop();
+  gpuPinchActive = false;
+  gpuPanReseed = false;
   MapMarkers::closeStationPopup();
   MaplibreDisplay::getCenter(&centerLat, &centerLon);
   zoom = (int)(MaplibreDisplay::getZoom() + 0.5);
@@ -936,6 +1002,7 @@ lv_obj_t *create(lv_obj_t *) {
     if (gpuLoadingCover) lv_obj_move_foreground(gpuLoadingCover);
     if (!gpuMarkerTimer)
       gpuMarkerTimer = lv_timer_create(gpuTimerTick, 50, nullptr);
+    MapPinch::start();
     mapActive = true;
     return scr;
   }

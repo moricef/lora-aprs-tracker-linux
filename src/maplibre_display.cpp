@@ -306,6 +306,12 @@ void setCenter(double lat, double lon) {
 void setZoom(double zoom) {
     if (S && S->map) S->map->jumpTo(mbgl::CameraOptions().withZoom(zoom));
 }
+void zoomAround(double zoom, double anchorX, double anchorY) {
+    if (S && S->map)
+        S->map->jumpTo(mbgl::CameraOptions()
+                           .withZoom(zoom)
+                           .withAnchor(mbgl::ScreenCoordinate{anchorX, anchorY}));
+}
 double getZoom() {
     return (S && S->map) ? S->map->getCameraOptions().zoom.value_or(DEFAULT_ZOOM)
                          : DEFAULT_ZOOM;
