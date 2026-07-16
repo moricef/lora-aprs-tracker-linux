@@ -56,6 +56,7 @@ namespace MapVector {
 
     // OpenSans-Bold at label size, or nullptr if the TTF was not found.
     const lv_font_t *stationLabelFont();
+    const lv_font_t *stationOverlayFont();
 
     bool isOpen();
     int  minZoom();

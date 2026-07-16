@@ -272,6 +272,7 @@ static lv_obj_t *ensureGpuMarker(int slot, int stationIdx) {
     lv_obj_t *icon = lv_image_create(marker);                 // child 0
     lv_obj_set_size(icon, 32, 32);
     lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_STRETCH);
+    lv_image_set_antialias(icon, true);
     lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 0);
 
     lv_obj_t *fallback = lv_obj_create(marker);               // child 1
@@ -284,7 +285,8 @@ static lv_obj_t *ensureGpuMarker(int slot, int stationIdx) {
 
     lv_obj_t *overlay = lv_label_create(marker);              // child 2
     lv_obj_set_style_text_color(overlay, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(overlay, &lv_font_montserrat_14, 0);
+    const lv_font_t *of = MapVector::stationOverlayFont();
+    lv_obj_set_style_text_font(overlay, of ? of : &lv_font_montserrat_14, 0);
     lv_obj_align(overlay, LV_ALIGN_TOP_MID, 0, 8);
 
     lv_obj_t *callsignLabel = lv_label_create(marker);         // child 3

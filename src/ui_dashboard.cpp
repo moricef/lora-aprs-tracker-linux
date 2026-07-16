@@ -318,7 +318,8 @@ void createDashboard() {
 #ifndef ARDUINO
     aprs_symbol_canvas = lv_image_create(status_bar);
     lv_obj_set_size(aprs_symbol_canvas, 40, 40);
-    lv_image_set_scale(aprs_symbol_canvas, 320);
+    lv_image_set_inner_align(aprs_symbol_canvas, LV_IMAGE_ALIGN_STRETCH);
+    lv_image_set_antialias(aprs_symbol_canvas, true);
     lv_obj_clear_flag(aprs_symbol_canvas, LV_OBJ_FLAG_CLICKABLE);
     if (!Config.beacons.empty()) {
         Beacon *b = &Config.beacons[myBeaconsIndex];
