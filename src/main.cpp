@@ -629,6 +629,14 @@ static void loop() {
     STORAGE_Utils::checkStatsSave();
 
 #ifdef USE_LVGL_UI
+    static uint32_t lastBluetoothUiRefresh = 0;
+    if (millis() - lastBluetoothUiRefresh >= 500) {
+        UIDashboard::updateBluetooth();
+        lastBluetoothUiRefresh = millis();
+    }
+    // UI callbacks defer WebConf screen creation to the main loop to avoid
+    // changing screens from inside lv_timer_handler().
+    UISettings::checkPendingWebConf();
     {
         uint32_t d = lv_timer_handler();
 #ifdef WITH_MAPLIBRE

@@ -220,7 +220,7 @@ function loadSettings(settings) {
     document.getElementById("bluetooth.transport").value                = settings.bluetooth.useBLE ? "ble" : "classic";
     document.getElementById("bluetooth.protocol").value                 = settings.bluetooth.useKISS ? "kiss" : "tnc2";
     // Hide BLE/BT Classic option if board doesn't support BT Classic
-    if (!settings.bluetooth.hasBTClassic) {
+    if (settings.bluetooth.hasBTClassic === false) {
         document.getElementById("btClassicOption").style.display = "none";
     }
     BluetoothActiveCheckbox.checked = settings.bluetooth.active;

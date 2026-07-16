@@ -60,6 +60,7 @@ GMainLoop *loop = nullptr;
 GDBusConnection *bus = nullptr;
 GDBusNodeInfo *introspection = nullptr;
 std::vector<guint> registrations;
+guint bluezPropertiesSubscription = 0;
 
 const char *XML = R"xml(
 <node>
@@ -308,8 +309,30 @@ void applicationRegistered(GObject *source, GAsyncResult *result, gpointer) {
     finishStartup(true);
 }
 
+void bluezPropertiesChanged(GDBusConnection *, const gchar *, const gchar *objectPath,
+                            const gchar *, const gchar *, GVariant *parameters,
+                            gpointer) {
+    const gchar *interfaceName = nullptr;
+    GVariant *changed = nullptr;
+    GVariant *invalidated = nullptr;
+    g_variant_get(parameters, "(&s@a{sv}@as)", &interfaceName, &changed, &invalidated);
+    if (g_str_equal(interfaceName, "org.bluez.Device1")) {
+        gboolean value = FALSE;
+        if (g_variant_lookup(changed, "Connected", "b", &value)) {
+            setConnection(value != FALSE);
+            ESP_LOGI("BLE", "client %s: %s", value ? "connected" : "disconnected",
+                     objectPath ? objectPath : "unknown");
+        }
+    }
+    g_variant_unref(changed);
+    g_variant_unref(invalidated);
+}
+
 void cleanup() {
     if (bus) {
+        if (bluezPropertiesSubscription)
+            g_dbus_connection_signal_unsubscribe(bus, bluezPropertiesSubscription);
+        bluezPropertiesSubscription = 0;
         bluezCall("org.bluez.GattManager1", "UnregisterApplication", g_variant_new("(o)", ROOT));
         for (guint id : registrations) g_dbus_connection_unregister_object(bus, id);
     }
@@ -339,6 +362,10 @@ void *bleThread(void *) {
     if (!ok && error) ESP_LOGE("BLE", "startup: %s", error->message);
     g_clear_error(&error);
     if (ok) {
+        bluezPropertiesSubscription = g_dbus_connection_signal_subscribe(
+            bus, "org.bluez", "org.freedesktop.DBus.Properties", "PropertiesChanged",
+            nullptr, "org.bluez.Device1", G_DBUS_SIGNAL_FLAGS_NONE,
+            bluezPropertiesChanged, nullptr, nullptr);
         g_dbus_connection_call(bus, "org.bluez", ADAPTER,
             "org.bluez.GattManager1", "RegisterApplication", objectWithEmptyOptions(ROOT),
             nullptr, G_DBUS_CALL_FLAGS_NONE, 5000, nullptr, applicationRegistered, nullptr);
