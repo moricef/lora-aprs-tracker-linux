@@ -54,6 +54,9 @@ namespace MapVector {
     // sur montserrat (ASCII) et les accents français sont coupés.
     bool initLabelFonts();
 
+    // OpenSans-Bold at label size, or nullptr if the TTF was not found.
+    const lv_font_t *stationLabelFont();
+
     bool isOpen();
     int  minZoom();
     int  maxZoom();

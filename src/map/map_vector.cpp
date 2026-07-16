@@ -51,6 +51,8 @@ static const lv_font_t *rtFont(const lv_font_t *fallback) {
     return fallback;
 }
 
+const lv_font_t *stationLabelFont() { return s_font12; }
+
 static const lv_font_t *placeFont(int px) {
     if (px < 8) px = 8; if (px > 18) px = 18;
     if (s_placeFont[px]) return s_placeFont[px];

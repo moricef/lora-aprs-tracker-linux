@@ -241,7 +241,7 @@ static lv_obj_t *ensureGpuSpiderCenter() {
   if (!dot || !lv_obj_is_valid(dot)) {
     dot = lv_obj_create(gpuMapLayer);
     gpuSpiderCenter = dot;
-    lv_obj_set_size(dot, 12, 12);
+    lv_obj_set_size(dot, 6, 6);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(dot, lv_color_hex(0x000000), 0);
     lv_obj_set_style_bg_opa(dot, LV_OPA_90, 0);
@@ -258,7 +258,7 @@ static lv_obj_t *ensureGpuMarker(int slot, int stationIdx) {
   if (!marker || !lv_obj_is_valid(marker)) {
     marker = lv_obj_create(gpuMapLayer);
     gpuMarkers[slot] = marker;
-    lv_obj_set_size(marker, 92, 44);
+    lv_obj_set_size(marker, 92, 54);
     lv_obj_set_style_bg_opa(marker, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(marker, 0, 0);
     lv_obj_set_style_pad_all(marker, 0, 0);
@@ -270,6 +270,8 @@ static lv_obj_t *ensureGpuMarker(int slot, int stationIdx) {
                         (void *)(intptr_t)stationIdx);
 
     lv_obj_t *icon = lv_image_create(marker);                 // child 0
+    lv_obj_set_size(icon, 32, 32);
+    lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_STRETCH);
     lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 0);
 
     lv_obj_t *fallback = lv_obj_create(marker);               // child 1
@@ -283,16 +285,14 @@ static lv_obj_t *ensureGpuMarker(int slot, int stationIdx) {
     lv_obj_t *overlay = lv_label_create(marker);              // child 2
     lv_obj_set_style_text_color(overlay, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(overlay, &lv_font_montserrat_14, 0);
-    lv_obj_align(overlay, LV_ALIGN_TOP_MID, 0, 4);
+    lv_obj_align(overlay, LV_ALIGN_TOP_MID, 0, 8);
 
     lv_obj_t *callsignLabel = lv_label_create(marker);         // child 3
-    lv_obj_set_style_text_color(callsignLabel, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(callsignLabel, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_bg_color(callsignLabel, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(callsignLabel, LV_OPA_40, 0);
-    lv_obj_set_style_radius(callsignLabel, 2, 0);
-    lv_obj_set_style_pad_hor(callsignLabel, 3, 0);
-    lv_obj_align(callsignLabel, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_text_color(callsignLabel, lv_color_hex(0x000000), 0);
+    const lv_font_t *cf = MapVector::stationLabelFont();
+    lv_obj_set_style_text_font(callsignLabel,
+                               cf ? cf : &lv_font_montserrat_12, 0);
+    lv_obj_align(callsignLabel, LV_ALIGN_TOP_MID, 0, 34);
   }
   return marker;
 }
@@ -410,7 +410,7 @@ static void layoutGpuMarkerClusters() {
 
   lv_obj_t *center = ensureGpuSpiderCenter();
   if (center) {
-    lv_obj_set_pos(center, centerX - 6, centerY - 6);
+    lv_obj_set_pos(center, centerX - 3, centerY - 3);
     lv_obj_remove_flag(center, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(center);
   }
