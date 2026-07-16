@@ -7,6 +7,7 @@
 #ifdef USE_LVGL_UI
 
 #include "ui_settings.h"
+#include "utils.h"
 #include "ui_common.h"
 #include "ui_popups.h"
 #include "ui_dashboard.h"
@@ -451,9 +452,10 @@ void UISettings::createFreqScreen() {
 
     for (int i = 0; i < loraIndexSize && i < (int)Config.loraTypes.size(); i++) {
         char buf[64];
-        float freq = Config.loraTypes[i].frequency / 1000000.0;
-        snprintf(buf, sizeof(buf), "%.3f MHz  SF%d  BW%.0f",
-                 freq,
+        char fbuf[16];
+        Utils::formatFreqMHz(Config.loraTypes[i].frequency, fbuf, sizeof(fbuf));
+        snprintf(buf, sizeof(buf), "%s MHz  SF%d  BW%.0f",
+                 fbuf,
                  Config.loraTypes[i].spreadingFactor,
                  Config.loraTypes[i].signalBandwidth);
 

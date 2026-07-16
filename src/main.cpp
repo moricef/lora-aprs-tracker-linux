@@ -17,6 +17,7 @@
 #include "smartbeacon_utils.h"
 #include "station_utils.h"
 #include "storage_utils.h"
+#include "utils.h"
 #include "msg_utils.h"
 #include "aprs_is_utils.h"
 #include "linux_stubs.h"
@@ -208,8 +209,9 @@ static lv_obj_t *showSplashScreen() {
 
     // Title with full frequency
     char buf[64];
-    snprintf(buf, sizeof(buf), "LoRa APRS Tracker %.3fMHz",
-             (float)currentLoRaType->frequency / 1000000.0f);
+    char fbuf[16];
+    Utils::formatFreqMHz(currentLoRaType->frequency, fbuf, sizeof(fbuf));
+    snprintf(buf, sizeof(buf), "LoRa APRS Tracker %sMHz", fbuf);
     lv_obj_t *title = lv_label_create(scr);
     lv_label_set_text(title, buf);
     lv_obj_set_style_text_color(title, lv_color_hex(0x0066cc), 0);

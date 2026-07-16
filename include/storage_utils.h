@@ -39,10 +39,11 @@ struct StationStats {
 };
 
 struct DashboardRxEntry {
-    String   callsign;
+    String   callsign;   // APRS source (SSID inclus)
     int      rssi;
     float    snr;
     uint32_t timestamp;
+    String   rfTx;       // station réellement entendue en RF (dernier digi * réel)
 };
 
 namespace STORAGE_Utils {

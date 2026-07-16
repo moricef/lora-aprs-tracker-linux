@@ -45,6 +45,7 @@ namespace UIScreens { lv_obj_t *_mainScreen = nullptr; }
 #ifndef ARDUINO
 #include <sys/stat.h>
 #include <cstring>
+#include <cctype>
 #endif
 
 // External configuration and state
@@ -293,8 +294,8 @@ void createDashboard() {
 
     // Status bar at top
     lv_obj_t *status_bar = lv_obj_create(screen_main);
-    lv_obj_set_size(status_bar, SCREEN_WIDTH, STATUS_BAR_H);
-    lv_obj_set_pos(status_bar, 0, 0);
+    lv_obj_set_size(status_bar, SCREEN_WIDTH - 48, STATUS_BAR_H);
+    lv_obj_set_pos(status_bar, 24, 0);
     lv_obj_set_style_bg_color(status_bar, lv_color_hex(0x16213e), 0);
     lv_obj_set_style_border_width(status_bar, 0, 0);
     lv_obj_set_style_radius(status_bar, 0, 0);
@@ -316,7 +317,8 @@ void createDashboard() {
     // APRS symbol icon
 #ifndef ARDUINO
     aprs_symbol_canvas = lv_image_create(status_bar);
-    lv_obj_set_size(aprs_symbol_canvas, 32, 32);
+    lv_obj_set_size(aprs_symbol_canvas, 40, 40);
+    lv_image_set_scale(aprs_symbol_canvas, 320);
     lv_obj_clear_flag(aprs_symbol_canvas, LV_OBJ_FLAG_CLICKABLE);
     if (!Config.beacons.empty()) {
         Beacon *b = &Config.beacons[myBeaconsIndex];
@@ -344,7 +346,7 @@ void createDashboard() {
     lv_label_set_text(label_utc, "UTC --:--:--");
     lv_obj_set_style_text_color(label_utc, lv_color_hex(0xffffff), 0);
 #if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
-    lv_obj_set_style_text_font(label_utc, &lv_font_mono_20, 0);
+    lv_obj_set_style_text_font(label_utc, &lv_font_mono_24, 0);
 #else
     lv_obj_set_style_text_font(label_utc, &lv_font_mono_16, 0);
 #endif
@@ -354,7 +356,7 @@ void createDashboard() {
     lv_label_set_text(label_time, "--/-- --:--");
     lv_obj_set_style_text_color(label_time, lv_color_hex(0x888888), 0);
 #if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
-    lv_obj_set_style_text_font(label_time, &lv_font_mono_20, 0);
+    lv_obj_set_style_text_font(label_time, &lv_font_mono_24, 0);
 #else
     lv_obj_set_style_text_font(label_time, &lv_font_mono_16, 0);
 #endif
@@ -363,33 +365,25 @@ void createDashboard() {
     icon_gps_strict = lv_label_create(status_bar);
     lv_label_set_text(icon_gps_strict, LV_SYMBOL_GPS " 3D");
     lv_obj_set_style_text_color(icon_gps_strict, lv_color_hex(0xffd700), 0); // Gold/Yellow
-    if (!Config.gpsConfig.strict3DFix) lv_obj_add_flag(icon_gps_strict, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_opa(icon_gps_strict,
+                         Config.gpsConfig.strict3DFix ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
 
     // WiFi icon (hidden by default, shown when connected)
     icon_wifi = lv_label_create(status_bar);
     lv_label_set_text(icon_wifi, LV_SYMBOL_WIFI);
     lv_obj_set_style_text_color(icon_wifi, lv_color_hex(0x00ff00), 0);
-    lv_obj_add_flag(icon_wifi, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_text_font(icon_wifi, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_opa(icon_wifi, LV_OPA_TRANSP, 0);
 
     // Bluetooth icon (hidden by default, shown when connected)
     icon_bluetooth = lv_label_create(status_bar);
     lv_label_set_text(icon_bluetooth, LV_SYMBOL_BLUETOOTH);
     lv_obj_set_style_text_color(icon_bluetooth, lv_color_hex(0x00ff00), 0);
-    lv_obj_add_flag(icon_bluetooth, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_text_font(icon_bluetooth, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_opa(icon_bluetooth, LV_OPA_TRANSP, 0);
 
-    // Battery icon + percentage
-    icon_battery = lv_label_create(status_bar);
-    lv_label_set_text(icon_battery, LV_SYMBOL_BATTERY_FULL);
-    lv_obj_set_style_text_color(icon_battery, lv_color_hex(0x00ff00), 0);
-
-    label_battery_pct = lv_label_create(status_bar);
-    lv_label_set_text(label_battery_pct, "--%");
-    lv_obj_set_style_text_color(label_battery_pct, lv_color_hex(0xffffff), 0);
-#if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
-    lv_obj_set_style_text_font(label_battery_pct, &lv_font_montserrat_16, 0);
-#else
-    lv_obj_set_style_text_font(label_battery_pct, &lv_font_montserrat_12, 0);
-#endif
+    // Pas d'indicateur batterie : le tracker est alimenté en permanence
+    // (Raspberry Pi sur secteur), icon_battery/label_battery_pct restent nuls.
 
     // Main content area
     lv_obj_t *content = lv_obj_create(screen_main);
@@ -408,7 +402,7 @@ void createDashboard() {
                                  "Alt:    ---- m      Spd:    --- km/h");
     lv_obj_set_style_text_color(label_gps, lv_color_hex(0x759a9e), 0);
 #if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
-    lv_obj_set_style_text_font(label_gps, &lv_font_mono_20, 0);
+    lv_obj_set_style_text_font(label_gps, &lv_font_mono_24, 0);
 #else
     lv_obj_set_style_text_font(label_gps, &lv_font_mono_16, 0);
 #endif
@@ -417,9 +411,10 @@ void createDashboard() {
     // LoRa info
     label_lora = lv_label_create(content);
     char lora_init[64];
-    float freq = Config.loraTypes[loraIndex].frequency / 1000000.0;
+    char fbuf[16];
+    Utils::formatFreqMHz(Config.loraTypes[loraIndex].frequency, fbuf, sizeof(fbuf));
     int rate = Config.loraTypes[loraIndex].dataRate;
-    snprintf(lora_init, sizeof(lora_init), "LoRa: %.3f MHz  %d bps", freq, rate);
+    snprintf(lora_init, sizeof(lora_init), "LoRa: %s MHz  %d bps", fbuf, rate);
     lv_label_set_text(label_lora, lora_init);
     lv_obj_set_style_text_color(label_lora, lv_color_hex(0xff6b6b), 0);
 #if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
@@ -440,7 +435,7 @@ void createDashboard() {
     lv_label_set_text(label_last_rx, "Last RX:\n---");
     lv_obj_set_style_text_color(label_last_rx, lv_color_hex(0xffcc00), 0);
 #if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
-    lv_obj_set_style_text_font(label_last_rx, &lv_font_mono_18, 0);
+    lv_obj_set_style_text_font(label_last_rx, &lv_font_mono_24, 0);
 #else
     lv_obj_set_style_text_font(label_last_rx, &lv_font_mono_16, 0);
 #endif
@@ -590,9 +585,10 @@ void updateLoRa(const char *lastRx, int rssi) {
 void refreshLoRaInfo() {
     if (label_lora) {
         char buf[64];
-        float freq = Config.loraTypes[loraIndex].frequency / 1000000.0;
+        char fbuf[16];
+        Utils::formatFreqMHz(Config.loraTypes[loraIndex].frequency, fbuf, sizeof(fbuf));
         int rate = Config.loraTypes[loraIndex].dataRate;
-        snprintf(buf, sizeof(buf), "LoRa: %.3f MHz  %d bps", freq, rate);
+        snprintf(buf, sizeof(buf), "LoRa: %s MHz  %d bps", fbuf, rate);
         lv_label_set_text(label_lora, buf);
     }
 }
@@ -605,38 +601,33 @@ void updateLastRx() {
         return;
     }
 
-    String text = "Last RX:";
+    char hdr[96];
+    snprintf(hdr, sizeof(hdr), "Last RX:\n#888888 %-10s%6s%6s    %-9s#",
+             "SOURCE", "RSSI", "SNR", "RF-TX");
+    String text = hdr;
     char line[128];
-
     for (size_t i = 0; i < entries.size() && i < 8; i++) {
         const DashboardRxEntry &e = entries[i];
-
-        // No timestamp - details available in MSG > Frames
-        snprintf(line, sizeof(line), "\n#00ff00 %-9.9s  RSSI:%-4d  SNR:%-3.0f#",
-                 e.callsign.c_str(), e.rssi, e.snr);
+        snprintf(line, sizeof(line), "\n#00ff00 %-10.10s%6d%6.0f    %-9.9s#",
+                 e.callsign.c_str(), e.rssi, e.snr,
+                 e.rfTx.length() ? e.rfTx.c_str() : "?");
         text += line;
     }
     lv_label_set_text(label_last_rx, text.c_str());
     }
 
     void updateGPSStrictIcon() {
-    if (icon_gps_strict) {
-        if (Config.gpsConfig.strict3DFix) {
-            lv_obj_clear_flag(icon_gps_strict, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(icon_gps_strict, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
+    // Opacity, not HIDDEN : the icon keeps its flex cell so showing/hiding it
+    // doesn't reflow (shift) the rest of the status bar.
+    if (icon_gps_strict)
+        lv_obj_set_style_opa(icon_gps_strict,
+                             Config.gpsConfig.strict3DFix ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     }
 
     void updateWiFi(bool connected, int rssi) {
     if (icon_wifi) {
-        // Show icon only if WiFi is connected
-        if (connected && !WiFiUserDisabled && !WiFiEcoMode) {
-            lv_obj_clear_flag(icon_wifi, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(icon_wifi, LV_OBJ_FLAG_HIDDEN);
-        }
+        bool show = connected && !WiFiUserDisabled && !WiFiEcoMode;
+        lv_obj_set_style_opa(icon_wifi, show ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     }
 }
 
@@ -666,13 +657,51 @@ void updateUtcTime(int hour, int minute, int second) {
 
 void updateBluetooth() {
     if (icon_bluetooth) {
-        // Show icon only if BT is connected
-        if (bluetoothActive && !BLE_Utils::isSleeping() && bluetoothConnected) {
-            lv_obj_clear_flag(icon_bluetooth, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(icon_bluetooth, LV_OBJ_FLAG_HIDDEN);
-        }
+        bool show = bluetoothActive && !BLE_Utils::isSleeping() && bluetoothConnected;
+        lv_obj_set_style_opa(icon_bluetooth, show ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
     }
+}
+
+// Generic relay aliases (marked '*' in the path) that don't identify the RF
+// transmitter and must be skipped when computing RF-TX.
+static bool isGenericAlias(const std::string &call) {
+    static const char *prefixes[] = {"WIDE", "TRACE", "RELAY", "GATE", "ECHO"};
+    for (const char *p : prefixes) {
+        size_t n = strlen(p);
+        if (call.size() < n) continue;
+        bool match = true;
+        for (size_t i = 0; i < n; i++)
+            if (toupper((unsigned char)call[i]) != p[i]) { match = false; break; }
+        if (match) return true;
+    }
+    return false;
+}
+
+// RF-TX = station actually heard over RF. Direct frame → the source itself.
+// Relayed → last real callsign in the path marked '*' (generic aliases like
+// WIDE2-1* / TRACE* skipped). Relayed with no identifiable real callsign → "?".
+static std::string computeRfTx(const std::string &path, const std::string &source,
+                               bool isDirect) {
+    if (isDirect) return source;
+    std::string best;
+    size_t start = 0;
+    int idx = 0;
+    while (true) {
+        size_t comma = path.find(',', start);
+        std::string tok = (comma == std::string::npos) ? path.substr(start)
+                                                        : path.substr(start, comma - start);
+        if (idx >= 1) {  // idx 0 = destination (tocall), not a digipeater
+            size_t star = tok.find('*');
+            if (star != std::string::npos) {
+                std::string call = tok.substr(0, star);
+                if (!call.empty() && !isGenericAlias(call)) best = call;  // keep the last real one
+            }
+        }
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+        idx++;
+    }
+    return best.empty() ? "?" : best;
 }
 
 void addRxLine(const char *frame) {
@@ -714,20 +743,23 @@ void addRxLine(const char *frame) {
     STORAGE_Utils::appendFrame(String(stored));
 
     DashboardRxEntry entry;
+    // Path → direct/relayé + RF-TX (station réellement entendue en RF)
+    const char *colon = strchr(gt, ':');
+    bool isDirect = true;
+    std::string path;
+    if (colon && colon > gt + 1) {
+        path.assign(gt + 1, colon - gt - 1);
+        if (path.find('*') != std::string::npos) isDirect = false;
+    }
+
     entry.callsign = callsign;
     entry.rssi = rssi;
     entry.snr = snr;
+    entry.rfTx = computeRfTx(path, callsign, isDirect).c_str();
     STORAGE_Utils::addRxEntry(entry);
     STORAGE_Utils::updateRxStats(rssi, snr);
 
-    // Stats par station + digi stats (direct = pas de '*' dans le path)
-    const char *colon = strchr(gt, ':');
-    bool isDirect = true;
-    if (colon && colon > gt + 1) {
-        std::string path(gt + 1, colon - gt - 1);
-        if (path.find('*') != std::string::npos) isDirect = false;
-        STORAGE_Utils::updateDigiStats(String(path.c_str()));
-    }
+    if (!path.empty()) STORAGE_Utils::updateDigiStats(String(path.c_str()));
     STORAGE_Utils::updateStationStats(String(callsign.c_str()), rssi, snr, isDirect);
 
     updateLastRx();

@@ -1,7 +1,18 @@
 #pragma once
 #include <cmath>
+#include <cstdio>
+#include <cstddef>
 
 namespace Utils {
+    // Fréquence LoRa en MHz : 3 décimales si la valeur tombe pile au kHz
+    // (ex 433.775), 4 décimales sinon (ex 439.9125). La valeur interne reste
+    // en Hz ; seul le format d'affichage varie.
+    inline const char* formatFreqMHz(long hz, char *buf, size_t n) {
+        if (hz % 1000 == 0) snprintf(buf, n, "%.3f", hz / 1e6);
+        else                snprintf(buf, n, "%.4f", hz / 1e6);
+        return buf;
+    }
+
     static char _locBuf[11];
     static char _letterize(int x) { return (char)x + 65; }
     inline const char* getMaidenheadLocator(double lat, double lon, int size) {

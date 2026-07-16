@@ -364,7 +364,7 @@ namespace STORAGE_Utils {
     const std::vector<DashboardRxEntry>& getDashboardLastRx() { return _dashRx; }
     void addRxEntry(const DashboardRxEntry &e) {
         _dashRx.insert(_dashRx.begin(), e);
-        if (_dashRx.size() > 4) _dashRx.resize(4);
+        if (_dashRx.size() > 8) _dashRx.resize(8);
     }
     const std::vector<int>&   getRssiHistory()            { return _rssiHistory; }
     const std::vector<float>& getSnrHistory()             { return _snrHistory; }
