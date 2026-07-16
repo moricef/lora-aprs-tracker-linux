@@ -212,6 +212,8 @@ struct State {
     lv_display_t *overlay = nullptr;
     unsigned int overlay_tex = 0;
     struct gbm_bo *prev_bo = nullptr;
+    struct gbm_bo *pending_bo = nullptr;
+    int flipPending = 0;
     bool crtc_set = false;
     int W = 0, H = 0;
     std::string shotPath;
@@ -436,30 +438,56 @@ void renderTick() {
         S->crtc_set = rc == 0;
         if (rc != 0)
             fprintf(stderr, "[maplibre] set-crtc failed: %s\n", strerror(errno));
+        if (S->prev_bo) gbm_surface_release_buffer(g_gl.surf, S->prev_bo);
+        S->prev_bo = bo;
     } else {
-        int waiting = 1;
+        drmEventContext ev{}; ev.version = 2; ev.page_flip_handler = page_flip_handler;
+        struct pollfd pfd{S->kms.fd, POLLIN, 0};
+        // A completion event that arrived after the wait below timed out on a
+        // previous tick is still queued; a new flip would then return EBUSY
+        // and a per-frame SetCrtc fallback re-modesets the panel — that was
+        // visible as a flicker of the screen bars. Drain it first, and skip
+        // this frame entirely if the flip is genuinely still pending.
+        if (S->flipPending) {
+            if (poll(&pfd, 1, 100) > 0) drmHandleEvent(S->kms.fd, &ev);
+            if (S->flipPending) {
+                gbm_surface_release_buffer(g_gl.surf, bo);
+                return;
+            }
+        }
+        // The completed flip put pending_bo on scanout; its predecessor is
+        // now free.
+        if (S->pending_bo) {
+            if (S->prev_bo) gbm_surface_release_buffer(g_gl.surf, S->prev_bo);
+            S->prev_bo = S->pending_bo;
+            S->pending_bo = nullptr;
+        }
+        S->flipPending = 1;
         int rc = drmModePageFlip(S->kms.fd, S->kms.crtc_id, fb,
-                                 DRM_MODE_PAGE_FLIP_EVENT, &waiting);
-        if (rc == 0) {
-            drmEventContext ev{}; ev.version = 2; ev.page_flip_handler = page_flip_handler;
-            struct pollfd pfd{S->kms.fd, POLLIN, 0};
-            while (waiting) { if (poll(&pfd, 1, 100) > 0) drmHandleEvent(S->kms.fd, &ev); else break; }
-        } else {
-            int savedErrno = errno;
-            // Keep presentation alive even if this driver rejects an evented
-            // flip; modesetting the same CRTC is slower but deterministic.
-            drmModeSetCrtc(S->kms.fd, S->kms.crtc_id, fb, 0, 0,
-                           &S->kms.conn_id, 1, &S->kms.mode);
-            fprintf(stderr, "[maplibre] page-flip failed: %s; fallback=set-crtc\n",
-                    strerror(savedErrno));
+                                 DRM_MODE_PAGE_FLIP_EVENT, &S->flipPending);
+        if (rc != 0) {
+            S->flipPending = 0;
+            fprintf(stderr, "[maplibre] page-flip failed: %s; frame skipped\n",
+                    strerror(errno));
+            gbm_surface_release_buffer(g_gl.surf, bo);
+            return;
+        }
+        S->pending_bo = bo;
+        while (S->flipPending) {
+            if (poll(&pfd, 1, 100) > 0) drmHandleEvent(S->kms.fd, &ev);
+            else break;
+        }
+        if (!S->flipPending) {
+            if (S->prev_bo) gbm_surface_release_buffer(g_gl.surf, S->prev_bo);
+            S->prev_bo = S->pending_bo;
+            S->pending_bo = nullptr;
         }
     }
-    if (S->prev_bo) gbm_surface_release_buffer(g_gl.surf, S->prev_bo);
-    S->prev_bo = bo;
 }
 
 void shutdown() {
     if (!S) return;
+    if (S->pending_bo) gbm_surface_release_buffer(g_gl.surf, S->pending_bo);
     if (S->prev_bo) gbm_surface_release_buffer(g_gl.surf, S->prev_bo);
     S->map.reset();
     S->frontend.reset();
