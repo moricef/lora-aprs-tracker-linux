@@ -63,6 +63,7 @@ static lv_obj_t *gpuTraceLines[MAP_STATIONS_MAX + 1] = {};
 static lv_point_precise_t gpuTracePoints[MAP_STATIONS_MAX + 1][201] = {};
 static lv_obj_t *gpuSpiderLines[MAP_STATIONS_MAX + 1] = {};
 static lv_point_precise_t gpuSpiderPoints[MAP_STATIONS_MAX + 1][2] = {};
+static lv_obj_t *gpuSpiderCenter = nullptr;
 static int gpuMarkerAnchorX[MAP_STATIONS_MAX + 1] = {};
 static int gpuMarkerAnchorY[MAP_STATIONS_MAX + 1] = {};
 static int gpuMarkerCluster[MAP_STATIONS_MAX + 1] = {};
@@ -205,6 +206,8 @@ static void gpuMarkerClicked(lv_event_t *e) {
 
 static void collapseGpuSpiderfy() {
   gpuExpandedClusterSlot = -1;
+  if (gpuSpiderCenter && lv_obj_is_valid(gpuSpiderCenter))
+    lv_obj_add_flag(gpuSpiderCenter, LV_OBJ_FLAG_HIDDEN);
   for (int slot = 0; slot <= MAP_STATIONS_MAX; ++slot) {
     lv_obj_t *line = gpuSpiderLines[slot];
     if (line && lv_obj_is_valid(line)) lv_obj_add_flag(line, LV_OBJ_FLAG_HIDDEN);
@@ -230,6 +233,23 @@ static lv_obj_t *ensureGpuSpiderLine(int slot) {
     lv_obj_move_to_index(line, 1);
   }
   return line;
+}
+
+static lv_obj_t *ensureGpuSpiderCenter() {
+  if (!gpuMapLayer) return nullptr;
+  lv_obj_t *dot = gpuSpiderCenter;
+  if (!dot || !lv_obj_is_valid(dot)) {
+    dot = lv_obj_create(gpuMapLayer);
+    gpuSpiderCenter = dot;
+    lv_obj_set_size(dot, 12, 12);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(dot, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(dot, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(dot, 0, 0);
+    lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+  }
+  return dot;
 }
 
 static lv_obj_t *ensureGpuMarker(int slot, int stationIdx) {
@@ -388,6 +408,13 @@ static void layoutGpuMarkerClusters() {
   centerX /= count;
   centerY /= count;
 
+  lv_obj_t *center = ensureGpuSpiderCenter();
+  if (center) {
+    lv_obj_set_pos(center, centerX - 6, centerY - 6);
+    lv_obj_remove_flag(center, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(center);
+  }
+
   const int layerW = lv_obj_get_width(gpuMapLayer);
   const int layerH = lv_obj_get_height(gpuMapLayer);
   int member = 0;
@@ -402,7 +429,7 @@ static void layoutGpuMarkerClusters() {
     const int ringCount = std::min(8, count - ringStart);
     const int ringIndex = member - ringStart;
     const double angle = -pi / 2.0 + (2.0 * pi * ringIndex) / ringCount;
-    const int radius = 42 + ring * 34;
+    const int radius = 32 + ring * 28;
     int displayX = centerX + (int)std::lround(std::cos(angle) * radius);
     int displayY = centerY + (int)std::lround(std::sin(angle) * radius);
     displayX = std::max(46, std::min(layerW - 46, displayX));
@@ -683,6 +710,7 @@ static void gpuScreenDeleted(lv_event_t *) {
   memset(gpuMarkers, 0, sizeof(gpuMarkers));
   memset(gpuTraceLines, 0, sizeof(gpuTraceLines));
   memset(gpuSpiderLines, 0, sizeof(gpuSpiderLines));
+  gpuSpiderCenter = nullptr;
   memset(gpuMarkerVisible, 0, sizeof(gpuMarkerVisible));
   gpuExpandedClusterSlot = -1;
   MapTraces::destroy();
