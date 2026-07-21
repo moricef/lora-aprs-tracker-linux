@@ -61,7 +61,7 @@ void Configuration::setDefaultValues() {
     loraTypes.push_back({434855000L,  9, 125000L, 7, 20, 1200});
     loraTypes.push_back({439912500L, 12, 125000L, 5, 20,  300});
 
-    lora = {true, false};
+    lora = {true, false, "WIDE1-1"};
 
     simplifiedTrackerMode   = false;
     sendCommentAfterXBeacons= 10;
@@ -205,6 +205,7 @@ bool Configuration::readFile() {
     if (data.contains("loraConfig")) {
         lora.sendInfo     = data["loraConfig"].value("sendInfo",     true);
         lora.repeaterMode = data["loraConfig"].value("repeaterMode", false);
+        lora.digipeatAlias = data["loraConfig"].value("digipeatAlias", "WIDE1-1");
     }
 
     // Telemetry
@@ -338,6 +339,7 @@ bool Configuration::writeFile() {
 
     data["loraConfig"]["sendInfo"]     = lora.sendInfo;
     data["loraConfig"]["repeaterMode"] = lora.repeaterMode;
+    data["loraConfig"]["digipeatAlias"] = lora.digipeatAlias.s;
 
     data["telemetry"]["active"]                = telemetry.active;
     data["telemetry"]["sendTelemetry"]         = telemetry.sendTelemetry;

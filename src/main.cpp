@@ -510,15 +510,18 @@ static void loop() {
         STORAGE_Utils::logRawFrame(rawFrame, packet.rssi, packet.snr, isDirect);
         STORAGE_Utils::updateRxStats(packet.rssi, packet.snr);
 
+        String sender;
         if (pathStart > 0) {
-            String sender = rawFrame.substring(0, pathStart);
+            sender = rawFrame.substring(0, pathStart);
             STORAGE_Utils::updateStationStats(sender, packet.rssi, packet.snr, isDirect);
         }
 
-        // Digipeater
-        if (Config.lora.repeaterMode) {
+        // Digipeater. Own beacons come back audible once a neighbour digi has
+        // relayed them, with the alias still unconsumed: repeating those would
+        // loop our own traffic back onto the air.
+        if (Config.lora.repeaterMode && sender != currentBeacon->callsign) {
             String digipkt = APRSPacketLib::generateDigipeatedPacket(
-                packet.text, currentBeacon->callsign, Config.path);
+                packet.text, currentBeacon->callsign, Config.lora.digipeatAlias);
             if (digipkt != "X") {
                 usleep((rand() % 400 + 100) * 1000);
                 LoRa_Utils::sendNewPacket(digipkt);

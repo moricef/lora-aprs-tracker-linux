@@ -104,6 +104,9 @@ class Lora {
 public:
     bool sendInfo;
     bool repeaterMode;
+    // Alias consumed when repeating others, kept apart from the beacon path so
+    // enabling the digipeater cannot shorten our own beacons.
+    String digipeatAlias;
 };
 
 class PTT {

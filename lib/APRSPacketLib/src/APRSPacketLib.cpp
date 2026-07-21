@@ -67,7 +67,15 @@ namespace APRSPacketLib {
     String buildDigiPacket(const String& packet, const String& callsign, const String& path, const String& fullPath, bool thirdParty) {
         String packetToRepeat = packet.substring(0, packet.indexOf(",") + 1);
         String tempPath = fullPath;
-        tempPath.replace(path, callsign + "*");
+        // Take over the first unconsumed alias only: a global replace would
+        // also rewrite the already-used forms of the same alias.
+        for (int i = tempPath.indexOf(path); i != -1; i = tempPath.indexOf(path, i + 1)) {
+            const int after = i + path.length();
+            if (after >= (int)tempPath.length() || tempPath[after] != '*') {
+                tempPath = tempPath.substring(0, i) + callsign + "*" + tempPath.substring(after);
+                break;
+            }
+        }
         packetToRepeat += tempPath;
         packetToRepeat += packet.substring(packet.indexOf(thirdParty ? ":}" : ":"));
         return packetToRepeat;
@@ -86,7 +94,20 @@ namespace APRSPacketLib {
         }
         if (temp.indexOf(",") > 2) {    // checks for path
             const String& completePath = temp.substring(temp.indexOf(",") + 1); // after tocall
-            return (completePath.indexOf(path) != -1) ? buildDigiPacket(packet.substring(3), callsign, path, completePath, thirdParty) : "X";
+            // Only an alias that no station has consumed yet may be taken over.
+            // A bare indexOf also matches the used form ("WIDE1-1*"), and the
+            // substitution below would then leave a stray star behind ("**")
+            // and claim the hop twice.
+            int at = -1;
+            for (int i = completePath.indexOf(path); i != -1;
+                 i = completePath.indexOf(path, i + 1)) {
+                const int after = i + path.length();
+                if (after >= completePath.length() || completePath[after] != '*') {
+                    at = i;
+                    break;
+                }
+            }
+            return (at != -1) ? buildDigiPacket(packet.substring(3), callsign, path, completePath, thirdParty) : "X";
         }
         return "X";
     }
