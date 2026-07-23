@@ -13,10 +13,6 @@ constexpr int SPRITE_SIZE = GRID * TILE_SIZE; // 1280
 constexpr int CONT_W      = 1024;
 constexpr int MAP_H       = 600 - 45 - 30; // 525
 
-// Zoom at/above which vector tiles are used; raster below. Single knob — the
-// .pmtiles must actually contain tiles at this zoom (else blank land tiles).
-constexpr int VECTOR_MIN_ZOOM = 7;
-
 // Viewport (center tile + sub-tile drag offset)
 extern double centerLat, centerLon;
 extern int zoom, centerTX, centerTY;
@@ -30,8 +26,5 @@ extern bool mapFollowGps;
 // Lifecycle / layout flags
 extern bool mapActive;
 extern bool fullscreenMap;
-
-// Tile region selected by MapIO::discoverRegion (empty if no SD).
-extern char mapRegion[64];
 
 } // namespace MapState

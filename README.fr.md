@@ -18,7 +18,7 @@ d'un firmware existant et l'adapte à un environnement Linux + LVGL sur
   solution de repli.
 - **Overzoom vectoriel** : le pmtiles s'arrête à z14 ; le renderer
   redessine n'importe quelle sous-région jusqu'au z17 — net car la
-  géométrie est rerasterisée, pas une image étirée.
+  géométrie est redessinée, pas une image étirée.
 - **gpsd** pour position / vitesse / cap, et SmartBeacon complet.
 - **APRS-IS** uplink TCP.
 - **Bluetooth Classic SPP et BLE GATT**, configurables en TNC2 ou KISS.
@@ -101,14 +101,14 @@ vectoriel.
 ```
 src/map/
 ├── map_state.{h,cpp}      état viewport / GPS / flags partagés
-├── map_io.{h,cpp}         discovery filesystem (tuiles + symboles)
+├── map_io.{h,cpp}         métadonnées PMTiles + chemins symboles
 ├── map_engine.{h,cpp}     grille 5×5, reloadTiles, zoom, tick inertie
 ├── map_input.{h,cpp}      handler touch (pan, hit-test, double-tap)
 ├── map_traces.{h,cpp}     overlay traces stations + traces propres
 ├── map_labels.{h,cpp}     overlay labels : collision, hystérésis, glyphes
 ├── map_markers.{h,cpp}    marqueurs stations + popup info
 ├── map_view.{h,cpp}       écran LVGL (titlebar, boutons, lifecycle)
-├── map_vector.{h,cpp}     décodage PMTiles + MVT, rasterisation vecto
+├── map_vector.{h,cpp}     décodage PMTiles + MVT, rendu vectoriel
 └── map_coordinate_math.{h,cpp}  lat/lon ↔ tuile/pixel
 
 src/maplibre_display.{h,cpp}  backend MapLibre EGL/GBM/KMS du Raspberry Pi

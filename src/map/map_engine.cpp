@@ -1,5 +1,4 @@
 #include "map/map_engine.h"
-#include "map/map_io.h"
 #include "map/map_labels.h"
 #include "map/map_markers.h"
 #include "map/map_state.h"
@@ -23,9 +22,9 @@ using namespace MapState;
 bool  panActive = false;
 float velX = 0.0f, velY = 0.0f;
 
-// Single composited map canvas (ARGB8888, SPRITE_SIZE²). Raster and vector
-// tiles are drawn into this one buffer instead of per-tile LVGL objects, so
-// every map layer shares a single coordinate space.
+// Single composited map canvas (ARGB8888, SPRITE_SIZE²). PMTiles vector
+// renders are drawn into this one buffer so every map layer shares a single
+// coordinate space.
 static lv_obj_t *mapCanvas   = nullptr;
 static uint8_t  *mapBuf      = nullptr;
 static uint8_t  *tileScratch = nullptr;  // reused per vector tile render
@@ -51,51 +50,29 @@ static void positionCanvas() {
                    (mapH - SPRITE_SIZE) / 2 + dragAccumY);
 }
 
-// Composite the 5×5 tile grid into mapBuf. Below VECTOR_MIN_ZOOM the LVGL image
-// pipeline draws raster tiles; at/above it, cached ARGB vector renders are
-// blitted row by row.
+// Composite the 5×5 PMTiles vector grid into mapBuf.
 static void compositeTiles() {
     if (!mapCanvas) return;
     lv_draw_buf_t *db = lv_canvas_get_draw_buf(mapCanvas);
     if (!db || !db->data) return;
     uint32_t dstStride = db->header.stride;
 
-    if (zoom >= VECTOR_MIN_ZOOM && MapVector::isOpen()) {
-        for (int dy = 0; dy < GRID; dy++)
-            for (int dx = 0; dx < GRID; dx++) {
-                int tx = centerTX + dx - GRID / 2, ty = centerTY + dy - GRID / 2;
-                if (!MapVector::renderTileCached(tileScratch, TILE_SIZE, zoom, tx, ty))
-                    continue;
-                int ox = dx * TILE_SIZE, oy = dy * TILE_SIZE;
-                for (int row = 0; row < TILE_SIZE; row++)
-                    memcpy(db->data + (size_t)(oy + row) * dstStride + (size_t)ox * 4,
-                           tileScratch + (size_t)row * TILE_SIZE * 4,
-                           TILE_SIZE * 4);
-            }
-    } else {
+    if (!MapVector::isOpen()) {
         lv_canvas_fill_bg(mapCanvas, lv_color_hex(0x2F4F4F), LV_OPA_COVER);
-        for (int dy = 0; dy < GRID; dy++)
-            for (int dx = 0; dx < GRID; dx++) {
-                int tx = centerTX + dx - GRID / 2, ty = centerTY + dy - GRID / 2;
-                if (!MapIO::tileExists(tx, ty, zoom)) continue;
-                char p[512];
-                snprintf(p, sizeof(p), "A:%s/%s/%d/%d/%d.jpg", MapIO::mapsRoot(),
-                         mapRegion, zoom, tx, ty);
-                // Draw each tile in its own layer pass: lv_draw_image reads the
-                // dsc (incl. src) at flush time, so the path must stay valid
-                // until finish_layer commits the draw.
-                lv_layer_t layer;
-                lv_canvas_init_layer(mapCanvas, &layer);
-                lv_draw_image_dsc_t idsc;
-                lv_draw_image_dsc_init(&idsc);
-                idsc.src = p;
-                lv_area_t coords = { dx * TILE_SIZE, dy * TILE_SIZE,
-                                     dx * TILE_SIZE + TILE_SIZE - 1,
-                                     dy * TILE_SIZE + TILE_SIZE - 1 };
-                lv_draw_image(&layer, &idsc, &coords);
-                lv_canvas_finish_layer(mapCanvas, &layer);
-            }
+        return;
     }
+
+    for (int dy = 0; dy < GRID; dy++)
+        for (int dx = 0; dx < GRID; dx++) {
+            int tx = centerTX + dx - GRID / 2, ty = centerTY + dy - GRID / 2;
+            if (!MapVector::renderTileCached(tileScratch, TILE_SIZE, zoom, tx, ty))
+                continue;
+            int ox = dx * TILE_SIZE, oy = dy * TILE_SIZE;
+            for (int row = 0; row < TILE_SIZE; row++)
+                memcpy(db->data + (size_t)(oy + row) * dstStride + (size_t)ox * 4,
+                       tileScratch + (size_t)row * TILE_SIZE * 4,
+                       TILE_SIZE * 4);
+        }
 }
 
 // Rebuild the static layer (tiles + labels) into mapBuf and snapshot it.

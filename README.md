@@ -14,7 +14,7 @@ Linux + LVGL desktop on HDMI displays (tested at 1024×600).
   Raspberry Pi 4 V3D GPU through EGL/GBM/KMS, with the LVGL UI composited as
   an overlay. The PMTiles/MVT software renderer remains available for the
   Odroid and as a fallback.
-- **Overzoom** : the PMTiles file stops at z14 ; the renderer re-rasterizes
+- **Overzoom** : the PMTiles file stops at z14 ; the renderer redraws
   any sub-region at screen zooms up to z17 — sharp because geometry is
   redrawn, not bitmap-stretched.
 - **gpsd** integration for position / speed / track, plus full SmartBeacon.
@@ -96,14 +96,14 @@ files. Screen zooms 15-17 come for free via vector overzoom.
 ```
 src/map/
 ├── map_state.{h,cpp}      shared viewport / GPS / flags
-├── map_io.{h,cpp}         filesystem discovery (tiles + symbols)
+├── map_io.{h,cpp}         PMTiles view metadata + symbol paths
 ├── map_engine.{h,cpp}     5×5 tile grid, reloadTiles, zoom, inertia tick
 ├── map_input.{h,cpp}      touch handler (pan, hit-test, double-tap)
 ├── map_traces.{h,cpp}     station trails + own GPS trail overlay
 ├── map_labels.{h,cpp}     label overlay : collision, hysteresis, glyphs
 ├── map_markers.{h,cpp}    station markers + info popup
 ├── map_view.{h,cpp}       LVGL screen (titlebar, buttons, lifecycle)
-├── map_vector.{h,cpp}     PMTiles + MVT decoding, vector rasterization
+├── map_vector.{h,cpp}     PMTiles + MVT decoding, vector drawing
 └── map_coordinate_math.{h,cpp}  lat/lon ↔ tile/pixel
 
 src/maplibre_display.{h,cpp}  Raspberry Pi MapLibre EGL/GBM/KMS backend

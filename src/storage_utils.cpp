@@ -14,14 +14,13 @@ static const char* TAG = "Storage";
 
 static std::string _rootDir;
 static std::string _messagesDir;
-static std::string _contactsDir, _contactsFile, _mapsDir;
+static std::string _contactsDir, _contactsFile;
 static std::string _statsFile, _framesFile;
 
 static const char* ROOT_DIR      = nullptr;
 static const char* MESSAGES_DIR  = nullptr;
 static const char* CONTACTS_DIR  = nullptr;
 static const char* CONTACTS_FILE = nullptr;
-static const char* MAPS_DIR      = nullptr;
 static const char* STATS_FILE    = nullptr;
 static const char* FRAMES_FILE   = nullptr;
 
@@ -31,14 +30,12 @@ static void initPaths() {
     _messagesDir  = _rootDir + "/Messages";
     _contactsDir  = _rootDir + "/Contacts";
     _contactsFile = _rootDir + "/Contacts/contacts.json";
-    _mapsDir      = _rootDir + "/Maps";
     _statsFile    = _rootDir + "/stats.json";
     _framesFile   = _rootDir + "/frames.log";
     ROOT_DIR      = _rootDir.c_str();
     MESSAGES_DIR  = _messagesDir.c_str();
     CONTACTS_DIR  = _contactsDir.c_str();
     CONTACTS_FILE = _contactsFile.c_str();
-    MAPS_DIR      = _mapsDir.c_str();
     STATS_FILE    = _statsFile.c_str();
     FRAMES_FILE   = _framesFile.c_str();
 }
@@ -73,7 +70,6 @@ namespace STORAGE_Utils {
         mkdirP(ROOT_DIR);
         mkdirP(MESSAGES_DIR);
         mkdirP(CONTACTS_DIR);
-        mkdirP(MAPS_DIR);
         char p[256];
         snprintf(p, sizeof(p), "%s/conversations", MESSAGES_DIR);
         mkdirP(p);
@@ -90,8 +86,7 @@ namespace STORAGE_Utils {
         if (p[0] != '/') return std::string(ROOT_DIR) + "/" + p;
         if (p.rfind(ROOT_DIR, 0) == 0) return p; // already under root
         if (p.rfind("/data/", 0) == 0) return p;  // SPIFFS-style
-        if (p.rfind("/Messages", 0) == 0 || p.rfind("/Contacts", 0) == 0 ||
-            p.rfind("/Maps", 0) == 0)
+        if (p.rfind("/Messages", 0) == 0 || p.rfind("/Contacts", 0) == 0)
             return std::string(ROOT_DIR) + p;
         return std::string(MESSAGES_DIR) + p;
     }

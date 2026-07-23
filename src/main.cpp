@@ -318,9 +318,8 @@ static void setup() {
     // legacy software renderer as a fallback.
     const bool useMaplibre = getenv("TRACKER_NO_MAPLIBRE") == nullptr;
     if (useMaplibre) {
-        // Share the same initial viewport as the legacy map.  MapState starts
+        // Use the PMTiles metadata for bounds/default viewport. MapState starts
         // at Z7 and keeps the last zoom for subsequent map openings.
-        MapIO::discoverRegion();
         MapIO::discoverZooms();
         MapIO::discoverDefaultPosition();
         disp = MaplibreDisplay::init("file:///data/LoRa_Tracker/MapLibre/osm-bright.json",

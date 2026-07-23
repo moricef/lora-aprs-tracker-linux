@@ -44,7 +44,7 @@ void destroy() {
 // tile grid.
 void drawInto(lv_obj_t *canvas) {
     if (!canvas) return;
-    if (!(zoom >= 7 && MapVector::isOpen())) return;
+    if (!MapVector::isOpen()) return;
 
     // Each label keeps its tile-local position (centroid or polyline mid)
     // produced by MapVector::getTileLabels — that's already on the actual

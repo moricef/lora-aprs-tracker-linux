@@ -13,6 +13,4 @@ bool mapFollowGps = true;
 bool mapActive = false;
 bool fullscreenMap = false;
 
-char mapRegion[64] = "";
-
 } // namespace MapState

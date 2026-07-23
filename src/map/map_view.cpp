@@ -897,7 +897,6 @@ void refreshInfoBar() {
 // Create map screen
 // ============================================================
 lv_obj_t *create(lv_obj_t *) {
-  MapIO::discoverRegion();
   MapIO::discoverZooms();
   MapIO::discoverDefaultPosition();
   MapVector::initLabelFonts();   // accented label font (OpenSans-Bold)
@@ -1112,10 +1111,10 @@ lv_obj_t *create(lv_obj_t *) {
   }
 #endif
 
-  if (!mapRegion[0]) {
+  if (!MapVector::isOpen()) {
     lv_obj_t *l = lv_label_create(scr);
-    lv_label_set_text(l, "Tuiles map introuvables\n\nCopier les tuiles "
-                         "dans\n/data/LoRa_Tracker/Maps/<region>/");
+    lv_label_set_text(l, "Carte vectorielle introuvable\n\nCopier le PMTiles "
+                         "dans\n/data/LoRa_Tracker/VectMaps/<region>/<region>.pmtiles");
     lv_obj_set_style_text_color(l, lv_color_hex(0xff6b6b), 0);
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(l);

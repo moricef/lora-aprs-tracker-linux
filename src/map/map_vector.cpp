@@ -235,6 +235,8 @@ bool open(const char *pmtilesPath) {
 bool isOpen() { return s_mapped != nullptr; }
 int  minZoom() { return s_header.min_zoom; }
 int  maxZoom() { return s_header.max_zoom; }
+double centerLat() { return s_header.center_lat_e7 / 10000000.0; }
+double centerLon() { return s_header.center_lon_e7 / 10000000.0; }
 
 void close() {
     if (s_mapped) { munmap(s_mapped, s_mapSize); s_mapped = nullptr; }

@@ -2,34 +2,19 @@
 
 #include <cstddef>
 
-// Filesystem discovery for map tiles + APRS symbols. Reads from SD card
-// candidates (project paths, /media, /data) and fills MapState::mapRegion +
-// zoom range. No LVGL, no rendering — pure I/O.
+// Filesystem discovery for APRS symbols plus PMTiles view metadata. No LVGL,
+// no rendering — pure I/O.
 
 namespace MapIO {
-
-// Returns the first existing tiles root from the candidate list, or NULL.
-// Cached on first call.
-const char *mapsRoot();
 
 // Returns the first existing APRS symbols root, or NULL. Cached.
 const char *symbolsRoot();
 
-// Picks the first subdirectory under mapsRoot() as the active region and
-// stores its name in MapState::mapRegion (no-op if already set).
-void discoverRegion();
-
-// Scans MapState::mapRegion/<zoom>/ directories to set MapState::zoomMin,
-// zoomMax, zoom. Extended by MapVector's PMTiles range if open.
+// Sets MapState::zoomMin/zoomMax from the open PMTiles source.
 void discoverZooms();
 
-// Picks the center of the z=6 tiles found on disk as the default lat/lon
-// (MapState::centerLat/centerLon).
+// Picks the PMTiles header center as default lat/lon when available.
 void discoverDefaultPosition();
-
-// True if mapRegion/<z>/<tx>/<ty>.jpg exists. Backed by a small negative
-// cache (last 128 lookups) to avoid hammering the FS on missing tiles.
-bool tileExists(int tx, int ty, int z);
 
 // Fills `path` (size pathsz) with the LVGL "A:/..." path to the PNG of the
 // given APRS symbol. table = '/' (primary) or '\\' (alternate).

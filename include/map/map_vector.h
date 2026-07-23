@@ -61,6 +61,8 @@ namespace MapVector {
     bool isOpen();
     int  minZoom();
     int  maxZoom();
+    double centerLat();
+    double centerLon();
     void startWorker();
     void requestTile(int z, int x, int y);
     void stopWorker();
