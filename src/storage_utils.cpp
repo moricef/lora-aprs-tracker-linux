@@ -13,14 +13,12 @@
 static const char* TAG = "Storage";
 
 static std::string _rootDir;
-static std::string _messagesDir, _inboxDir, _outboxDir;
+static std::string _messagesDir;
 static std::string _contactsDir, _contactsFile, _mapsDir;
 static std::string _statsFile, _framesFile;
 
 static const char* ROOT_DIR      = nullptr;
 static const char* MESSAGES_DIR  = nullptr;
-static const char* INBOX_DIR     = nullptr;
-static const char* OUTBOX_DIR    = nullptr;
 static const char* CONTACTS_DIR  = nullptr;
 static const char* CONTACTS_FILE = nullptr;
 static const char* MAPS_DIR      = nullptr;
@@ -31,8 +29,6 @@ static void initPaths() {
     const char* env = getenv("TRACKER_DATA");
     _rootDir      = env ? env : "/data/LoRa_Tracker";
     _messagesDir  = _rootDir + "/Messages";
-    _inboxDir     = _rootDir + "/Messages/inbox";
-    _outboxDir    = _rootDir + "/Messages/outbox";
     _contactsDir  = _rootDir + "/Contacts";
     _contactsFile = _rootDir + "/Contacts/contacts.json";
     _mapsDir      = _rootDir + "/Maps";
@@ -40,8 +36,6 @@ static void initPaths() {
     _framesFile   = _rootDir + "/frames.log";
     ROOT_DIR      = _rootDir.c_str();
     MESSAGES_DIR  = _messagesDir.c_str();
-    INBOX_DIR     = _inboxDir.c_str();
-    OUTBOX_DIR    = _outboxDir.c_str();
     CONTACTS_DIR  = _contactsDir.c_str();
     CONTACTS_FILE = _contactsFile.c_str();
     MAPS_DIR      = _mapsDir.c_str();
@@ -78,32 +72,28 @@ namespace STORAGE_Utils {
         initPaths();
         mkdirP(ROOT_DIR);
         mkdirP(MESSAGES_DIR);
-        mkdirP(INBOX_DIR);
-        mkdirP(OUTBOX_DIR);
         mkdirP(CONTACTS_DIR);
         mkdirP(MAPS_DIR);
-        // conversations dir
         char p[256];
-        snprintf(p, sizeof(p), "%s/conversations", ROOT_DIR);
+        snprintf(p, sizeof(p), "%s/conversations", MESSAGES_DIR);
         mkdirP(p);
         ESP_LOGI(TAG, "Storage: %s", ROOT_DIR);
     }
 
     bool isSDAvailable() { return true; }
 
-    String getRootPath()     { return String(ROOT_DIR); }
     String getMessagesPath() { return String(MESSAGES_DIR); }
-    String getInboxPath()    { return String(INBOX_DIR); }
-    String getOutboxPath()   { return String(OUTBOX_DIR); }
-    String getContactsPath() { return String(CONTACTS_DIR); }
-    String getMapsPath()     { return String(MAPS_DIR); }
 
     static std::string resolvePath(const String& path) {
         std::string p = path.c_str();
+        if (p.empty()) return std::string(ROOT_DIR);
         if (p[0] != '/') return std::string(ROOT_DIR) + "/" + p;
         if (p.rfind(ROOT_DIR, 0) == 0) return p; // already under root
         if (p.rfind("/data/", 0) == 0) return p;  // SPIFFS-style
-        return std::string(ROOT_DIR) + p;
+        if (p.rfind("/Messages", 0) == 0 || p.rfind("/Contacts", 0) == 0 ||
+            p.rfind("/Maps", 0) == 0)
+            return std::string(ROOT_DIR) + p;
+        return std::string(MESSAGES_DIR) + p;
     }
     bool fileExists(const String& path) {
         std::string full = resolvePath(path);

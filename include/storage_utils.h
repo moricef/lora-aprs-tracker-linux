@@ -50,12 +50,7 @@ namespace STORAGE_Utils {
     void   setup();
     bool   isSDAvailable();
 
-    String getRootPath();
     String getMessagesPath();
-    String getInboxPath();
-    String getOutboxPath();
-    String getContactsPath();
-    String getMapsPath();
 
     bool   fileExists(const String& path);
     File   openFile(const String& path, const char* mode);
