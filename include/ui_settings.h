@@ -23,6 +23,7 @@ namespace UISettings {
     void createRepeaterScreen();
     void createWifiScreen();
     void createBluetoothScreen();
+    void createSystemScreen();
     void createAboutScreen();
 
     // Navigation functions (called from dashboard buttons)

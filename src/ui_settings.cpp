@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/types.h>
+#include <cstdlib>
 #include <string>
 #include <ifaddrs.h>
 #include <arpa/inet.h>
@@ -82,6 +83,7 @@ static lv_obj_t *screen_repeater = nullptr;
 static lv_obj_t *screen_wifi = nullptr;
 static lv_obj_t *screen_bluetooth = nullptr;
 static lv_obj_t *screen_webconf = nullptr;
+static lv_obj_t *screen_system = nullptr;
 static lv_obj_t *screen_about = nullptr;
 
 // WiFi screen widgets
@@ -100,6 +102,9 @@ static lv_obj_t *bluetooth_status_label = nullptr;
 static lv_obj_t *bluetooth_device_label = nullptr;
 static lv_obj_t *bluetooth_device_row = nullptr;
 static lv_timer_t *bluetooth_update_timer = nullptr;
+
+// System screen widgets
+static lv_obj_t *system_status_label = nullptr;
 
 // Selection tracking (for highlight updates)
 static lv_obj_t *current_freq_btn = nullptr;
@@ -125,7 +130,7 @@ static void setup_item_repeater(lv_event_t *e);
 static void setup_item_wifi(lv_event_t *e);
 static void setup_item_bluetooth(lv_event_t *e);
 static void setup_item_webconf(lv_event_t *e);
-static void setup_item_reboot(lv_event_t *e);
+static void setup_item_system(lv_event_t *e);
 
 static void freq_item_clicked(lv_event_t *e);
 static void speed_item_clicked(lv_event_t *e);
@@ -159,6 +164,7 @@ static void btn_back_clicked(lv_event_t *e) {
     if (screen_repeater)  { lv_obj_del(screen_repeater);  screen_repeater  = nullptr; }
     if (screen_wifi)      { lv_obj_del(screen_wifi);      screen_wifi      = nullptr; }
     if (screen_bluetooth) { lv_obj_del(screen_bluetooth); screen_bluetooth = nullptr; }
+    if (screen_system)    { lv_obj_del(screen_system);    screen_system    = nullptr; system_status_label = nullptr; }
     if (screen_about)     { lv_obj_del(screen_about);     screen_about     = nullptr; }
     if (screen_webconf)   { lv_obj_del(screen_webconf);   screen_webconf   = nullptr; }
     // Nul screen_setup avant l'animation : LVGL le supprime via auto_del=true
@@ -175,6 +181,7 @@ static void btn_back_to_setup_clicked(lv_event_t *e) {
     else if (cur == screen_sound)     { screen_sound     = nullptr; }
     else if (cur == screen_display)   { screen_display   = nullptr; }
     else if (cur == screen_repeater)  { screen_repeater  = nullptr; }
+    else if (cur == screen_system)    { screen_system    = nullptr; system_status_label = nullptr; }
     else if (cur == screen_about)     { screen_about     = nullptr; }
     UI_SCR_LOAD_ANIM(screen_setup, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 100, 0, true);
 }
@@ -203,6 +210,7 @@ static void nav_to_setup_timer_cb(lv_timer_t *timer) {
     if (screen_repeater)  { lv_obj_del(screen_repeater);  screen_repeater  = nullptr; }
     if (screen_wifi)      { lv_obj_del(screen_wifi);      screen_wifi      = nullptr; }
     if (screen_bluetooth) { lv_obj_del(screen_bluetooth); screen_bluetooth = nullptr; }
+    if (screen_system)    { lv_obj_del(screen_system);    screen_system    = nullptr; system_status_label = nullptr; }
     if (screen_about)     { lv_obj_del(screen_about);     screen_about     = nullptr; }
     if (screen_webconf)   { lv_obj_del(screen_webconf);   screen_webconf   = nullptr; }
     lv_timer_del(timer);
@@ -301,9 +309,12 @@ static void setup_item_bluetooth(lv_event_t *e) {
     UI_SCR_LOAD_ANIM(screen_bluetooth, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
 }
 
-static void setup_item_reboot(lv_event_t *e) {
-    ESP_LOGD(TAG, "Reboot selected");
-    (void)0; /* ESP.restart() */;
+static void setup_item_system(lv_event_t *e) {
+    ESP_LOGD(TAG, "System selected");
+    if (!screen_system) {
+        UISettings::createSystemScreen();
+    }
+    UI_SCR_LOAD_ANIM(screen_system, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
 }
 
 static void setup_item_about(lv_event_t *e) {
@@ -384,7 +395,7 @@ void UISettings::createSetupScreen() {
     addSetupItem(LV_SYMBOL_WIFI,      "WiFi",           setup_item_wifi);
     addSetupItem(LV_SYMBOL_BLUETOOTH, "Bluetooth",      setup_item_bluetooth);
     addSetupItem(LV_SYMBOL_UPLOAD,    "Web-Conf Mode",  setup_item_webconf);
-    addSetupItem(LV_SYMBOL_REFRESH,   "Reboot",         setup_item_reboot);
+    addSetupItem(LV_SYMBOL_POWER,     "System",         setup_item_system);
     addSetupItem(LV_SYMBOL_FILE,      "About",          setup_item_about);
 
     ESP_LOGD(TAG, "Setup screen created");
@@ -1836,6 +1847,111 @@ void UISettings::createBluetoothScreen() {
     bluetooth_update_timer = lv_timer_create(bluetooth_screen_timer_cb, 2000, NULL);
 
     ESP_LOGD(TAG, "Bluetooth settings screen created");
+}
+
+// =============================================================================
+// System Screen
+// =============================================================================
+
+static bool run_systemctl_action(const char *action) {
+#if !defined(ARDUINO)
+    char cmd[96];
+    snprintf(cmd, sizeof(cmd), "sudo -n /usr/bin/systemctl %s", action);
+    int rc = ::system(cmd);
+    ESP_LOGI(TAG, "systemctl %s rc=%d", action, rc);
+    return rc == 0;
+#else
+    (void)action;
+    return false;
+#endif
+}
+
+static void system_reboot_cb(lv_event_t *e) {
+    (void)e;
+    if (system_status_label) {
+        lv_label_set_text(system_status_label, "Reboot...");
+        lv_obj_set_style_text_color(system_status_label, lv_color_hex(0xffd700), 0);
+        lv_refr_now(NULL);
+    }
+    if (!run_systemctl_action("reboot") && system_status_label) {
+        lv_label_set_text(system_status_label, "Reboot failed");
+        lv_obj_set_style_text_color(system_status_label, lv_color_hex(0xff6b6b), 0);
+    }
+}
+
+static void system_poweroff_cb(lv_event_t *e) {
+    (void)e;
+    if (system_status_label) {
+        lv_label_set_text(system_status_label, "Power off...");
+        lv_obj_set_style_text_color(system_status_label, lv_color_hex(0xffd700), 0);
+        lv_refr_now(NULL);
+    }
+    if (!run_systemctl_action("poweroff") && system_status_label) {
+        lv_label_set_text(system_status_label, "Power off failed");
+        lv_obj_set_style_text_color(system_status_label, lv_color_hex(0xff6b6b), 0);
+    }
+}
+
+void UISettings::createSystemScreen() {
+    screen_system = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen_system, lv_color_hex(UIColors::BG_DARK), 0);
+    lv_obj_set_style_bg_opa(screen_system, LV_OPA_COVER, 0);
+
+    lv_obj_t *title_bar = lv_obj_create(screen_system);
+    lv_obj_set_size(title_bar, UI_SCREEN_WIDTH, 35);
+    lv_obj_set_pos(title_bar, 0, 0);
+    lv_obj_set_style_bg_color(title_bar, lv_color_hex(0xff6b6b), 0);
+    lv_obj_set_style_border_width(title_bar, 0, 0);
+    lv_obj_set_style_radius(title_bar, 0, 0);
+    lv_obj_set_style_pad_all(title_bar, 5, 0);
+
+    lv_obj_t *btn_back = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_back, 60, 25);
+    lv_obj_set_style_bg_color(btn_back, lv_color_hex(UIColors::BG_HEADER), 0);
+    lv_obj_add_event_cb(btn_back, btn_back_to_setup_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_back = lv_label_create(btn_back);
+    lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);
+    lv_obj_center(lbl_back);
+
+    lv_obj_t *title = lv_label_create(title_bar);
+    lv_label_set_text(title, "System");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 20, 0);
+
+    lv_obj_t *content = lv_obj_create(screen_system);
+    lv_obj_set_size(content, UI_SCREEN_WIDTH - 20, UI_SCREEN_HEIGHT - 55);
+    lv_obj_set_pos(content, 10, 45);
+    lv_obj_set_style_bg_color(content, lv_color_hex(UIColors::BG_DARKER), 0);
+    lv_obj_set_style_border_color(content, lv_color_hex(UIColors::BG_HEADER), 0);
+    lv_obj_set_style_radius(content, 8, 0);
+    lv_obj_set_style_pad_all(content, 20, 0);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(content, 20, 0);
+
+    lv_obj_t *btn_reboot = lv_btn_create(content);
+    lv_obj_set_size(btn_reboot, 220, 52);
+    lv_obj_set_style_bg_color(btn_reboot, lv_color_hex(UIColors::BTN_BLUE), 0);
+    lv_obj_add_event_cb(btn_reboot, system_reboot_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_reboot = lv_label_create(btn_reboot);
+    lv_label_set_text(lbl_reboot, LV_SYMBOL_REFRESH "  Reboot");
+    lv_obj_center(lbl_reboot);
+
+    lv_obj_t *btn_poweroff = lv_btn_create(content);
+    lv_obj_set_size(btn_poweroff, 220, 52);
+    lv_obj_set_style_bg_color(btn_poweroff, lv_color_hex(0xff3b30), 0);
+    lv_obj_add_event_cb(btn_poweroff, system_poweroff_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_poweroff = lv_label_create(btn_poweroff);
+    lv_label_set_text(lbl_poweroff, LV_SYMBOL_POWER "  Power off");
+    lv_obj_center(lbl_poweroff);
+
+    system_status_label = lv_label_create(content);
+    lv_label_set_text(system_status_label, "");
+    lv_obj_set_style_text_color(system_status_label, lv_color_hex(0xaaaaaa), 0);
+    lv_obj_set_style_text_font(system_status_label, &lv_font_montserrat_14, 0);
+
+    ESP_LOGD(TAG, "System settings screen created");
 }
 
 // =============================================================================
