@@ -25,6 +25,10 @@
 #include "storage_utils.h"
 #include "display.h"
 
+LV_FONT_DECLARE(lv_font_mono_16);
+LV_FONT_DECLARE(lv_font_mono_18);
+LV_FONT_DECLARE(lv_font_mono_20);
+
 static const char *TAG = "UIMessaging";
 
 // External variables
@@ -56,12 +60,16 @@ namespace UIMessaging {
 
 static lv_obj_t *screen_msg = nullptr;
 static lv_obj_t *msg_tabview = nullptr;
+static lv_obj_t *screen_frames = nullptr;
+static lv_obj_t *frames_tabview = nullptr;
 static lv_obj_t *list_aprs_global = nullptr;
 static lv_obj_t *list_wlnk_global = nullptr;
 static lv_obj_t *list_contacts_global = nullptr;
 static lv_obj_t *list_frames_global = nullptr;
 static lv_obj_t *cont_stats_global = nullptr;
-static int current_msg_type = 0; // 0 = APRS, 1 = Winlink, 2 = Contacts, 3 = Frames, 4 = Stats
+static lv_obj_t *badge_aprs_unread = nullptr;
+static lv_obj_t *badge_wlnk_unread = nullptr;
+static int current_msg_type = 0; // 0 = APRS, 1 = Winlink, 2 = Contacts
 
 // Compose screen variables
 static lv_obj_t *screen_compose = nullptr;
@@ -79,7 +87,6 @@ static String current_conversation_callsign = "";
 static int pending_conversation_msg_delete = -1;
 static bool conversation_msg_longpress_handled = false;
 static lv_obj_t *conversation_confirm_msgbox = nullptr;
-static lv_obj_t *msgbox_to_delete = nullptr;
 static bool need_conversation_refresh = false;
 
 // Contact edit screen variables
@@ -96,7 +103,6 @@ static lv_obj_t *detail_msgbox = nullptr;
 
 // Delete confirmation
 static lv_obj_t *confirm_msgbox = nullptr;
-static lv_obj_t *confirm_msgbox_to_delete = nullptr;
 static int pending_delete_msg_index = -1;
 static bool msg_longpress_handled = false;
 static bool need_aprs_list_refresh = false;
@@ -132,6 +138,70 @@ static const uint32_t DOUBLE_TAP_MS = 400;
 static const char KEY_SHIFT = 0x01;
 static const char KEY_SYMBOL = 0x02;
 
+static const lv_font_t *msg_title_font() {
+#if defined(LINUX_SIM) || !defined(ARDUINO)
+    return &lv_font_montserrat_20;
+#elif defined(WAVESHARE_S3_TOUCH_LCD_7)
+    return &lv_font_montserrat_18;
+#else
+    return &lv_font_montserrat_14;
+#endif
+}
+
+static const lv_font_t *msg_body_font() {
+#if defined(LINUX_SIM) || !defined(ARDUINO)
+    return &lv_font_montserrat_18;
+#elif defined(WAVESHARE_S3_TOUCH_LCD_7)
+    return &lv_font_montserrat_16;
+#else
+    return &lv_font_montserrat_14;
+#endif
+}
+
+static const lv_font_t *msg_small_font() {
+#if defined(LINUX_SIM) || !defined(ARDUINO)
+    return &lv_font_montserrat_14;
+#else
+    return &lv_font_montserrat_12;
+#endif
+}
+
+static const lv_font_t *msg_mono_font() {
+#if defined(LINUX_SIM) || !defined(ARDUINO)
+    return &lv_font_mono_20;
+#elif defined(WAVESHARE_S3_TOUCH_LCD_7)
+    return &lv_font_mono_18;
+#else
+    return &lv_font_mono_16;
+#endif
+}
+
+static int msg_title_bar_h() {
+    return (SCREEN_WIDTH >= 800) ? 44 : 35;
+}
+
+static int msg_tab_bar_h() {
+    return (SCREEN_WIDTH >= 800) ? 42 : 30;
+}
+
+static int msg_list_item_h() {
+    return (SCREEN_WIDTH >= 800) ? 64 : 44;
+}
+
+static void set_obj_font(lv_obj_t *obj, const lv_font_t *font) {
+    if (obj) lv_obj_set_style_text_font(obj, font, 0);
+}
+
+static void set_list_button_font(lv_obj_t *btn, const lv_font_t *font) {
+    if (!btn) return;
+
+    lv_obj_set_style_text_font(btn, font, 0);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(btn); i++) {
+        lv_obj_t *child = lv_obj_get_child(btn, i);
+        lv_obj_set_style_text_font(child, font, 0);
+    }
+}
+
 // =============================================================================
 // Forward Declarations
 // =============================================================================
@@ -146,6 +216,8 @@ static void show_contact_edit_screen(const Contact *contact);
 static void show_message_detail(const char *msg);
 static void show_delete_confirmation(const char *message, int msg_index);
 static void frame_item_clicked(lv_event_t *e);
+static void frames_tab_changed(lv_event_t *e);
+static void btn_back_clicked(lv_event_t *e);
 
 // =============================================================================
 // Module Initialization
@@ -186,6 +258,7 @@ static void show_message_detail(const char *msg) {
     lv_msgbox_add_text(detail_msgbox, msg);
     lv_obj_set_style_bg_color(detail_msgbox, lv_color_hex(0x1a1a2e), 0);
     lv_obj_set_style_text_color(detail_msgbox, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_set_style_text_font(detail_msgbox, msg_body_font(), LV_PART_MAIN);
     lv_obj_set_width(detail_msgbox, SCREEN_WIDTH - 40);
     lv_obj_center(detail_msgbox);
     lv_obj_add_event_cb(detail_msgbox, detail_msgbox_deleted_cb, LV_EVENT_DELETE, NULL);
@@ -194,33 +267,68 @@ static void show_message_detail(const char *msg) {
     lv_obj_add_event_cb(closeBtn, [](lv_event_t*) { if (detail_msgbox) lv_msgbox_close(detail_msgbox); }, LV_EVENT_CLICKED, NULL);
 }
 
+static lv_obj_t *create_tab_badge(lv_obj_t *parent, int tab_index) {
+    lv_obj_t *badge = lv_obj_create(parent);
+    lv_obj_set_size(badge, 16, 14);
+    int tabWidth = SCREEN_WIDTH / 3;
+    lv_obj_set_pos(badge, (tab_index * tabWidth) + tabWidth - 20, msg_title_bar_h() + 8);
+    lv_obj_set_style_radius(badge, 7, 0);
+    lv_obj_set_style_bg_color(badge, lv_color_hex(0xff4444), 0);
+    lv_obj_set_style_border_width(badge, 0, 0);
+    lv_obj_set_style_pad_all(badge, 0, 0);
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(badge, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *label = lv_label_create(badge);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
+    lv_obj_center(label);
+    return badge;
+}
+
+static void update_badge_label(lv_obj_t *badge, int count) {
+    if (!badge) return;
+
+    if (count <= 0) {
+        lv_obj_add_flag(badge, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    char text[16];
+    if (count > 99) snprintf(text, sizeof(text), "99+");
+    else snprintf(text, sizeof(text), "%d", count);
+
+    lv_obj_t *label = lv_obj_get_child(badge, 0);
+    if (label) {
+        lv_label_set_text(label, text);
+        lv_obj_center(label);
+    }
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void set_list_icon_color(lv_obj_t *btn, uint32_t color) {
+    if (!btn || lv_obj_get_child_count(btn) == 0) return;
+
+    lv_obj_t *icon = lv_obj_get_child(btn, 0);
+    lv_color_t lv_color = lv_color_hex(color);
+    lv_obj_set_style_text_color(icon, lv_color, 0);
+    lv_obj_set_style_image_recolor(icon, lv_color, 0);
+    lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+}
+
+void refreshUnreadBadges() {
+    update_badge_label(badge_aprs_unread, MSG_Utils::getUnreadAPRSCount());
+    update_badge_label(badge_wlnk_unread, MSG_Utils::getUnreadWLNKCount());
+
+    if (screen_msg && lv_screen_active() == screen_msg &&
+        current_msg_type == 0 && list_aprs_global) {
+        populate_msg_list(list_aprs_global, 0);
+    }
+}
+
 // =============================================================================
 // Delete Confirmation System
 // =============================================================================
-
-static void delete_confirm_msgbox_timer_cb(lv_timer_t *timer) {
-    ESP_LOGD(TAG, "delete_confirm_msgbox_timer_cb called");
-    if (confirm_msgbox_to_delete && lv_obj_is_valid(confirm_msgbox_to_delete)) {
-        lv_obj_del(confirm_msgbox_to_delete);
-        ESP_LOGD(TAG, "Msgbox deleted");
-    }
-    confirm_msgbox_to_delete = nullptr;
-    // Reset input group to avoid focus stuck on deleted popup
-    lv_group_focus_next(lv_group_get_default());
-
-    if (need_aprs_list_refresh) {
-        if (list_aprs_global) {
-            ESP_LOGD(TAG, "Refreshing APRS list after delete");
-            populate_msg_list(list_aprs_global, 0);
-        }
-        if (list_wlnk_global) {
-            populate_msg_list(list_wlnk_global, 1);
-        }
-        need_aprs_list_refresh = false;
-    }
-
-    lv_timer_del(timer);
-}
 
 static void do_confirm_delete() {
     if (pending_delete_msg_index == -1) {
@@ -239,6 +347,7 @@ static void confirm_yes_cb(lv_event_t *) {
         if (need_aprs_list_refresh) {
             if (list_aprs_global) populate_msg_list(list_aprs_global, 0);
             if (list_wlnk_global) populate_msg_list(list_wlnk_global, 1);
+            refreshUnreadBadges();
             need_aprs_list_refresh = false;
         }
         lv_timer_del(t);
@@ -288,6 +397,7 @@ static void msg_item_clicked(lv_event_t *e) {
     if (label) {
         const char *text = lv_label_get_text(label);
         show_message_detail(text);
+        if (current_msg_type == 1) MSG_Utils::markWLNKRead();
     }
 }
 
@@ -309,6 +419,7 @@ static void conversation_item_clicked(lv_event_t *e) {
         return;
 
     ESP_LOGD(TAG, "Conversation clicked: %s", callsign);
+    MSG_Utils::markConversationRead(String(callsign));
     create_conversation_screen(String(callsign));
 }
 
@@ -330,6 +441,7 @@ static void populate_msg_list(lv_obj_t *list, int type) {
             lv_obj_t *empty = lv_label_create(list);
             lv_label_set_text(empty, "No conversations");
             lv_obj_set_style_text_color(empty, lv_color_hex(0x888888), 0);
+            set_obj_font(empty, msg_body_font());
         } else {
             callsign_storage.reserve(conversations.size());
             for (size_t i = 0; i < conversations.size(); i++) {
@@ -342,12 +454,19 @@ static void populate_msg_list(lv_obj_t *list, int type) {
 
             for (size_t i = 0; i < conversations.size(); i++) {
                 std::vector<String> messages = MSG_Utils::getMessagesForContact(conversations[i]);
+                int unread = MSG_Utils::getUnreadConversationCount(conversations[i]);
                 const char* callsign = conversations[i].c_str();
                 size_t callLen = strlen(callsign);
                 if (callLen > 15) callLen = 15;
 
                 memcpy(previewBuf, callsign, callLen);
                 size_t pos = callLen;
+                if (unread > 0 && pos < sizeof(previewBuf) - 1) {
+                    int written = unread > 99
+                                  ? snprintf(previewBuf + pos, sizeof(previewBuf) - pos, "  [99+]")
+                                  : snprintf(previewBuf + pos, sizeof(previewBuf) - pos, "  [%d]", unread);
+                    if (written > 0) pos += std::min((size_t)written, sizeof(previewBuf) - pos - 1);
+                }
 
                 if (messages.size() > 0) {
                     const String& lastMsg = messages[messages.size() - 1];
@@ -375,6 +494,9 @@ static void populate_msg_list(lv_obj_t *list, int type) {
                 previewBuf[pos] = '\0';
 
                 lv_obj_t *btn = lv_list_add_btn(list, LV_SYMBOL_ENVELOPE, previewBuf);
+                lv_obj_set_height(btn, msg_list_item_h());
+                set_list_button_font(btn, msg_body_font());
+                set_list_icon_color(btn, unread > 0 ? 0xff4444 : 0x000000);
                 lv_obj_add_event_cb(btn, conversation_item_clicked, LV_EVENT_CLICKED,
                                     (void *)callsign_storage[i].c_str());
             }
@@ -388,9 +510,12 @@ static void populate_msg_list(lv_obj_t *list, int type) {
             lv_obj_t *empty = lv_label_create(list);
             lv_label_set_text(empty, "No Winlink mails");
             lv_obj_set_style_text_color(empty, lv_color_hex(0x888888), 0);
+            set_obj_font(empty, msg_body_font());
         } else {
             for (int i = messages.size() - 1; i >= 0; i--) {
                 lv_obj_t *btn = lv_list_add_btn(list, LV_SYMBOL_ENVELOPE, messages[i].c_str());
+                lv_obj_set_height(btn, msg_list_item_h());
+                set_list_button_font(btn, msg_body_font());
                 lv_obj_add_event_cb(btn, msg_item_clicked, LV_EVENT_CLICKED, NULL);
                 lv_obj_add_event_cb(btn, msg_item_longpress, LV_EVENT_LONG_PRESSED,
                                     (void *)(intptr_t)i);
@@ -402,21 +527,6 @@ static void populate_msg_list(lv_obj_t *list, int type) {
 // =============================================================================
 // Conversation Screen
 // =============================================================================
-
-static void delete_msgbox_timer_cb(lv_timer_t *timer) {
-    if (msgbox_to_delete && lv_obj_is_valid(msgbox_to_delete)) {
-        lv_obj_del(msgbox_to_delete);
-    }
-    msgbox_to_delete = nullptr;
-    lv_group_focus_next(lv_group_get_default());
-
-    if (need_conversation_refresh) {
-        refresh_conversation_messages();
-        need_conversation_refresh = false;
-    }
-
-    lv_timer_del(timer);
-}
 
 static void conv_yes_cb(lv_event_t *) {
     MSG_Utils::deleteMessageFromConversation(current_conversation_callsign,
@@ -492,6 +602,7 @@ static void refresh_conversation_messages() {
         lv_obj_t *empty = lv_label_create(conversation_list);
         lv_label_set_text(empty, "No messages");
         lv_obj_set_style_text_color(empty, lv_color_hex(0x888888), 0);
+        set_obj_font(empty, msg_body_font());
     } else {
         for (int i = messages.size() - 1; i >= 0; i--) {
             const char* msgPtr = messages[i].c_str();
@@ -553,12 +664,13 @@ static void refresh_conversation_messages() {
             lv_label_set_long_mode(msg_label, LV_LABEL_LONG_WRAP);
             lv_obj_set_width(msg_label, lv_pct(100));
             lv_obj_set_style_text_color(msg_label, lv_color_hex(0xffffff), 0);
+            set_obj_font(msg_label, msg_body_font());
 
             if (ts_buf[0]) {
                 lv_obj_t *ts_label = lv_label_create(bubble);
                 lv_label_set_text(ts_label, ts_buf);
                 lv_obj_set_width(ts_label, lv_pct(100));
-                lv_obj_set_style_text_font(ts_label, &lv_font_montserrat_12, 0);
+                lv_obj_set_style_text_font(ts_label, msg_small_font(), 0);
                 lv_obj_set_style_text_color(ts_label, lv_color_hex(0xcccccc), 0);
                 lv_obj_set_style_text_align(ts_label, LV_TEXT_ALIGN_RIGHT, 0);
             }
@@ -585,13 +697,14 @@ static void create_conversation_screen(const String &callsign) {
 
     bool isRefresh = (screen_conversation != nullptr && lv_screen_active() == screen_conversation);
     lv_obj_t *old_screen = screen_conversation;
+    const int titleH = msg_title_bar_h();
 
     screen_conversation = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_conversation, lv_color_hex(0x1a1a2e), 0);
 
     // Title bar
     lv_obj_t *title_bar = lv_obj_create(screen_conversation);
-    lv_obj_set_size(title_bar, SCREEN_WIDTH, 35);
+    lv_obj_set_size(title_bar, SCREEN_WIDTH, titleH);
     lv_obj_set_pos(title_bar, 0, 0);
     lv_obj_set_style_bg_color(title_bar, lv_color_hex(0x0f0f23), 0);
     lv_obj_set_style_border_width(title_bar, 0, 0);
@@ -612,7 +725,7 @@ static void create_conversation_screen(const String &callsign) {
     lv_obj_t *title = lv_label_create(title_bar);
     lv_label_set_text(title, callsign.c_str());
     lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(title, msg_title_font(), 0);
     lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
 
     // Reply button
@@ -627,8 +740,8 @@ static void create_conversation_screen(const String &callsign) {
 
     // Chat container
     conversation_list = lv_obj_create(screen_conversation);
-    lv_obj_set_size(conversation_list, SCREEN_WIDTH - 10, SCREEN_HEIGHT - 45);
-    lv_obj_set_pos(conversation_list, 5, 38);
+    lv_obj_set_size(conversation_list, SCREEN_WIDTH - 10, SCREEN_HEIGHT - titleH - 10);
+    lv_obj_set_pos(conversation_list, 5, titleH + 3);
     lv_obj_set_style_bg_color(conversation_list, lv_color_hex(0x0f0f23), 0);
     lv_obj_set_style_border_width(conversation_list, 0, 0);
     lv_obj_set_style_pad_all(conversation_list, 5, 0);
@@ -642,6 +755,7 @@ static void create_conversation_screen(const String &callsign) {
         lv_obj_t *empty = lv_label_create(conversation_list);
         lv_label_set_text(empty, "No messages");
         lv_obj_set_style_text_color(empty, lv_color_hex(0x888888), 0);
+        set_obj_font(empty, msg_body_font());
     } else {
         for (int i = messages.size() - 1; i >= 0; i--) {
             const char* msgPtr = messages[i].c_str();
@@ -703,12 +817,13 @@ static void create_conversation_screen(const String &callsign) {
             lv_label_set_long_mode(msg_label, LV_LABEL_LONG_WRAP);
             lv_obj_set_width(msg_label, lv_pct(100));
             lv_obj_set_style_text_color(msg_label, lv_color_hex(0xffffff), 0);
+            set_obj_font(msg_label, msg_body_font());
 
             if (ts_buf[0]) {
                 lv_obj_t *ts_label = lv_label_create(bubble);
                 lv_label_set_text(ts_label, ts_buf);
                 lv_obj_set_width(ts_label, lv_pct(100));
-                lv_obj_set_style_text_font(ts_label, &lv_font_montserrat_12, 0);
+                lv_obj_set_style_text_font(ts_label, msg_small_font(), 0);
                 lv_obj_set_style_text_color(ts_label, lv_color_hex(0xcccccc), 0);
                 lv_obj_set_style_text_align(ts_label, LV_TEXT_ALIGN_RIGHT, 0);
             }
@@ -749,6 +864,7 @@ static void populate_contacts_list(lv_obj_t *list) {
         lv_label_set_text(empty, "No contacts\nTap + to add");
         lv_obj_set_style_text_color(empty, lv_color_hex(0x888888), 0);
         lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+        set_obj_font(empty, msg_body_font());
     } else {
         // Static buffer for display text (reused, no heap alloc per iteration)
         static char displayBuf[100];
@@ -785,6 +901,8 @@ static void populate_contacts_list(lv_obj_t *list) {
             displayBuf[pos] = '\0';
 
             lv_obj_t *btn = lv_list_add_btn(list, LV_SYMBOL_CALL, displayBuf);
+            lv_obj_set_height(btn, msg_list_item_h());
+            set_list_button_font(btn, msg_body_font());
             lv_obj_add_event_cb(btn, contact_item_clicked, LV_EVENT_CLICKED, c);
             lv_obj_add_event_cb(btn, contact_item_longpress, LV_EVENT_LONG_PRESSED, c);
         }
@@ -927,6 +1045,7 @@ static void show_contact_edit_screen(const Contact *contact) {
         lv_obj_t *title = lv_label_create(title_bar);
         lv_label_set_text(title, "Contact");
         lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_text_font(title, msg_title_font(), 0);
         lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
 
         // Save button
@@ -964,9 +1083,11 @@ static void show_contact_edit_screen(const Contact *contact) {
         lv_obj_t *lbl_call = lv_label_create(form);
         lv_label_set_text(lbl_call, "Callsign:");
         lv_obj_set_style_text_color(lbl_call, lv_color_hex(0x82aaff), 0);
+        set_obj_font(lbl_call, msg_body_font());
 
         contact_callsign_input = lv_textarea_create(form);
         lv_obj_set_size(contact_callsign_input, lv_pct(100), 32);
+        lv_obj_set_style_text_font(contact_callsign_input, msg_body_font(), 0);
         lv_textarea_set_one_line(contact_callsign_input, true);
         lv_textarea_set_placeholder_text(contact_callsign_input, "e.g. F4ABC-9");
         lv_obj_add_event_cb(contact_callsign_input, contact_edit_input_focused, LV_EVENT_FOCUSED, NULL);
@@ -975,9 +1096,11 @@ static void show_contact_edit_screen(const Contact *contact) {
         lv_obj_t *lbl_name = lv_label_create(form);
         lv_label_set_text(lbl_name, "Name:");
         lv_obj_set_style_text_color(lbl_name, lv_color_hex(0x82aaff), 0);
+        set_obj_font(lbl_name, msg_body_font());
 
         contact_name_input = lv_textarea_create(form);
         lv_obj_set_size(contact_name_input, lv_pct(100), 32);
+        lv_obj_set_style_text_font(contact_name_input, msg_body_font(), 0);
         lv_textarea_set_one_line(contact_name_input, true);
         lv_textarea_set_placeholder_text(contact_name_input, "e.g. Jean");
         lv_obj_add_event_cb(contact_name_input, contact_edit_input_focused, LV_EVENT_FOCUSED, NULL);
@@ -986,9 +1109,11 @@ static void show_contact_edit_screen(const Contact *contact) {
         lv_obj_t *lbl_comment = lv_label_create(form);
         lv_label_set_text(lbl_comment, "Note:");
         lv_obj_set_style_text_color(lbl_comment, lv_color_hex(0x82aaff), 0);
+        set_obj_font(lbl_comment, msg_body_font());
 
         contact_comment_input = lv_textarea_create(form);
         lv_obj_set_size(contact_comment_input, lv_pct(100), 32);
+        lv_obj_set_style_text_font(contact_comment_input, msg_body_font(), 0);
         lv_textarea_set_one_line(contact_comment_input, true);
         lv_textarea_set_placeholder_text(contact_comment_input, "e.g. Paris");
         lv_obj_add_event_cb(contact_comment_input, contact_edit_input_focused, LV_EVENT_FOCUSED, NULL);
@@ -1066,11 +1191,7 @@ static void init_frame_pool(lv_obj_t *list) {
         lv_obj_set_width(cont, lv_pct(100));
         lv_obj_set_height(cont, LV_SIZE_CONTENT);
         lv_obj_set_style_bg_color(cont, lv_color_hex(0x0a0a14), 0);
-#if defined(WAVESHARE_S3_TOUCH_LCD_7)
-        lv_obj_set_style_pad_all(cont, 10, 0);
-#else
-        lv_obj_set_style_pad_all(cont, 6, 0);
-#endif
+        lv_obj_set_style_pad_all(cont, (SCREEN_WIDTH >= 800) ? 10 : 6, 0);
         lv_obj_set_style_border_width(cont, 1, LV_PART_MAIN);
         lv_obj_set_style_border_side(cont, LV_BORDER_SIDE_BOTTOM, LV_PART_MAIN);
         lv_obj_set_style_border_color(cont, lv_color_hex(0x333344), 0);
@@ -1081,11 +1202,7 @@ static void init_frame_pool(lv_obj_t *list) {
         lv_obj_t *label_summary = lv_label_create(cont);
         lv_obj_set_width(label_summary, lv_pct(100));
         lv_label_set_long_mode(label_summary, LV_LABEL_LONG_DOT);
-#if defined(WAVESHARE_S3_TOUCH_LCD_7)
-        lv_obj_set_style_text_font(label_summary, &lv_font_mono_16, 0);
-#else
-        lv_obj_set_style_text_font(label_summary, &lv_font_montserrat_14, 0);
-#endif
+        lv_obj_set_style_text_font(label_summary, msg_mono_font(), 0);
 
         lv_obj_t *label_full = lv_label_create(cont);
         lv_obj_add_flag(label_full, LV_OBJ_FLAG_HIDDEN);
@@ -1192,18 +1309,14 @@ static void populate_stats(lv_obj_t *cont) {
         if (stats_title_lbl) {
             lv_label_set_text(stats_title_lbl, "Stations Heard");
             lv_obj_set_style_text_color(stats_title_lbl, lv_color_hex(0x4CAF50), 0);
-#if defined(WAVESHARE_S3_TOUCH_LCD_7)
-            lv_obj_set_style_text_font(stats_title_lbl, &lv_font_montserrat_18, 0);
-#else
-            lv_obj_set_style_text_font(stats_title_lbl, &lv_font_montserrat_14, 0);
-#endif
+            lv_obj_set_style_text_font(stats_title_lbl, msg_title_font(), 0);
         }
 
         // Hybrid stats summary: last hour / last 24 h / cumulative + since
         stats_summary_lbl = lv_label_create(cont);
         if (stats_summary_lbl) {
             lv_obj_set_style_text_color(stats_summary_lbl, lv_color_hex(0xaaaaaa), 0);
-            lv_obj_set_style_text_font(stats_summary_lbl, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_font(stats_summary_lbl, msg_body_font(), 0);
         }
 
         stats_table = lv_table_create(cont);
@@ -1212,23 +1325,16 @@ static void populate_stats(lv_obj_t *cont) {
             lv_obj_set_width(stats_table, lv_pct(100));
             lv_obj_set_style_bg_color(stats_table, lv_color_hex(0x0f0f23), 0);
             lv_obj_set_style_border_color(stats_table, lv_color_hex(0x333344), 0);
-#if defined(WAVESHARE_S3_TOUCH_LCD_7)
-            lv_obj_set_style_pad_all(stats_table, 5, LV_PART_ITEMS);
-#else
-            lv_obj_set_style_pad_all(stats_table, 2, LV_PART_ITEMS);
-#endif
+            lv_obj_set_style_pad_all(stats_table, (SCREEN_WIDTH >= 800) ? 5 : 2, LV_PART_ITEMS);
             // Default text color for table elements (data rows)
             lv_obj_set_style_text_color(stats_table, lv_color_hex(0x759a9e), LV_PART_ITEMS);
+            lv_obj_set_style_text_font(stats_table, msg_body_font(), LV_PART_ITEMS);
 
             // Initialize header style only once
             if (!style_header_text_initialized) { // Check if style is already initialized
                 lv_style_init(&style_header_text);
                 lv_style_set_text_color(&style_header_text, lv_color_hex(0xFF8C00)); // Orange
-#if defined(WAVESHARE_S3_TOUCH_LCD_7)
-                lv_style_set_text_font(&style_header_text, &lv_font_montserrat_18); // Specify font for headers
-#else
-                lv_style_set_text_font(&style_header_text, &lv_font_montserrat_14); // Specify font for headers
-#endif
+                lv_style_set_text_font(&style_header_text, msg_title_font());
                     style_header_text_initialized = true; // Mark style as initialized
                 }
                 // Apply style for headers (using custom state)
@@ -1349,7 +1455,7 @@ static void msg_tab_changed(lv_event_t *e) {
 
     uint16_t tab_idx = lv_tabview_get_tab_act(tabview);
 
-    if (tab_idx > 4 || tab_idx == 0xFFFF) {
+    if (tab_idx > 2 || tab_idx == 0xFFFF) {
         return;
     }
 
@@ -1363,14 +1469,21 @@ static void msg_tab_changed(lv_event_t *e) {
         if (current_msg_type == 2 && list_contacts_global) {
             populate_contacts_list(list_contacts_global);
         }
-        if (current_msg_type == 3 && list_frames_global) {
-            populate_frames_list(list_frames_global);
-            STORAGE_Utils::clearFramesDirty();  // Data is now up-to-date
-        }
-        if (current_msg_type == 4 && cont_stats_global) {
-            populate_stats(cont_stats_global);
-            STORAGE_Utils::clearStatsDirty();  // Data is now up-to-date
-        }
+        refreshUnreadBadges();
+    }
+}
+
+static void frames_tab_changed(lv_event_t *e) {
+    lv_obj_t *tabview = (lv_obj_t*)lv_event_get_target(e);
+    if (!tabview || tabview != frames_tabview) return;
+
+    uint16_t tab_idx = lv_tabview_get_tab_act(tabview);
+    if (tab_idx == 0 && list_frames_global) {
+        populate_frames_list(list_frames_global);
+        STORAGE_Utils::clearFramesDirty();
+    } else if (tab_idx == 1 && cont_stats_global) {
+        populate_stats(cont_stats_global);
+        STORAGE_Utils::clearStatsDirty();
     }
 }
 
@@ -1471,7 +1584,7 @@ void createComposeScreen() {
     lv_obj_t *title = lv_label_create(title_bar);
     lv_label_set_text(title, "Compose Message");
     lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(title, msg_title_font(), 0);
     lv_obj_align(title, LV_ALIGN_CENTER, 30, 0);
 
     // Send button
@@ -1489,10 +1602,12 @@ void createComposeScreen() {
     lv_label_set_text(lbl_to, "To:");
     lv_obj_set_pos(lbl_to, 10, 45);
     lv_obj_set_style_text_color(lbl_to, lv_color_hex(0xffffff), 0);
+    set_obj_font(lbl_to, msg_body_font());
 
     compose_to_input = lv_textarea_create(screen_compose);
     lv_obj_set_size(compose_to_input, SCREEN_WIDTH - 50, 30);
     lv_obj_set_pos(compose_to_input, 40, 40);
+    lv_obj_set_style_text_font(compose_to_input, msg_body_font(), 0);
     lv_textarea_set_one_line(compose_to_input, true);
     lv_textarea_set_placeholder_text(compose_to_input, "CALLSIGN-SSID");
     lv_obj_add_event_cb(compose_to_input, compose_input_focused, LV_EVENT_FOCUSED, NULL);
@@ -1502,10 +1617,12 @@ void createComposeScreen() {
     lv_label_set_text(lbl_msg, "Msg:");
     lv_obj_set_pos(lbl_msg, 10, 80);
     lv_obj_set_style_text_color(lbl_msg, lv_color_hex(0xffffff), 0);
+    set_obj_font(lbl_msg, msg_body_font());
 
     compose_msg_input = lv_textarea_create(screen_compose);
     lv_obj_set_size(compose_msg_input, SCREEN_WIDTH - 20, 50);
     lv_obj_set_pos(compose_msg_input, 10, 95);
+    lv_obj_set_style_text_font(compose_msg_input, msg_body_font(), 0);
     lv_textarea_set_placeholder_text(compose_msg_input, "Your message...");
     lv_obj_add_event_cb(compose_msg_input, compose_input_focused, LV_EVENT_FOCUSED, NULL);
 
@@ -1577,11 +1694,14 @@ static void btn_add_contact_clicked(lv_event_t *e) {
 // =============================================================================
 
 void createMsgScreen() {
+    const int titleH = msg_title_bar_h();
+    const int tabH = msg_tab_bar_h();
+
     screen_msg = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_msg, lv_color_hex(0x1a1a2e), 0);
     // Title bar
     lv_obj_t *title_bar = lv_obj_create(screen_msg);
-    lv_obj_set_size(title_bar, SCREEN_WIDTH, 35);
+    lv_obj_set_size(title_bar, SCREEN_WIDTH, titleH);
     lv_obj_set_pos(title_bar, 0, 0);
     lv_obj_set_style_bg_color(title_bar, lv_color_hex(0x0000cc), 0);
     lv_obj_set_style_border_width(title_bar, 0, 0);
@@ -1601,7 +1721,7 @@ void createMsgScreen() {
     lv_obj_t *title = lv_label_create(title_bar);
     lv_label_set_text(title, "Messages");
     lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(title, msg_title_font(), 0);
     lv_obj_align(title, LV_ALIGN_CENTER, -40, 0);
 
    // --- 1. Compose button (Green) ---
@@ -1637,19 +1757,20 @@ void createMsgScreen() {
     // Tabview
     msg_tabview = lv_tabview_create(screen_msg);
     lv_tabview_set_tab_bar_position(msg_tabview, LV_DIR_TOP);
-    lv_tabview_set_tab_bar_size(msg_tabview, 30);
+    lv_tabview_set_tab_bar_size(msg_tabview, tabH);
     if (!msg_tabview) {
         ESP_LOGE(TAG, "Failed to create msg_tabview!");
         return;
     }
-    lv_obj_set_size(msg_tabview, SCREEN_WIDTH, SCREEN_HEIGHT - 35);
-    lv_obj_set_pos(msg_tabview, 0, 35);
+    lv_obj_set_size(msg_tabview, SCREEN_WIDTH, SCREEN_HEIGHT - titleH);
+    lv_obj_set_pos(msg_tabview, 0, titleH);
     lv_obj_set_style_bg_color(msg_tabview, lv_color_hex(0x0f0f23), 0);
     lv_obj_add_event_cb(msg_tabview, msg_tab_changed, LV_EVENT_VALUE_CHANGED, NULL);
 
     lv_obj_t *tab_bar = lv_tabview_get_tab_btns(msg_tabview);
     if (tab_bar) {
         lv_obj_set_style_pad_column(tab_bar, 0, 0);
+        lv_obj_set_style_text_font(tab_bar, msg_body_font(), LV_PART_ITEMS);
         // Inactive tabs: white background (LVGL default), orange text
         lv_obj_set_style_text_color(tab_bar, lv_color_hex(0xFF8C00), LV_PART_ITEMS); // Orange
         lv_obj_set_style_border_color(tab_bar, lv_color_hex(0x9DB2CC), LV_PART_ITEMS);
@@ -1706,8 +1827,70 @@ void createMsgScreen() {
         }
     }
 
-    // Frames Tab
-    lv_obj_t *tab_frames = lv_tabview_add_tab(msg_tabview, "Frames");
+    badge_aprs_unread = create_tab_badge(screen_msg, 0);
+    badge_wlnk_unread = create_tab_badge(screen_msg, 1);
+    refreshUnreadBadges();
+
+    ESP_LOGD(TAG, "Messages screen created with tabs");
+}
+
+static void createFramesScreen() {
+    const int titleH = msg_title_bar_h();
+    const int tabH = msg_tab_bar_h();
+
+    screen_frames = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen_frames, lv_color_hex(0x1a1a2e), 0);
+
+    lv_obj_t *title_bar = lv_obj_create(screen_frames);
+    lv_obj_set_size(title_bar, SCREEN_WIDTH, titleH);
+    lv_obj_set_pos(title_bar, 0, 0);
+    lv_obj_set_style_bg_color(title_bar, lv_color_hex(0x444466), 0);
+    lv_obj_set_style_border_width(title_bar, 0, 0);
+    lv_obj_set_style_radius(title_bar, 0, 0);
+    lv_obj_set_style_pad_all(title_bar, 5, 0);
+
+    lv_obj_t *btn_back = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_back, 50, 25);
+    lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x16213e), 0);
+    lv_obj_add_event_cb(btn_back, btn_back_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_back = lv_label_create(btn_back);
+    lv_label_set_text(lbl_back, LV_SYMBOL_LEFT);
+    lv_obj_center(lbl_back);
+
+    lv_obj_t *title = lv_label_create(title_bar);
+    lv_label_set_text(title, "Frames");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(title, msg_title_font(), 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+
+    frames_tabview = lv_tabview_create(screen_frames);
+    lv_tabview_set_tab_bar_position(frames_tabview, LV_DIR_TOP);
+    lv_tabview_set_tab_bar_size(frames_tabview, tabH);
+    if (!frames_tabview) {
+        ESP_LOGE(TAG, "Failed to create frames_tabview!");
+        return;
+    }
+    lv_obj_set_size(frames_tabview, SCREEN_WIDTH, SCREEN_HEIGHT - titleH);
+    lv_obj_set_pos(frames_tabview, 0, titleH);
+    lv_obj_set_style_bg_color(frames_tabview, lv_color_hex(0x0f0f23), 0);
+    lv_obj_add_event_cb(frames_tabview, frames_tab_changed, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lv_obj_t *tab_bar = lv_tabview_get_tab_btns(frames_tabview);
+    if (tab_bar) {
+        lv_obj_set_style_pad_column(tab_bar, 0, 0);
+        lv_obj_set_style_text_font(tab_bar, msg_body_font(), LV_PART_ITEMS);
+        lv_obj_set_style_text_color(tab_bar, lv_color_hex(0xFF8C00), LV_PART_ITEMS);
+        lv_obj_set_style_border_color(tab_bar, lv_color_hex(0x9DB2CC), LV_PART_ITEMS);
+        lv_obj_set_style_border_width(tab_bar, 1, LV_PART_ITEMS);
+        lv_obj_set_style_border_side(tab_bar, LV_BORDER_SIDE_RIGHT, LV_PART_ITEMS);
+        lv_obj_set_style_bg_color(tab_bar, lv_color_hex(0x86B8F7), (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+        lv_obj_set_style_text_color(tab_bar, lv_color_hex(0x0952AD), (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+        lv_obj_set_style_border_color(tab_bar, lv_color_hex(0x0952AD), (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+        lv_obj_set_style_border_width(tab_bar, 3, (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+        lv_obj_set_style_border_side(tab_bar, LV_BORDER_SIDE_BOTTOM, (lv_style_selector_t)(LV_PART_ITEMS | LV_STATE_CHECKED));
+    }
+
+    lv_obj_t *tab_frames = lv_tabview_add_tab(frames_tabview, "Frames");
     if (tab_frames) {
         lv_obj_set_style_bg_color(tab_frames, lv_color_hex(0x0f0f23), 0);
         lv_obj_set_style_pad_all(tab_frames, 5, 0);
@@ -1717,14 +1900,15 @@ void createMsgScreen() {
             lv_obj_set_size(list_frames_global, lv_pct(100), lv_pct(100));
             lv_obj_set_style_bg_color(list_frames_global, lv_color_hex(0x0f0f23), 0);
             lv_obj_set_style_border_width(list_frames_global, 0, 0);
+            populate_frames_list(list_frames_global);
+            STORAGE_Utils::clearFramesDirty();
         }
     }
 
-    // Stats Tab
-    lv_obj_t *tab_stats = lv_tabview_add_tab(msg_tabview, "Stats");
+    lv_obj_t *tab_stats = lv_tabview_add_tab(frames_tabview, "Stats");
     if (tab_stats) {
         lv_obj_set_style_bg_color(tab_stats, lv_color_hex(0x0f0f23), 0);
-        lv_obj_set_style_pad_all(tab_stats, 5, 0); // Reduce padding to increase usable width
+        lv_obj_set_style_pad_all(tab_stats, 5, 0);
 
         cont_stats_global = lv_obj_create(tab_stats);
         if (cont_stats_global) {
@@ -1737,7 +1921,7 @@ void createMsgScreen() {
         }
     }
 
-    ESP_LOGD(TAG, "Messages screen created with tabs");
+    ESP_LOGD(TAG, "Frames screen created with Frames/Stats tabs");
 }
 
 // =============================================================================
@@ -1751,8 +1935,26 @@ void openMessagesScreen() {
         if (list_aprs_global) {
             populate_msg_list(list_aprs_global, 0);
         }
+        refreshUnreadBadges();
     }
     UI_SCR_LOAD_ANIM(screen_msg, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
+}
+
+void openFramesScreen() {
+    if (!screen_frames) {
+        createFramesScreen();
+    } else if (frames_tabview) {
+        uint16_t tab_idx = lv_tabview_get_tab_act(frames_tabview);
+        if (tab_idx == 0 && list_frames_global) {
+            populate_frames_list(list_frames_global);
+            lv_obj_scroll_to_y(list_frames_global, 0, LV_ANIM_ON);
+            STORAGE_Utils::clearFramesDirty();
+        } else if (tab_idx == 1 && cont_stats_global) {
+            populate_stats(cont_stats_global);
+            STORAGE_Utils::clearStatsDirty();
+        }
+    }
+    UI_SCR_LOAD_ANIM(screen_frames, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
 }
 
 void openComposeWithCallsign(const String& callsign) {
@@ -1787,8 +1989,8 @@ void refreshFramesList() {
     // Only refresh if data changed AND Messages screen is active AND Frames tab is visible
     if (!STORAGE_Utils::isFramesDirty()) return;
 
-    if (screen_msg && lv_screen_active() == screen_msg && msg_tabview) {
-        if (lv_tabview_get_tab_act(msg_tabview) == 3 && list_frames_global) {
+    if (screen_frames && lv_screen_active() == screen_frames && frames_tabview) {
+        if (lv_tabview_get_tab_act(frames_tabview) == 0 && list_frames_global) {
             // With object pooling, just update all items (no alloc/dealloc)
             populate_frames_list(list_frames_global);
             lv_obj_scroll_to_y(list_frames_global, 0, LV_ANIM_ON);
@@ -1811,8 +2013,8 @@ void refreshStatsIfActive() {
     // Only refresh if data changed AND Stats tab is currently active
     if (!STORAGE_Utils::isStatsDirty()) return;
 
-    if (screen_msg && lv_screen_active() == screen_msg && msg_tabview) {
-        if (lv_tabview_get_tab_act(msg_tabview) == 4 && cont_stats_global) {
+    if (screen_frames && lv_screen_active() == screen_frames && frames_tabview) {
+        if (lv_tabview_get_tab_act(frames_tabview) == 1 && cont_stats_global) {
             populate_stats(cont_stats_global);
             STORAGE_Utils::clearStatsDirty();
         }

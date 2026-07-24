@@ -17,7 +17,6 @@ namespace UISettings {
     // Screen creation functions
     void createSetupScreen();
     void createFreqScreen();
-    void createSpeedScreen();
     void createDisplayScreen();
     void createSoundScreen();
     void createRepeaterScreen();
@@ -29,7 +28,6 @@ namespace UISettings {
     // Navigation functions (called from dashboard buttons)
     void openSetup();
     void openFrequency();
-    void openSpeed();
     void openDisplay();
     void openSound();
     void openWifi();

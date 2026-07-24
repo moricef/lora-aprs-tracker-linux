@@ -2,6 +2,7 @@
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include "configuration.h"
+#include "lora_utils.h"
 #include "smartbeacon_utils.h"
 
 static const char* TAG = "Config";
@@ -17,8 +18,21 @@ static const char* configPath() {
 
 using json = nlohmann::json;
 
-static json safeGet(const json& j, const std::string& k) {
-    return j.contains(k) ? j[k] : json{};
+static String defaultLoraProfileName(size_t index) {
+    switch (index) {
+        case 0: return "EU/WORLD";
+        case 1: return "Poland";
+        case 2: return "UK";
+        default: return String("PROFILE ") + String((int)index + 1);
+    }
+}
+
+static String sanitizeProfileName(const String& value, size_t index) {
+    String out = value;
+    out.trim();
+    if (out.isEmpty()) out = defaultLoraProfileName(index);
+    if (out.length() > 16) out.remove(16);
+    return out;
 }
 
 Configuration::Configuration() { setDefaultValues(); }
@@ -55,11 +69,11 @@ void Configuration::setDefaultValues() {
 
     aprs_is = {false, "euro.aprs2.net", 14580, "-1"};
 
-    // 3 profils LoRa par défaut (freq, SF, BW, CR4, power, dataRate)
+    // 3 profils LoRa par défaut (name, freq, SF, BW, CR4, power, dataRate)
     loraTypes.clear();
-    loraTypes.push_back({433775000L, 12, 125000L, 5, 20,  300});
-    loraTypes.push_back({434855000L,  9, 125000L, 7, 20, 1200});
-    loraTypes.push_back({439912500L, 12, 125000L, 5, 20,  300});
+    loraTypes.push_back({"EU/WORLD", 433775000L, 12, 125000L, 5, 20,  300});
+    loraTypes.push_back({"Poland",   434855000L,  9, 125000L, 7, 20, 1200});
+    loraTypes.push_back({"UK",       439912500L, 12, 125000L, 5, 20,  300});
 
     lora = {true, false, "WIDE1-1"};
 
@@ -90,11 +104,21 @@ bool Configuration::readFile() {
     if (data.contains("wifi")) {
         const auto& w = data["wifi"];
         if (w.contains("AP") && w["AP"].is_array()) {
+            wifiAPs.clear();
             for (const auto& ap : w["AP"]) {
                 WiFi_AP a;
                 a.ssid     = ap.value("ssid",     "");
                 a.password = ap.value("password", "");
+                bool duplicate = false;
+                for (const auto& existing : wifiAPs) {
+                    if (existing.ssid == a.ssid && existing.password == a.password) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) continue;
                 wifiAPs.push_back(a);
+                if (wifiAPs.size() >= 64) break;
             }
         }
         if (w.contains("autoAP")) {
@@ -167,27 +191,22 @@ bool Configuration::readFile() {
     // LoRa types
     if (data.contains("lora") && data["lora"].is_array()) {
         loraTypes.clear();
+        size_t profileIndex = 0;
         for (const auto& l : data["lora"]) {
             LoraType lt;
+            lt.profileName     = sanitizeProfileName(l.value("profileName", defaultLoraProfileName(profileIndex).s), profileIndex);
             lt.frequency       = l.value("frequency",       433775000);
             lt.spreadingFactor = l.value("spreadingFactor", 12);
             lt.signalBandwidth = l.value("signalBandwidth", 125000);
             lt.codingRate4     = l.value("codingRate4",     5);
             lt.power           = l.value("power",           20);
-            // dataRate: recalculate from SF/CR/BW
-            int sf = lt.spreadingFactor, cr = lt.codingRate4;
-            long bw = lt.signalBandwidth;
-            if (bw == 125000) {
-                struct { int sf; int cr; int rate; } presets[] = {
-                    {12,5,300},{12,6,244},{12,7,209},{12,8,183},{10,8,610},{9,7,1200}
-                };
-                lt.dataRate = 300;
-                for (auto& p : presets) if (p.sf==sf && p.cr==cr) { lt.dataRate=p.rate; break; }
-            } else {
-                double rate = (double)sf * ((double)bw/(1<<sf)) * (4.0/cr);
-                lt.dataRate = (int)(rate+0.5);
-            }
+            lt.dataRate        = LoRa_Utils::calculateDataRate(
+                lt.spreadingFactor,
+                lt.codingRate4,
+                lt.signalBandwidth
+            );
             loraTypes.push_back(lt);
+            profileIndex++;
         }
     }
 
@@ -316,6 +335,7 @@ bool Configuration::writeFile() {
     data["bluetooth"]["deviceName"] = bluetooth.deviceName.s;
     data["bluetooth"]["useBLE"]     = bluetooth.useBLE;
     data["bluetooth"]["useKISS"]    = bluetooth.useKISS;
+    data["bluetooth"]["hasBTClassic"] = true;
 
     data["aprs_is"]["active"]   = aprs_is.active;
     data["aprs_is"]["server"]   = aprs_is.server.s;
@@ -323,6 +343,7 @@ bool Configuration::writeFile() {
     data["aprs_is"]["passcode"] = aprs_is.passcode.s;
 
     for (size_t i = 0; i < loraTypes.size(); i++) {
+        data["lora"][i]["profileName"]     = loraTypes[i].profileName.s;
         data["lora"][i]["frequency"]       = loraTypes[i].frequency;
         data["lora"][i]["spreadingFactor"] = loraTypes[i].spreadingFactor;
         data["lora"][i]["signalBandwidth"] = loraTypes[i].signalBandwidth;
@@ -330,6 +351,8 @@ bool Configuration::writeFile() {
         data["lora"][i]["power"]           = loraTypes[i].power;
         data["lora"][i]["dataRate"]        = loraTypes[i].dataRate;
     }
+    data["loraFreqMin"] = 100000000;
+    data["loraFreqMax"] = 1000000000;
 
     data["battery"]["sendVoltage"]        = battery.sendVoltage;
     data["battery"]["voltageAsTelemetry"] = battery.voltageAsTelemetry;

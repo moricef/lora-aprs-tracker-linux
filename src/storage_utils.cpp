@@ -101,18 +101,12 @@ namespace STORAGE_Utils {
     }
 
     bool removeFile(const String& path) {
-        std::string full;
-        if (path.c_str()[0] != '/' || strncmp(path.c_str(), "/data/", 6) != 0)
-            full = std::string(ROOT_DIR) + path.c_str();
-        else full = path.c_str();
+        std::string full = resolvePath(path);
         return unlink(full.c_str()) == 0;
     }
 
     bool mkdir(const String& path) {
-        std::string full;
-        if (path.c_str()[0] != '/' || strncmp(path.c_str(), "/data/", 6) != 0)
-            full = std::string(ROOT_DIR) + path.c_str();
-        else full = path.c_str();
+        std::string full = resolvePath(path);
         return ::mkdir(full.c_str(), 0755) == 0 || errno == EEXIST;
     }
 

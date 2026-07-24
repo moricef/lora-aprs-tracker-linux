@@ -430,8 +430,14 @@ static void loop() {
         const bool oldUseKiss = Config.bluetooth.useKISS;
         const std::string oldBtName = Config.bluetooth.deviceName.c_str();
         Config.reload();
+        if (Config.beacons.empty() || Config.loraTypes.empty()) {
+            ESP_LOGE(TAG, "Invalid config reload: empty beacon or LoRa profile list, restoring defaults");
+            Config.setDefaultValues();
+        }
         myBeaconsSize   = (int)Config.beacons.size();
         loraIndexSize   = (int)Config.loraTypes.size();
+        if (myBeaconsIndex >= (uint8_t)myBeaconsSize) myBeaconsIndex = 0;
+        if (loraIndex >= (uint8_t)loraIndexSize) loraIndex = 0;
         currentBeacon   = &Config.beacons[myBeaconsIndex];
         currentLoRaType = &Config.loraTypes[loraIndex];
         miceActive = APRSPacketLib::validateMicE(currentBeacon->micE);

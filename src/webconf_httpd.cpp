@@ -1,8 +1,14 @@
 #include "webconf_httpd.h"
 #include "configuration.h"
+#include "lora_utils.h"
 #include <microhttpd.h>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <map>
+#include <vector>
+#include <algorithm>
+#include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <cstdio>
 #include <unistd.h>
@@ -11,6 +17,8 @@
 #include <pthread.h>
 
 extern Configuration Config;
+
+using json = nlohmann::json;
 
 static struct MHD_Daemon *_daemon = nullptr;
 static pthread_mutex_t   _cfg_mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -33,7 +41,68 @@ static std::string readFile(const std::string& path) {
 static std::string readJsonConfig() {
     const char* td = getenv("TRACKER_DATA");
     std::string path = (td ? std::string(td) : std::string("/data/LoRa_Tracker")) + "/tracker_conf.json";
-    return readFile(path);
+    std::string body = readFile(path);
+    if (body.empty()) return body;
+
+    try {
+        json data = json::parse(body);
+        data["loraFreqMin"] = 100000000;
+        data["loraFreqMax"] = 1000000000;
+        data["bluetooth"]["hasBTClassic"] = true;
+        if (data.contains("lora") && data["lora"].is_array()) {
+            const char *defaults[] = {"EU/WORLD", "Poland", "UK"};
+            for (size_t i = 0; i < data["lora"].size(); i++) {
+                if (!data["lora"][i].contains("profileName") ||
+                    !data["lora"][i]["profileName"].is_string() ||
+                    data["lora"][i]["profileName"].get<std::string>().empty()) {
+                    data["lora"][i]["profileName"] = (i < 3) ? defaults[i] : ("PROFILE " + std::to_string(i + 1));
+                }
+            }
+        }
+        if (data.contains("wifi") && data["wifi"].contains("AP") && data["wifi"]["AP"].is_array()) {
+            json deduped = json::array();
+            for (const auto& ap : data["wifi"]["AP"]) {
+                bool duplicate = false;
+                for (const auto& existing : deduped) {
+                    if (existing.value("ssid", "") == ap.value("ssid", "") &&
+                        existing.value("password", "") == ap.value("password", "")) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) continue;
+                deduped.push_back(ap);
+                if (deduped.size() >= 64) break;
+            }
+            data["wifi"]["AP"] = deduped;
+        }
+        return data.dump();
+    } catch (...) {
+        return body;
+    }
+}
+
+static std::string trimCopy(std::string value) {
+    auto not_space = [](unsigned char c) { return !std::isspace(c); };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
+    value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(), value.end());
+    return value;
+}
+
+static int clampInt(int value, int minValue, int maxValue) {
+    return std::max(minValue, std::min(value, maxValue));
+}
+
+static long clampLong(long value, long minValue, long maxValue) {
+    return std::max(minValue, std::min(value, maxValue));
+}
+
+static std::string upperTrimmed(std::string value) {
+    value = trimCopy(value);
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return (char)std::toupper(c);
+    });
+    return value;
 }
 
 // ── MHD connection state ───────────────────────────────────────────────────────
@@ -62,10 +131,14 @@ static void applyAndSave(const std::map<std::string,std::string>& f) {
     };
     auto has = [&](const std::string& k) { return f.count(k) > 0; };
     auto num = [&](const std::string& k, int def=0) -> int {
-        auto it = f.find(k); return it != f.end() && !it->second.empty() ? std::stoi(it->second) : def;
+        auto it = f.find(k);
+        if (it == f.end() || it->second.empty()) return def;
+        try { return std::stoi(it->second); } catch (...) { return def; }
     };
     auto dbl = [&](const std::string& k, double def=0) -> double {
-        auto it = f.find(k); return it != f.end() && !it->second.empty() ? std::stod(it->second) : def;
+        auto it = f.find(k);
+        if (it == f.end() || it->second.empty()) return def;
+        try { return std::stod(it->second); } catch (...) { return def; }
     };
 
     pthread_mutex_lock(&_cfg_mtx);
@@ -114,11 +187,26 @@ static void applyAndSave(const std::map<std::string,std::string>& f) {
     Config.aprs_is.port              = num("aprs_is.port",             Config.aprs_is.port);
     Config.aprs_is.passcode          = str("aprs_is.passcode",         Config.aprs_is.passcode.c_str());
 
-    while ((int)Config.wifiAPs.size() < 2) Config.wifiAPs.push_back({});
-    Config.wifiAPs[0].ssid           = str("wifi.AP.0.ssid",           Config.wifiAPs[0].ssid.c_str());
-    Config.wifiAPs[0].password       = str("wifi.AP.0.password",       Config.wifiAPs[0].password.c_str());
-    Config.wifiAPs[1].ssid           = str("wifi.AP.1.ssid",           Config.wifiAPs[1].ssid.c_str());
-    Config.wifiAPs[1].password       = str("wifi.AP.1.password",       Config.wifiAPs[1].password.c_str());
+    if (has("wifi.AP.count")) {
+        int wifiAPCount = clampInt(num("wifi.AP.count", (int)Config.wifiAPs.size()), 1, 64);
+        std::vector<WiFi_AP> postedWifiAPs;
+        postedWifiAPs.reserve(wifiAPCount);
+        for (int i = 0; i < wifiAPCount; i++) {
+            std::string p = "wifi.AP." + std::to_string(i) + ".";
+            WiFi_AP ap;
+            ap.ssid = trimCopy(str(p+"ssid", ""));
+            ap.password = str(p+"password", "");
+            postedWifiAPs.push_back(ap);
+        }
+        Config.wifiAPs = std::move(postedWifiAPs);
+    } else {
+        while ((int)Config.wifiAPs.size() < 2) Config.wifiAPs.push_back({});
+        Config.wifiAPs[0].ssid       = str("wifi.AP.0.ssid",           Config.wifiAPs[0].ssid.c_str());
+        Config.wifiAPs[0].password   = str("wifi.AP.0.password",       Config.wifiAPs[0].password.c_str());
+        Config.wifiAPs[1].ssid       = str("wifi.AP.1.ssid",           Config.wifiAPs[1].ssid.c_str());
+        Config.wifiAPs[1].password   = str("wifi.AP.1.password",       Config.wifiAPs[1].password.c_str());
+    }
+    Config.wifiAutoAP.password       = str("wifi.autoAP.password",     Config.wifiAutoAP.password.c_str());
 
     Config.bluetooth.active          = has("bluetooth.active");
     Config.bluetooth.useBLE          = f.count("bluetooth.transport")
@@ -129,17 +217,57 @@ static void applyAndSave(const std::map<std::string,std::string>& f) {
                                           : has("bluetooth.useKISS");
     Config.bluetooth.deviceName      = str("bluetooth.deviceName",     Config.bluetooth.deviceName.c_str());
 
+    Config.lora.sendInfo             = has("loraConfig.sendInfo");
     Config.lora.repeaterMode         = has("loraConfig.repeaterMode");
+    Config.lora.digipeatAlias        = upperTrimmed(str("loraConfig.digipeatAlias", Config.lora.digipeatAlias.c_str()));
+    if (Config.lora.digipeatAlias.isEmpty()) Config.lora.digipeatAlias = "WIDE1-1";
 
-    for (int i = 0; i < 3; i++) {
-        std::string p = "lora." + std::to_string(i) + ".";
-        if (!has(p+"frequency")) continue;   // profil absent du formulaire : ne pas l'écraser
-        while ((int)Config.loraTypes.size() <= i) Config.loraTypes.push_back({});
-        Config.loraTypes[i].frequency       = (long)dbl(p+"frequency",       Config.loraTypes[i].frequency);
-        Config.loraTypes[i].spreadingFactor = num(p+"spreadingFactor",        Config.loraTypes[i].spreadingFactor);
-        Config.loraTypes[i].codingRate4     = num(p+"codingRate4",            Config.loraTypes[i].codingRate4);
-        Config.loraTypes[i].signalBandwidth = (long)dbl(p+"signalBandwidth",  Config.loraTypes[i].signalBandwidth);
-        Config.loraTypes[i].power           = num(p+"power",                  Config.loraTypes[i].power);
+    if (has("lora.count")) {
+        int loraProfileCount = clampInt(num("lora.count", (int)Config.loraTypes.size()), 1, 64);
+        std::vector<LoraType> postedLoraProfiles;
+        postedLoraProfiles.reserve(loraProfileCount);
+
+        for (int i = 0; i < loraProfileCount; i++) {
+            std::string p = "lora." + std::to_string(i) + ".";
+            LoraType profile;
+            std::string name = trimCopy(str(p+"profileName", "PROFILE " + std::to_string(i + 1)));
+            if (name.empty()) name = "PROFILE " + std::to_string(i + 1);
+            if (name.size() > 16) name.resize(16);
+            profile.profileName = name;
+            profile.frequency = clampLong((long)dbl(p+"frequency", 433775000), 100000000, 1000000000);
+            profile.spreadingFactor = clampInt(num(p+"spreadingFactor", 12), 5, 12);
+            profile.codingRate4 = clampInt(num(p+"codingRate4", 5), 5, 8);
+            profile.signalBandwidth = num(p+"signalBandwidth", 125000) == 62500 ? 62500 : 125000;
+            profile.power = clampInt(num(p+"power", 20), 1, 22);
+            profile.dataRate = LoRa_Utils::calculateDataRate(
+                profile.spreadingFactor,
+                profile.codingRate4,
+                profile.signalBandwidth
+            );
+            postedLoraProfiles.push_back(profile);
+        }
+        Config.loraTypes = std::move(postedLoraProfiles);
+    } else {
+        for (int i = 0; i < 3; i++) {
+            std::string p = "lora." + std::to_string(i) + ".";
+            if (!has(p+"frequency")) continue;
+            while ((int)Config.loraTypes.size() <= i) Config.loraTypes.push_back({});
+            std::string name = trimCopy(str(p+"profileName", Config.loraTypes[i].profileName.c_str()));
+            if (!name.empty()) {
+                if (name.size() > 16) name.resize(16);
+                Config.loraTypes[i].profileName = name;
+            }
+            Config.loraTypes[i].frequency       = clampLong((long)dbl(p+"frequency",       Config.loraTypes[i].frequency), 100000000, 1000000000);
+            Config.loraTypes[i].spreadingFactor = clampInt(num(p+"spreadingFactor",        Config.loraTypes[i].spreadingFactor), 5, 12);
+            Config.loraTypes[i].codingRate4     = clampInt(num(p+"codingRate4",            Config.loraTypes[i].codingRate4), 5, 8);
+            Config.loraTypes[i].signalBandwidth = num(p+"signalBandwidth", Config.loraTypes[i].signalBandwidth) == 62500 ? 62500 : 125000;
+            Config.loraTypes[i].power           = clampInt(num(p+"power",                  Config.loraTypes[i].power), 1, 22);
+            Config.loraTypes[i].dataRate        = LoRa_Utils::calculateDataRate(
+                Config.loraTypes[i].spreadingFactor,
+                Config.loraTypes[i].codingRate4,
+                Config.loraTypes[i].signalBandwidth
+            );
+        }
     }
 
     Config.battery.sendVoltage       = has("battery.sendVoltage");
@@ -222,6 +350,15 @@ static MHD_Result handleRequest(void*, struct MHD_Connection *conn,
         return sendString(conn, 200, "application/json", "{\"status\":\"ok\"}");
     }
 
+    if (strcmp(method, "POST") == 0 && strcmp(url, "/action") == 0) {
+        const char *type = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, "type");
+        if (type && strcmp(type, "reboot") == 0) {
+            int rc = std::system("sudo -n /usr/bin/systemctl reboot");
+            return sendString(conn, rc == 0 ? 200 : 500, "text/plain", rc == 0 ? "Rebooting" : "Reboot failed");
+        }
+        return sendString(conn, 404, "text/plain", "Not found");
+    }
+
     struct { const char *url; const char *file; const char *mime; } assets[] = {
         { "/",              "index.html",   "text/html"              },
         { "/index.html",    "index.html",   "text/html"              },
@@ -229,6 +366,9 @@ static MHD_Result handleRequest(void*, struct MHD_Connection *conn,
         { "/script.js",     "script.js",    "application/javascript" },
         { "/bootstrap.css", "bootstrap.css","text/css"               },
         { "/bootstrap.js",  "bootstrap.js", "application/javascript" },
+        { "/favicon.png",   "favicon.png",  "image/png"              },
+        { "/github-sponsors.png", "github-sponsors.png", "image/png" },
+        { "/paypalme.png",  "paypalme.png", "image/png"              },
         { nullptr, nullptr, nullptr }
     };
 

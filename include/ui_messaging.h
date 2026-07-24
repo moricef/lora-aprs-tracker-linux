@@ -26,6 +26,7 @@ namespace UIMessaging {
 
     // Navigation
     void openMessagesScreen();
+    void openFramesScreen();
     void openComposeWithCallsign(const String& callsign);
 
     // Refresh functions
@@ -34,6 +35,7 @@ namespace UIMessaging {
     void refreshFramesList();
     void refreshStatsIfActive();  // Called from main loop to update stats tab
     void refreshConversationIfActive();  // Called from main loop to update open conversation
+    void refreshUnreadBadges();
 
     // Physical keyboard handler for compose screen
     void handleComposeKeyboard(char key);

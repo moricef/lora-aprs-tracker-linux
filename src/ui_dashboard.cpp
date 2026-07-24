@@ -15,6 +15,7 @@ static const char *TAG = "Dashboard";
 #endif
 #include "ui_settings.h"
 #include "ui_popups.h"
+#include "ui_messaging.h"
 #include "ui_map_manager.h"
 #include "map_state.h"
 #include "lvgl_ui.h"
@@ -37,6 +38,7 @@ namespace UIScreens { lv_obj_t *_mainScreen = nullptr; }
 #include "ble_utils.h"
 #include "configuration.h"
 #include "custom_characters.h"
+#include "msg_utils.h"
 #include "storage_utils.h"
 #include "utils.h"
 #include <TimeLib.h>
@@ -89,25 +91,25 @@ extern const uint8_t *symbolsAPRS[];
 #if defined(WAVESHARE_S3_TOUCH_LCD_7)
 #define STATUS_BAR_H  45
 #define BTN_BAR_H     60
-#define BTN_W        160
+#define BTN_W        140
 #define BTN_H         44
 #define CONTENT_TOP   50
 #elif defined(LINUX_SIM) || !defined(ARDUINO)
 #define STATUS_BAR_H  60
 #define BTN_BAR_H     80
-#define BTN_W        220
+#define BTN_W        180
 #define BTN_H         60
 #define CONTENT_TOP   65
 #elif defined(CROWPANEL_ADVANCE_35)
 #define STATUS_BAR_H  35
 #define BTN_BAR_H     45
-#define BTN_W        100
+#define BTN_W         86
 #define BTN_H         35
 #define CONTENT_TOP   40
 #else
 #define STATUS_BAR_H  30
 #define BTN_BAR_H     40
-#define BTN_W         70
+#define BTN_W         58
 #define BTN_H         30
 #define CONTENT_TOP   35
 #endif
@@ -135,11 +137,13 @@ static lv_obj_t *icon_wifi = nullptr;
 static lv_obj_t *icon_bluetooth = nullptr;
 static lv_obj_t *icon_battery = nullptr;
 static lv_obj_t *label_battery_pct = nullptr;
+static lv_obj_t *badge_msg_unread = nullptr;
 
 // Forward declarations for button callbacks
 static void btn_beacon_clicked(lv_event_t *e);
 static void btn_setup_clicked(lv_event_t *e);
 static void btn_msg_clicked(lv_event_t *e);
+static void btn_frames_clicked(lv_event_t *e);
 static void btn_map_clicked(lv_event_t *e);
 
 static void dashboard_gesture_cb(lv_event_t *e) {
@@ -244,12 +248,18 @@ static void btn_setup_clicked(lv_event_t *e) {
 }
 
 static void btn_msg_clicked(lv_event_t *e) {
-    ESP_LOGI(TAG, "Before MSG - DRAM: %u  PSRAM: %u  Largest DRAM block: %u",
+    ESP_LOGI(TAG, "Before MSG - DRAM: %zu  PSRAM: %zu  Largest DRAM block: %zu",
                   heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                   heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                   heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     UIPopups::closeAll();
     LVGL_UI::openMessagesScreen();
+}
+
+static void btn_frames_clicked(lv_event_t *e) {
+    (void)e;
+    UIPopups::closeAll();
+    UIMessaging::openFramesScreen();
 }
 
 static void btn_map_clicked(lv_event_t *e) {
@@ -279,6 +289,7 @@ static void btn_map_clicked(lv_event_t *e) {
 // Public button action functions
 void onBeaconClicked() { btn_beacon_clicked(nullptr); }
 void onMsgClicked() { btn_msg_clicked(nullptr); }
+void onFramesClicked() { btn_frames_clicked(nullptr); }
 void onMapClicked() { btn_map_clicked(nullptr); }
 void onSetupClicked() { btn_setup_clicked(nullptr); }
 
@@ -411,12 +422,19 @@ void createDashboard() {
 
     // LoRa info
     label_lora = lv_label_create(content);
-    char lora_init[64];
-    char fbuf[16];
-    Utils::formatFreqMHz(Config.loraTypes[loraIndex].frequency, fbuf, sizeof(fbuf));
+    char lora_init[96];
     int rate = Config.loraTypes[loraIndex].dataRate;
-    snprintf(lora_init, sizeof(lora_init), "LoRa: %s MHz  %d bps", fbuf, rate);
+    const char *profileName = Config.loraTypes[loraIndex].profileName.isEmpty()
+                              ? "PROFILE"
+                              : Config.loraTypes[loraIndex].profileName.c_str();
+    snprintf(lora_init, sizeof(lora_init),
+             "\nLoRa profile: %s\n\nFreq: %.4f MHz      Speed: %d bps\n",
+             profileName,
+             (double)Config.loraTypes[loraIndex].frequency / 1000000.0,
+             rate);
     lv_label_set_text(label_lora, lora_init);
+    lv_obj_set_width(label_lora, SCREEN_WIDTH - 38);
+    lv_label_set_long_mode(label_lora, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_color(label_lora, lv_color_hex(0xff6b6b), 0);
 #if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
     lv_obj_set_style_text_font(label_lora, &lv_font_montserrat_22, 0);
@@ -424,9 +442,9 @@ void createDashboard() {
     lv_obj_set_style_text_font(label_lora, &lv_font_montserrat_16, 0);
 #endif
 #if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
-    lv_obj_set_pos(label_lora, 0, 105);
+    lv_obj_set_pos(label_lora, 0, 90);
 #else
-    lv_obj_set_pos(label_lora, 0, 55);
+    lv_obj_set_pos(label_lora, 0, 45);
 #endif
 
     // Last RX stations
@@ -441,9 +459,9 @@ void createDashboard() {
     lv_obj_set_style_text_font(label_last_rx, &lv_font_mono_16, 0);
 #endif
 #if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
-    lv_obj_set_pos(label_last_rx, 0, 145);
+    lv_obj_set_pos(label_last_rx, 0, 230);
 #else
-    lv_obj_set_pos(label_last_rx, 0, 80);
+    lv_obj_set_pos(label_last_rx, 0, 135);
 #endif
 
     // Bottom button bar
@@ -480,6 +498,25 @@ void createDashboard() {
     lv_label_set_text(lbl_msg, "MESSAGES");
     lv_obj_center(lbl_msg);
     lv_obj_set_style_text_color(lbl_msg, lv_color_hex(0xffffff), 0);
+    badge_msg_unread = lv_label_create(btn_msg);
+    lv_label_set_text(badge_msg_unread, "");
+    lv_obj_set_style_bg_color(badge_msg_unread, lv_color_hex(0xff2d2d), 0);
+    lv_obj_set_style_bg_opa(badge_msg_unread, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(badge_msg_unread, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_radius(badge_msg_unread, 10, 0);
+    lv_obj_set_style_pad_hor(badge_msg_unread, 6, 0);
+    lv_obj_set_style_pad_ver(badge_msg_unread, 2, 0);
+    lv_obj_align(badge_msg_unread, LV_ALIGN_TOP_RIGHT, -4, 4);
+
+    // Frames button
+    lv_obj_t *btn_frames = lv_btn_create(btn_bar);
+    lv_obj_set_size(btn_frames, BTN_W, BTN_H);
+    lv_obj_set_style_bg_color(btn_frames, lv_color_hex(0x555577), 0);
+    lv_obj_add_event_cb(btn_frames, btn_frames_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_frames = lv_label_create(btn_frames);
+    lv_label_set_text(lbl_frames, "FRAMES");
+    lv_obj_center(lbl_frames);
+    lv_obj_set_style_text_color(lbl_frames, lv_color_hex(0xffffff), 0);
 
     // Map button (green)
     lv_obj_t *btn_map = lv_btn_create(btn_bar);
@@ -508,6 +545,7 @@ void createDashboard() {
     // Load the screen
     lv_scr_load(screen_main);
     UIScreens::setMainScreen(screen_main);
+    refreshMessageBadge();
 }
 
 // Update functions
@@ -585,12 +623,31 @@ void updateLoRa(const char *lastRx, int rssi) {
 
 void refreshLoRaInfo() {
     if (label_lora) {
-        char buf[64];
-        char fbuf[16];
-        Utils::formatFreqMHz(Config.loraTypes[loraIndex].frequency, fbuf, sizeof(fbuf));
+        char buf[96];
         int rate = Config.loraTypes[loraIndex].dataRate;
-        snprintf(buf, sizeof(buf), "LoRa: %s MHz  %d bps", fbuf, rate);
+        const char *profileName = Config.loraTypes[loraIndex].profileName.isEmpty()
+                                  ? "PROFILE"
+                                  : Config.loraTypes[loraIndex].profileName.c_str();
+        snprintf(buf, sizeof(buf),
+                 "\nLoRa profile: %s\n\nFreq: %.4f MHz      Speed: %d bps\n",
+                 profileName,
+                 (double)Config.loraTypes[loraIndex].frequency / 1000000.0,
+                 rate);
         lv_label_set_text(label_lora, buf);
+    }
+}
+
+void refreshMessageBadge() {
+    if (!badge_msg_unread) return;
+    int unread = MSG_Utils::getUnreadMessagesCount();
+    if (unread > 0) {
+        char buf[8];
+        if (unread > 99) snprintf(buf, sizeof(buf), "99+");
+        else snprintf(buf, sizeof(buf), "%d", unread);
+        lv_label_set_text(badge_msg_unread, buf);
+        lv_obj_clear_flag(badge_msg_unread, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(badge_msg_unread, LV_OBJ_FLAG_HIDDEN);
     }
 }
 

@@ -76,7 +76,6 @@ extern uint32_t last_tick;
 
 static lv_obj_t *screen_setup = nullptr;
 static lv_obj_t *screen_freq = nullptr;
-static lv_obj_t *screen_speed = nullptr;
 static lv_obj_t *screen_display = nullptr;
 static lv_obj_t *screen_sound = nullptr;
 static lv_obj_t *screen_repeater = nullptr;
@@ -108,7 +107,6 @@ static lv_obj_t *system_status_label = nullptr;
 
 // Selection tracking (for highlight updates)
 static lv_obj_t *current_freq_btn = nullptr;
-static lv_obj_t *current_speed_btn = nullptr;
 
 // Web-conf state
 static bool webconf_reboot_requested = false;
@@ -123,7 +121,6 @@ static void btn_wifi_back_clicked(lv_event_t *e);
 static void btn_bluetooth_back_clicked(lv_event_t *e);
 
 static void setup_item_frequency(lv_event_t *e);
-static void setup_item_speed(lv_event_t *e);
 static void setup_item_display(lv_event_t *e);
 static void setup_item_sound(lv_event_t *e);
 static void setup_item_repeater(lv_event_t *e);
@@ -133,7 +130,6 @@ static void setup_item_webconf(lv_event_t *e);
 static void setup_item_system(lv_event_t *e);
 
 static void freq_item_clicked(lv_event_t *e);
-static void speed_item_clicked(lv_event_t *e);
 
 static void wifi_switch_changed(lv_event_t *e);
 static void wifi_screen_timer_cb(lv_timer_t *timer);
@@ -158,7 +154,6 @@ static void btn_back_clicked(lv_event_t *e) {
     // Les sous-écrans déjà retournés vers setup ont leur pointeur null grâce à auto_del.
     // Les sous-écrans encore actifs (nav directe vers dashboard) doivent être supprimés.
     if (screen_freq)      { lv_obj_del(screen_freq);      screen_freq      = nullptr; current_freq_btn  = nullptr; }
-    if (screen_speed)     { lv_obj_del(screen_speed);     screen_speed     = nullptr; current_speed_btn = nullptr; }
     if (screen_sound)     { lv_obj_del(screen_sound);     screen_sound     = nullptr; }
     if (screen_display)   { lv_obj_del(screen_display);   screen_display   = nullptr; }
     if (screen_repeater)  { lv_obj_del(screen_repeater);  screen_repeater  = nullptr; }
@@ -177,7 +172,6 @@ static void btn_back_to_setup_clicked(lv_event_t *e) {
     // Identifier et nullifier le sous-écran actif avant que LVGL le supprime via auto_del=true
     lv_obj_t *cur = lv_scr_act();
     if      (cur == screen_freq)      { screen_freq      = nullptr; current_freq_btn  = nullptr; }
-    else if (cur == screen_speed)     { screen_speed     = nullptr; current_speed_btn = nullptr; }
     else if (cur == screen_sound)     { screen_sound     = nullptr; }
     else if (cur == screen_display)   { screen_display   = nullptr; }
     else if (cur == screen_repeater)  { screen_repeater  = nullptr; }
@@ -204,7 +198,6 @@ static void nav_to_setup_timer_cb(lv_timer_t *timer) {
     nav_to_setup_timer = nullptr;
     if (screen_setup) lv_screen_load(screen_setup);
     if (screen_freq)      { lv_obj_del(screen_freq);      screen_freq      = nullptr; current_freq_btn  = nullptr; }
-    if (screen_speed)     { lv_obj_del(screen_speed);     screen_speed     = nullptr; current_speed_btn = nullptr; }
     if (screen_sound)     { lv_obj_del(screen_sound);     screen_sound     = nullptr; }
     if (screen_display)   { lv_obj_del(screen_display);   screen_display   = nullptr; }
     if (screen_repeater)  { lv_obj_del(screen_repeater);  screen_repeater  = nullptr; }
@@ -222,7 +215,7 @@ static void nav_to_setup_timer_cb(lv_timer_t *timer) {
 
 
 static void setup_item_frequency(lv_event_t *e) {
-    ESP_LOGD(TAG, "Frequency selected");
+    ESP_LOGD(TAG, "LoRa profiles selected");
     if (screen_freq) {
         lv_obj_del(screen_freq);
         screen_freq = nullptr;
@@ -230,17 +223,6 @@ static void setup_item_frequency(lv_event_t *e) {
     }
     UISettings::createFreqScreen();
     UI_SCR_LOAD_ANIM(screen_freq, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
-}
-
-static void setup_item_speed(lv_event_t *e) {
-    ESP_LOGD(TAG, "Speed selected");
-    if (screen_speed) {
-        lv_obj_del(screen_speed);
-        screen_speed = nullptr;
-        current_speed_btn = nullptr;
-    }
-    UISettings::createSpeedScreen();
-    UI_SCR_LOAD_ANIM(screen_speed, LV_SCR_LOAD_ANIM_MOVE_LEFT, 100, 0, false);
 }
 
 static void setup_item_display(lv_event_t *e) {
@@ -387,8 +369,7 @@ void UISettings::createSetupScreen() {
         lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, NULL);
     };
 
-    addSetupItem(LV_SYMBOL_WIFI,      "LoRa Frequency", setup_item_frequency);
-    addSetupItem(LV_SYMBOL_SHUFFLE,   "LoRa Speed",     setup_item_speed);
+    addSetupItem(LV_SYMBOL_WIFI,      "LoRa Profiles",  setup_item_frequency);
     addSetupItem(LV_SYMBOL_SETTINGS,  "Display",        setup_item_display);
     addSetupItem(LV_SYMBOL_AUDIO,     "Sound",          setup_item_sound);
     addSetupItem(LV_SYMBOL_LOOP,      "Repeater",       setup_item_repeater);
@@ -402,13 +383,13 @@ void UISettings::createSetupScreen() {
 }
 
 // =============================================================================
-// Frequency Screen
+// LoRa Profiles Screen
 // =============================================================================
 
 static void freq_item_clicked(lv_event_t *e) {
     lv_obj_t *btn = (lv_obj_t*)lv_event_get_current_target(e);
     int index = (int)(intptr_t)lv_event_get_user_data(e);
-    ESP_LOGD(TAG, "Frequency %d selected", index);
+    ESP_LOGD(TAG, "LoRa profile %d selected", index);
     LoRa_Utils::requestFrequencyChange(index);
 
     if (current_freq_btn && current_freq_btn != btn) {
@@ -448,12 +429,12 @@ void UISettings::createFreqScreen() {
 
     // Title
     lv_obj_t *title = lv_label_create(title_bar);
-    lv_label_set_text(title, "LoRa Frequency");
+    lv_label_set_text(title, "LoRa Profiles");
     lv_obj_set_style_text_color(title, lv_color_hex(UIColors::TEXT_WHITE), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
     lv_obj_align(title, LV_ALIGN_CENTER, 20, 0);
 
-    // Frequency list
+    // Profiles configured through WebConf.
     lv_obj_t *list = lv_list_create(screen_freq);
     lv_obj_set_size(list, UI_SCREEN_WIDTH - 10, UI_SCREEN_HEIGHT - 45);
     lv_obj_set_pos(list, 5, 40);
@@ -462,15 +443,23 @@ void UISettings::createFreqScreen() {
     lv_obj_set_style_radius(list, 8, 0);
 
     for (int i = 0; i < loraIndexSize && i < (int)Config.loraTypes.size(); i++) {
-        char buf[64];
+        const LoraType &profile = Config.loraTypes[i];
+        char buf[128];
         char fbuf[16];
-        Utils::formatFreqMHz(Config.loraTypes[i].frequency, fbuf, sizeof(fbuf));
-        snprintf(buf, sizeof(buf), "%s MHz  SF%d  BW%.0f",
+        Utils::formatFreqMHz(profile.frequency, fbuf, sizeof(fbuf));
+        const char *profileName = profile.profileName.isEmpty()
+                                  ? "PROFILE"
+                                  : profile.profileName.c_str();
+        snprintf(buf, sizeof(buf), "%s\n%s MHz  SF%d CR4:%d BW%.0f  %d bps",
+                 profileName,
                  fbuf,
-                 Config.loraTypes[i].spreadingFactor,
-                 Config.loraTypes[i].signalBandwidth);
+                 profile.spreadingFactor,
+                 profile.codingRate4,
+                 (double)profile.signalBandwidth / 1000.0,
+                 profile.dataRate);
 
-        lv_obj_t *btn = lv_list_add_btn(list, LV_SYMBOL_WIFI, buf);
+        lv_obj_t *btn = lv_list_add_btn(list, NULL, buf);
+        lv_obj_set_height(btn, 58);
         lv_obj_add_event_cb(btn, freq_item_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
         if (i == loraIndex) {
@@ -483,94 +472,7 @@ void UISettings::createFreqScreen() {
         }
     }
 
-    ESP_LOGD(TAG, "Frequency screen created");
-}
-
-// =============================================================================
-// Speed Screen
-// =============================================================================
-
-static void speed_item_clicked(lv_event_t *e) {
-    lv_obj_t *btn = (lv_obj_t*)lv_event_get_current_target(e);
-    int dataRate = (int)(intptr_t)lv_event_get_user_data(e);
-    LoRa_Utils::requestDataRateChange(dataRate);
-
-    if (current_speed_btn && current_speed_btn != btn) {
-        lv_obj_set_style_bg_color(current_speed_btn, lv_color_hex(UIColors::BG_DARKER), 0);
-        lv_obj_set_style_text_color(current_speed_btn, lv_color_hex(UIColors::TEXT_WHITE), 0);
-    }
-
-    lv_obj_set_style_bg_color(btn, lv_color_hex(UIColors::TEXT_GREEN), 0);
-    lv_obj_set_style_text_color(btn, lv_color_hex(0x000000), 0);
-    current_speed_btn = btn;
-
-    nav_to_setup_timer = lv_timer_create(nav_to_setup_timer_cb, 600, NULL);
-}
-
-void UISettings::createSpeedScreen() {
-    screen_speed = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(screen_speed, lv_color_hex(UIColors::BG_DARK), 0);
-    lv_obj_set_style_bg_opa(screen_speed, LV_OPA_COVER, 0);
-
-    // Title bar
-    lv_obj_t *title_bar = lv_obj_create(screen_speed);
-    lv_obj_set_size(title_bar, UI_SCREEN_WIDTH, 35);
-    lv_obj_set_pos(title_bar, 0, 0);
-    lv_obj_set_style_bg_color(title_bar, lv_color_hex(UIColors::BTN_BLUE), 0);
-    lv_obj_set_style_border_width(title_bar, 0, 0);
-    lv_obj_set_style_radius(title_bar, 0, 0);
-    lv_obj_set_style_pad_all(title_bar, 5, 0);
-
-    // Back button
-    lv_obj_t *btn_back = lv_btn_create(title_bar);
-    lv_obj_set_size(btn_back, 60, 25);
-    lv_obj_set_style_bg_color(btn_back, lv_color_hex(UIColors::BG_HEADER), 0);
-    lv_obj_add_event_cb(btn_back, btn_back_to_setup_clicked, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *lbl_back = lv_label_create(btn_back);
-    lv_label_set_text(lbl_back, "< BACK");
-    lv_obj_center(lbl_back);
-
-    // Title
-    lv_obj_t *title = lv_label_create(title_bar);
-    lv_label_set_text(title, "LoRa Speed");
-    lv_obj_set_style_text_color(title, lv_color_hex(UIColors::TEXT_WHITE), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 20, 0);
-
-    // Speed list
-    lv_obj_t *list = lv_list_create(screen_speed);
-    lv_obj_set_size(list, UI_SCREEN_WIDTH - 10, UI_SCREEN_HEIGHT - 45);
-    lv_obj_set_pos(list, 5, 40);
-    lv_obj_set_style_bg_color(list, lv_color_hex(UIColors::BG_DARKER), 0);
-    lv_obj_set_style_border_color(list, lv_color_hex(UIColors::BG_HEADER), 0);
-    lv_obj_set_style_radius(list, 8, 0);
-
-    struct SpeedOption { int dataRate; const char *label; };
-    const SpeedOption speeds[] = {
-        {1200, "1200 bps (SF9,  Fast)"},
-        { 610,  "610 bps (SF10)"},
-        { 300,  "300 bps (SF12, Long range)"},
-        { 244,  "244 bps (SF12)"},
-        { 209,  "209 bps (SF12)"},
-        { 183,  "183 bps (SF12, Longest)"},
-    };
-
-    int currentDR = Config.loraTypes[loraIndex].dataRate;
-    for (int i = 0; i < 6; i++) {
-        lv_obj_t *btn = lv_list_add_btn(list, LV_SYMBOL_SHUFFLE, speeds[i].label);
-        lv_obj_add_event_cb(btn, speed_item_clicked, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)speeds[i].dataRate);
-        if (speeds[i].dataRate == currentDR) {
-            lv_obj_set_style_bg_color(btn, lv_color_hex(UIColors::TEXT_GREEN), 0);
-            lv_obj_set_style_text_color(btn, lv_color_hex(0x000000), 0);
-            current_speed_btn = btn;
-        } else {
-            lv_obj_set_style_bg_color(btn, lv_color_hex(UIColors::BG_DARKER), 0);
-            lv_obj_set_style_text_color(btn, lv_color_hex(UIColors::TEXT_WHITE), 0);
-        }
-    }
-
-    ESP_LOGD(TAG, "Speed screen created");
+    ESP_LOGD(TAG, "LoRa profiles screen created");
 }
 
 
@@ -1603,11 +1505,11 @@ static void bluetooth_screen_timer_cb(lv_timer_t *timer) {
 // Timer callbacks for deferred BLE operations
 // Phase 2: init BLE after WiFi memory is released
 static void ble_setup_phase2_cb(lv_timer_t *timer) {
-    ESP_LOGI(TAG, "BLE init: Free DRAM: %u bytes, largest block: %u bytes",
+    ESP_LOGI(TAG, "BLE init: Free DRAM: %zu bytes, largest block: %zu bytes",
              heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_INTERNAL),
              heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_INTERNAL));
     BLE_Utils::setup();
-    ESP_LOGI(TAG, "BLE started. Free DRAM: %u bytes, largest block: %u bytes",
+    ESP_LOGI(TAG, "BLE started. Free DRAM: %zu bytes, largest block: %zu bytes",
              heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_INTERNAL),
              heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_INTERNAL));
     lv_timer_del(timer);
