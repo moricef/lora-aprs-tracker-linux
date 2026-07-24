@@ -115,7 +115,17 @@ ifdef WITH_MAPLIBRE
              -licuuc -licui18n -licudata -lsqlite3 -lrt -ldl
 endif
 
-OBJS := $(SRCS:.cpp=.o)
+ifdef WITH_MAPLIBRE
+  BUILD_MODE := maplibre
+else ifdef WITH_DISPLAY
+  BUILD_MODE := display
+else
+  BUILD_MODE := headless
+endif
+
+OBJDIR := build/$(BOARD)-$(BUILD_MODE)
+OBJS := $(addprefix $(OBJDIR)/,$(SRCS))
+OBJS := $(OBJS:.cpp=.o)
 OBJS := $(OBJS:.c=.o)
 DEPS := $(OBJS:.o=.d)
 
@@ -129,18 +139,22 @@ $(TARGET): $(OBJS)
 # recompile quand un header change (sans ça, modifier un .h ne déclenche
 # aucune recompilation et le binaire garde l'ancienne valeur).
 # mbgl headers require C++20 and are built without RTTI; compile this TU apart.
-src/maplibre_display.o: src/maplibre_display.cpp
+$(OBJDIR)/src/maplibre_display.o: src/maplibre_display.cpp
+	@mkdir -p $(dir $@)
 	$(CXX) -std=gnu++20 -Wall -O2 -g -fno-rtti -DWITH_MAPLIBRE -DLV_CONF_INCLUDE_SIMPLE $(INC) $(ML_INC) -MMD -MP -c $< -o $@
 
-%.o: %.cpp
+$(OBJDIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INC) -MMD -MP -c $< -o $@
 
-%.o: %.c
+$(OBJDIR)/%.o: %.c
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(INC) -MMD -MP -c $< -o $@
 
 clean:
-	rm -f $(OBJS) $(DEPS) $(TARGET)
-	find lib \( -name "*.o" -o -name "*.d" \) -delete
+	rm -rf build
+	rm -f $(TARGET) lora_aprs_tracker lora_aprs_tracker.new
+	find src lib \( -name "*.o" -o -name "*.d" \) -delete
 
 -include $(DEPS)
 
