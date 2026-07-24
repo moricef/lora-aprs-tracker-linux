@@ -36,6 +36,11 @@ struct StationStats {
     float    snrTotal;
     uint32_t lastHeard;
     bool     lastIsDirect;
+    String   lastPath;
+    String   lastDest;
+    char     lastSymbolTable;
+    char     lastSymbol;
+    char     lastPayloadType;
 };
 
 struct DashboardRxEntry {
@@ -73,7 +78,9 @@ namespace STORAGE_Utils {
     int  getContactCount();
 
     bool logRawFrame(const String& frame, int rssi, float snr, bool isDirect);
-    void updateStationStats(const String& callsign, int rssi, float snr, bool isDirect);
+    void updateStationStats(const String& callsign, int rssi, float snr, bool isDirect,
+                            const String& path = "", const String& dest = "",
+                            char symbolTable = 0, char symbol = 0, char payloadType = 0);
     const std::vector<String>& getLastFrames(int count);
     void checkFramesLogRotation();
     void loadFramesFromSD();

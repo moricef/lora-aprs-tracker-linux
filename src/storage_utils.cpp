@@ -210,7 +210,7 @@ namespace STORAGE_Utils {
         struct tm *tm_info = localtime(&now);
 
         // Timestamp formaté une fois pour toutes à la réception
-        char ts[15];
+        char ts[32];
         snprintf(ts, sizeof(ts), "%02d-%02d %02d:%02d",
                 tm_info->tm_mon + 1, tm_info->tm_mday,
                 tm_info->tm_hour, tm_info->tm_min);
@@ -219,7 +219,7 @@ namespace STORAGE_Utils {
         if (!f) return false;
         int snr_int = (int)snr;
         int snr_dec = abs((int)((snr - snr_int) * 10));
-        fprintf(f, "%s RSSI:%d SNR:%d.%d %s\n",
+        fprintf(f, "%s RSSI:%d SNR:%d.%d %s %s\n",
             ts, rssi, snr_int, snr_dec, isDirect ? "D" : "R", frame.c_str());
         fclose(f);
 
@@ -231,7 +231,9 @@ namespace STORAGE_Utils {
         return true;
     }
     
-    void updateStationStats(const String& callsign, int rssi, float snr, bool isDirect) {
+    void updateStationStats(const String& callsign, int rssi, float snr, bool isDirect,
+                            const String& path, const String& dest,
+                            char symbolTable, char symbol, char payloadType) {
         for (auto& s : _stationStats) {
             if (s.callsign == callsign) {
                 s.count++;
@@ -239,6 +241,11 @@ namespace STORAGE_Utils {
                 s.rssiTotal += rssi; s.snrTotal += snr;
                 s.lastHeard = (uint32_t)time(nullptr);
                 s.lastIsDirect = isDirect;
+                s.lastPath = path;
+                s.lastDest = dest;
+                s.lastSymbolTable = symbolTable;
+                s.lastSymbol = symbol;
+                s.lastPayloadType = payloadType;
                 _statsDirty = true;
                 return;
             }
@@ -249,6 +256,11 @@ namespace STORAGE_Utils {
         ss.rssiTotal = rssi; ss.snrTotal = snr;
         ss.lastHeard = (uint32_t)time(nullptr);
         ss.lastIsDirect = isDirect;
+        ss.lastPath = path;
+        ss.lastDest = dest;
+        ss.lastSymbolTable = symbolTable;
+        ss.lastSymbol = symbol;
+        ss.lastPayloadType = payloadType;
         _stationStats.push_back(ss);
         _statsDirty = true;
     }
@@ -377,6 +389,14 @@ namespace STORAGE_Utils {
                 ss.snrTotal    = s.value("snrTotal",   0.0f);
                 ss.lastHeard   = s.value("lastHeard",  0U);
                 ss.lastIsDirect= s.value("lastIsDirect",false);
+                ss.lastPath    = s.value("lastPath",   "");
+                ss.lastDest    = s.value("lastDest",   "");
+                std::string symTable = s.value("lastSymbolTable", "");
+                std::string sym      = s.value("lastSymbol",      "");
+                std::string payType  = s.value("lastPayloadType", "");
+                ss.lastSymbolTable = symTable.empty() ? 0 : symTable[0];
+                ss.lastSymbol      = sym.empty()      ? 0 : sym[0];
+                ss.lastPayloadType = payType.empty()  ? 0 : payType[0];
                 _stationStats.push_back(ss);
             }
         }
@@ -416,7 +436,12 @@ namespace STORAGE_Utils {
                 {"rssiTotal",   s.rssiTotal},
                 {"snrTotal",    s.snrTotal},
                 {"lastHeard",   s.lastHeard},
-                {"lastIsDirect",s.lastIsDirect}
+                {"lastIsDirect",s.lastIsDirect},
+                {"lastPath",    s.lastPath.s},
+                {"lastDest",    s.lastDest.s},
+                {"lastSymbolTable", std::string(s.lastSymbolTable ? 1 : 0, s.lastSymbolTable)},
+                {"lastSymbol",      std::string(s.lastSymbol      ? 1 : 0, s.lastSymbol)},
+                {"lastPayloadType", std::string(s.lastPayloadType ? 1 : 0, s.lastPayloadType)}
             });
         }
         std::ofstream f(STATS_FILE);

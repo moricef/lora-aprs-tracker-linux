@@ -130,6 +130,7 @@ static lv_color_t *aprs_symbol_buf = nullptr;
 
 // Last RX stations
 static lv_obj_t *label_last_rx = nullptr;
+static lv_obj_t *label_network = nullptr;
 
 // Status bar icons
 static lv_obj_t *icon_gps_strict = nullptr;
@@ -145,6 +146,112 @@ static void btn_setup_clicked(lv_event_t *e);
 static void btn_msg_clicked(lv_event_t *e);
 static void btn_frames_clicked(lv_event_t *e);
 static void btn_map_clicked(lv_event_t *e);
+
+static String firstPathToken(const std::string &path) {
+    size_t comma = path.find(',');
+    return String(path.substr(0, comma == std::string::npos ? path.size() : comma).c_str());
+}
+
+static void parseAprsSymbol(const char *body, char &symbolTable, char &symbol, char &payloadType) {
+    symbolTable = 0;
+    symbol = 0;
+    payloadType = body && *body ? body[0] : 0;
+    if (!body) return;
+
+    size_t len = strlen(body);
+    if ((payloadType == '!' || payloadType == '=' || payloadType == '/' || payloadType == '@') && len > 19) {
+        if ((body[1] == '/' || body[1] == '\\') && len > 10) {
+            symbolTable = body[1];
+            symbol = body[10];
+        } else {
+            symbolTable = body[9];
+            symbol = body[19];
+        }
+    } else if (payloadType == '_') {
+        symbol = '_';
+    }
+}
+
+static const char *stationKind(const StationStats &s) {
+    if (s.lastSymbol == '_') return "WX";
+    if (s.lastDest.startsWith("APLRG") || s.lastPath.indexOf("TCPIP") >= 0 ||
+        s.lastPath.indexOf("qA") >= 0)
+        return "iGate";
+    if (s.lastSymbol == '#') return "Digi";
+    int dash = s.callsign.lastIndexOf('-');
+    int ssid = (dash >= 0) ? s.callsign.substring(dash + 1).toInt() : -1;
+    if (ssid == 10) return "Digi";
+    if (s.lastPayloadType == '!' || s.lastPayloadType == '=' ||
+        s.lastPayloadType == '/' || s.lastPayloadType == '@')
+        return "Tracker";
+    return "Other";
+}
+
+static void refreshNetworkStats() {
+    if (!label_network) return;
+
+    const std::vector<StationStats> &stations = STORAGE_Utils::getStationStats();
+    uint32_t direct = 0, via = 0, tracker = 0, digi = 0, igate = 0, wx = 0, other = 0;
+    float snrTotal = 0.0f;
+    uint32_t snrCount = 0;
+    String topRfTx = "?";
+    uint32_t topRfTxCount = 0;
+
+    for (const StationStats &s : stations) {
+        if (s.lastIsDirect) direct++;
+        else via++;
+        if (s.count > 0) {
+            snrTotal += s.snrTotal / s.count;
+            snrCount++;
+        }
+
+        const char *kind = stationKind(s);
+        if (strcmp(kind, "Tracker") == 0) tracker++;
+        else if (strcmp(kind, "Digi") == 0) digi++;
+        else if (strcmp(kind, "iGate") == 0) igate++;
+        else if (strcmp(kind, "WX") == 0) wx++;
+        else other++;
+    }
+
+    const std::vector<DashboardRxEntry> &rx = STORAGE_Utils::getDashboardLastRx();
+    for (const DashboardRxEntry &e : rx) {
+        if (e.rfTx.isEmpty()) continue;
+        uint32_t count = 0;
+        for (const DashboardRxEntry &candidate : rx) {
+            if (candidate.rfTx == e.rfTx) count++;
+        }
+        if (count > topRfTxCount) {
+            topRfTxCount = count;
+            topRfTx = e.rfTx;
+        }
+    }
+
+    uint32_t total = direct + via;
+    uint32_t directPct = total ? (direct * 100U) / total : 0;
+    uint32_t viaPct = total ? (via * 100U) / total : 0;
+    float avgSnr = snrCount ? snrTotal / snrCount : 0.0f;
+
+    char buf[320];
+    snprintf(buf, sizeof(buf),
+             "#888888 Network RX#\n"
+             "Stations: #00ff00 %u#\n"
+             "Direct:   #00ff00 %u#  %3u%%\n"
+             "Via digi: #ffcc00 %u#  %3u%%\n"
+             "Tracker:  #00ff00 %u#   Digi: #ffcc00 %u#\n"
+             "iGate:    #66aaff %u#   WX:   #88ddff %u#\n"
+             "Other:    #aaaaaa %u#\n"
+             "Top RF-TX: #ffcc00 %s#\n"
+             "Avg SNR:  #00ff00 %.1f#",
+             (unsigned)stations.size(),
+             direct, directPct,
+             via, viaPct,
+             tracker, digi,
+             igate, wx,
+             other,
+             topRfTx.c_str(),
+             avgSnr);
+    lv_label_set_text(label_network, buf);
+}
 
 static void dashboard_gesture_cb(lv_event_t *e) {
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
@@ -420,6 +527,22 @@ void createDashboard() {
 #endif
     lv_obj_set_pos(label_gps, 0, 0);
 
+    // LoRa network summary (right column)
+    label_network = lv_label_create(content);
+    lv_label_set_recolor(label_network, true);
+    lv_label_set_long_mode(label_network, LV_LABEL_LONG_CLIP);
+    lv_label_set_text(label_network, "#888888 Network RX#\nStations: --\nDirect: --\nVia digi: --");
+    lv_obj_set_style_text_color(label_network, lv_color_hex(0xcfd8dc), 0);
+#if defined(WAVESHARE_S3_TOUCH_LCD_7) || !defined(ARDUINO)
+    lv_obj_set_style_text_font(label_network, &lv_font_mono_20, 0);
+    lv_obj_set_width(label_network, 345);
+    lv_obj_set_pos(label_network, SCREEN_WIDTH - 385, 8);
+#else
+    lv_obj_set_style_text_font(label_network, &lv_font_mono_16, 0);
+    lv_obj_set_width(label_network, 130);
+    lv_obj_set_pos(label_network, SCREEN_WIDTH - 150, 6);
+#endif
+
     // LoRa info
     label_lora = lv_label_create(content);
     char lora_init[96];
@@ -463,6 +586,7 @@ void createDashboard() {
 #else
     lv_obj_set_pos(label_last_rx, 0, 135);
 #endif
+    refreshNetworkStats();
 
     // Bottom button bar
     lv_obj_t *btn_bar = lv_obj_create(screen_main);
@@ -805,10 +929,14 @@ void addRxLine(const char *frame) {
     const char *colon = strchr(gt, ':');
     bool isDirect = true;
     std::string path;
+    String dest;
     if (colon && colon > gt + 1) {
         path.assign(gt + 1, colon - gt - 1);
+        dest = firstPathToken(path);
         if (path.find('*') != std::string::npos) isDirect = false;
     }
+    char symbolTable = 0, symbol = 0, payloadType = 0;
+    parseAprsSymbol(colon ? colon + 1 : nullptr, symbolTable, symbol, payloadType);
 
     entry.callsign = callsign;
     entry.rssi = rssi;
@@ -818,9 +946,12 @@ void addRxLine(const char *frame) {
     STORAGE_Utils::updateRxStats(rssi, snr);
 
     if (!path.empty()) STORAGE_Utils::updateDigiStats(String(path.c_str()));
-    STORAGE_Utils::updateStationStats(String(callsign.c_str()), rssi, snr, isDirect);
+    STORAGE_Utils::updateStationStats(String(callsign.c_str()), rssi, snr, isDirect,
+                                      String(path.c_str()), dest,
+                                      symbolTable, symbol, payloadType);
 
     updateLastRx();
+    refreshNetworkStats();
     UIMessaging::refreshFramesList();
 }
 

@@ -506,8 +506,12 @@ static void loop() {
         int pathStart = rawFrame.indexOf('>');
         int pathEnd   = rawFrame.indexOf(':');
         bool isDirect = true;
+        String path;
+        String dest;
         if (pathStart >= 0 && pathEnd > pathStart) {
-            String path = rawFrame.substring(pathStart+1, pathEnd);
+            path = rawFrame.substring(pathStart+1, pathEnd);
+            int comma = path.indexOf(',');
+            dest = (comma >= 0) ? path.substring(0, comma) : path;
             if (path.indexOf('*') >= 0) isDirect = false;
             STORAGE_Utils::updateDigiStats(path);
         }
@@ -518,7 +522,27 @@ static void loop() {
         String sender;
         if (pathStart > 0) {
             sender = rawFrame.substring(0, pathStart);
-            STORAGE_Utils::updateStationStats(sender, packet.rssi, packet.snr, isDirect);
+            char symbolTable = 0;
+            char symbol = 0;
+            char payloadType = 0;
+            if (pathEnd >= 0 && (size_t)(pathEnd + 1) < rawFrame.length()) {
+                String body = rawFrame.substring(pathEnd + 1);
+                payloadType = body.length() ? body[0] : 0;
+                if ((payloadType == '!' || payloadType == '=' ||
+                     payloadType == '/' || payloadType == '@') && body.length() > 19) {
+                    if ((body[1] == '/' || body[1] == '\\') && body.length() > 10) {
+                        symbolTable = body[1];
+                        symbol = body[10];
+                    } else {
+                        symbolTable = body[9];
+                        symbol = body[19];
+                    }
+                } else if (payloadType == '_') {
+                    symbol = '_';
+                }
+            }
+            STORAGE_Utils::updateStationStats(sender, packet.rssi, packet.snr, isDirect,
+                                             path, dest, symbolTable, symbol, payloadType);
         }
 
         // Digipeater. Own beacons come back audible once a neighbour digi has
