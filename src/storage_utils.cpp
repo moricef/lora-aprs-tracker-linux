@@ -546,9 +546,19 @@ namespace STORAGE_Utils {
             });
         }
         j["stations"] = json::array();
-        int max = std::min((int)_stationStats.size(), 20);
+        // The file keeps 20 stations: pick the RF neighbourhood first, most recently
+        // heard inside each group, instead of whichever were discovered first.
+        std::vector<size_t> order(_stationStats.size());
+        for (size_t i = 0; i < order.size(); i++) order[i] = i;
+        std::sort(order.begin(), order.end(), [](size_t a, size_t b) {
+            bool aDirect = _stationStats[a].directCount > 0;
+            bool bDirect = _stationStats[b].directCount > 0;
+            if (aDirect != bDirect) return aDirect;
+            return _stationStats[a].lastHeard > _stationStats[b].lastHeard;
+        });
+        int max = std::min((int)order.size(), 20);
         for (int i = 0; i < max; i++) {
-            const auto& s = _stationStats[i];
+            const auto& s = _stationStats[order[i]];
             j["stations"].push_back({
                 {"callsign",    s.callsign.s},
                 {"count",       s.count},

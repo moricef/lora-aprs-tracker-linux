@@ -1429,11 +1429,15 @@ static void populate_stats(lv_obj_t *cont) {
             lv_table_set_cell_value(stats_table, 1, 2, "");
             lv_table_set_cell_value(stats_table, 1, 3, "");
         } else {
-            // Sort stations by packet count in descending order
+            // Direct neighbours first: a station heard once locally matters more on a
+            // tracker than a chatty station arriving only through a digi.
             std::vector<size_t> indices(stations.size());
             for (size_t i = 0; i < stations.size(); i++) indices[i] = i;
             std::sort(indices.begin(), indices.end(), [&stations](size_t a, size_t b) {
-                return stations[a].count > stations[b].count; // Sort by packet count
+                bool aDirect = stations[a].directCount > 0;
+                bool bDirect = stations[b].directCount > 0;
+                if (aDirect != bDirect) return aDirect;
+                return stations[a].count > stations[b].count;
             });
 
             size_t rowCount = (indices.size() < 10) ? indices.size() : 10;
