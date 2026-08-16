@@ -10,3 +10,9 @@ tools/inspect_tile
 tools/preview/
 # Docs de travail / scratch (non suivies)
 VECTOR_TODO.md
+
+# Cache et journaux d'exécution
+cache.sqlite
+logs/
+# Binaire du prototype MapLibre (164 Mo)
+maplibre/proto/proto
