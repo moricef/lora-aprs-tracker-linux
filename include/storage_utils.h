@@ -25,13 +25,21 @@ struct LinkStats {
 struct DigiStats {
     String   callsign;
     uint32_t count;
+    uint32_t relayCount;
+    uint32_t newCount;
+    uint32_t duplicateCount;
+    uint32_t lastSeen;
 };
 
 struct StationStats {
     String   callsign;
-    uint32_t count;
+    uint32_t count;        // total observé, direct et relayé
+    uint32_t directCount;  // réceptions directes seules — diviseur des moyennes
     int      lastRssi;
     float    lastSnr;
+    // RSSI et SNR sont nos mesures locales : sur une trame relayée elles décrivent
+    // le digi, pas la station émettrice. Seules les réceptions directes sont
+    // cumulées, pour que les moyennes reflètent le voisinage RF réel.
     int32_t  rssiTotal;
     float    snrTotal;
     uint32_t lastHeard;
@@ -41,6 +49,9 @@ struct StationStats {
     char     lastSymbolTable;
     char     lastSymbol;
     char     lastPayloadType;
+    bool     hasPosition;
+    double   lastLat;
+    double   lastLon;
 };
 
 struct DashboardRxEntry {
@@ -49,6 +60,7 @@ struct DashboardRxEntry {
     float    snr;
     uint32_t timestamp;
     String   rfTx;       // station réellement entendue en RF (dernier digi * réel)
+    bool     isDirect;
 };
 
 namespace STORAGE_Utils {
@@ -80,7 +92,8 @@ namespace STORAGE_Utils {
     bool logRawFrame(const String& frame, int rssi, float snr, bool isDirect);
     void updateStationStats(const String& callsign, int rssi, float snr, bool isDirect,
                             const String& path = "", const String& dest = "",
-                            char symbolTable = 0, char symbol = 0, char payloadType = 0);
+                            char symbolTable = 0, char symbol = 0, char payloadType = 0,
+                            bool hasPosition = false, double lat = 0.0, double lon = 0.0);
     const std::vector<String>& getLastFrames(int count);
     void checkFramesLogRotation();
     void loadFramesFromSD();
@@ -89,7 +102,7 @@ namespace STORAGE_Utils {
     void updateRxStats(int rssi, float snr);
     void updateTxStats();
     void updateAckStats();
-    void updateDigiStats(const String& path);
+    void updateDigiStats(const String& path, const String& frameKey = "");
     LinkStats getStats();
     float getAvgRssi();
     float getAvgSnr();

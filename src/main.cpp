@@ -30,6 +30,7 @@
 #include "webconf_httpd.h"
 #include "notification_utils.h"
 #include "gpx_writer.h"
+#include "aprs_position_utils.h"
 #include <APRSPacketLib.h>
 
 #ifdef USE_LVGL_UI
@@ -104,6 +105,32 @@ extern SmartBeaconValues currentSmartBeaconValues;
 static volatile bool running = true;
 static volatile bool reloadConfig = false;
 static volatile bool screenshotRequested = false;
+
+#ifdef USE_LVGL_UI
+// Set once the display and dashboard are up. The loop skips every LVGL call
+// when it stays false, so a missing screen degrades to radio-only operation
+// instead of dereferencing widgets that were never built.
+static bool uiActive = false;
+
+static bool hasConnectedDisplay() {
+    DIR *d = opendir("/sys/class/drm");
+    if (!d) return false;
+    bool found = false;
+    struct dirent *e;
+    while (!found && (e = readdir(d)) != nullptr) {
+        if (e->d_name[0] == '.') continue;
+        char path[320];
+        snprintf(path, sizeof(path), "/sys/class/drm/%s/status", e->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        char status[32] = {0};
+        if (fgets(status, sizeof(status), f)) found = strncmp(status, "connected", 9) == 0;
+        fclose(f);
+    }
+    closedir(d);
+    return found;
+}
+#endif
 
 static void sigHandler(int sig) {
     if (sig == SIGUSR1) {
@@ -305,6 +332,9 @@ static void setup() {
     miceActive = APRSPacketLib::validateMicE(currentBeacon->micE);
 
 #ifdef USE_LVGL_UI
+    if (!hasConnectedDisplay()) {
+        ESP_LOGW(TAG, "no connected DRM connector — running without UI");
+    } else {
     fprintf(stderr, "[UI] lv_init...\n"); fflush(stderr);
     lv_init();
     // The stock DRM driver installs its own LVGL tick callback, but the
@@ -395,6 +425,8 @@ static void setup() {
                  "LVGL DRM software",
 #endif
                  touch ? "OK" : "none");
+        uiActive = true;
+    }
     }
 #endif
 
@@ -464,7 +496,7 @@ static void loop() {
 
     currentBeacon = &Config.beacons[myBeaconsIndex];
 #ifdef USE_LVGL_UI
-    {
+    if (uiActive) {
         static String lastCallsign = "";
         if (currentBeacon->callsign != lastCallsign) {
             lastCallsign = currentBeacon->callsign;
@@ -493,7 +525,7 @@ static void loop() {
 
     LoRa_Utils::processPendingChanges();
 #ifdef USE_LVGL_UI
-    UIDashboard::refreshLoRaInfo();
+    if (uiActive) UIDashboard::refreshLoRaInfo();
 #endif
 
     // ── RX ──────────────────────────────────────────────────────────────────
@@ -508,12 +540,14 @@ static void loop() {
         bool isDirect = true;
         String path;
         String dest;
+        String frameKey;
         if (pathStart >= 0 && pathEnd > pathStart) {
             path = rawFrame.substring(pathStart+1, pathEnd);
             int comma = path.indexOf(',');
             dest = (comma >= 0) ? path.substring(0, comma) : path;
             if (path.indexOf('*') >= 0) isDirect = false;
-            STORAGE_Utils::updateDigiStats(path);
+            frameKey = rawFrame.substring(0, pathStart) + rawFrame.substring(pathEnd);
+            STORAGE_Utils::updateDigiStats(path, frameKey);
         }
 
         STORAGE_Utils::logRawFrame(rawFrame, packet.rssi, packet.snr, isDirect);
@@ -522,27 +556,15 @@ static void loop() {
         String sender;
         if (pathStart > 0) {
             sender = rawFrame.substring(0, pathStart);
-            char symbolTable = 0;
-            char symbol = 0;
-            char payloadType = 0;
+            AprsPositionInfo pos;
             if (pathEnd >= 0 && (size_t)(pathEnd + 1) < rawFrame.length()) {
                 String body = rawFrame.substring(pathEnd + 1);
-                payloadType = body.length() ? body[0] : 0;
-                if ((payloadType == '!' || payloadType == '=' ||
-                     payloadType == '/' || payloadType == '@') && body.length() > 19) {
-                    if ((body[1] == '/' || body[1] == '\\') && body.length() > 10) {
-                        symbolTable = body[1];
-                        symbol = body[10];
-                    } else {
-                        symbolTable = body[9];
-                        symbol = body[19];
-                    }
-                } else if (payloadType == '_') {
-                    symbol = '_';
-                }
+                pos = aprsParsePositionInfo(body.c_str());
             }
             STORAGE_Utils::updateStationStats(sender, packet.rssi, packet.snr, isDirect,
-                                             path, dest, symbolTable, symbol, payloadType);
+                                             path, dest,
+                                             pos.symbolTable, pos.symbol, pos.payloadType,
+                                             pos.hasPosition, pos.lat, pos.lon);
         }
 
         // Digipeater. Own beacons come back audible once a neighbour digi has
@@ -564,7 +586,7 @@ static void loop() {
         else BluetoothClassic::sendToClient(rawFrame.c_str());
 
 #ifdef USE_LVGL_UI
-        {
+        if (uiActive) {
             char rxLine[512];
             snprintf(rxLine, sizeof(rxLine), "RSSI:%d SNR:%.1f %s",
                      packet.rssi, packet.snr, rawFrame.c_str());
@@ -582,9 +604,11 @@ static void loop() {
     int mapStationCountBeforeCleanup = mapStationsCount;
     STATION_Utils::cleanOldMapStations();
 #ifdef USE_LVGL_UI
-    if (!packet.text.isEmpty() || mapStationsCount != mapStationCountBeforeCleanup)
-        MapView::refreshStations();
-    UIMessaging::refreshConversationIfActive();
+    if (uiActive) {
+        if (!packet.text.isEmpty() || mapStationsCount != mapStationCountBeforeCleanup)
+            MapView::refreshStations();
+        UIMessaging::refreshConversationIfActive();
+    }
 #endif
 
     // ── GPS / SmartBeacon ────────────────────────────────────────────────────
@@ -630,15 +654,17 @@ static void loop() {
                        gpsFix.hours, gpsFix.minutes, gpsFix.seconds);
                 fflush(stdout);
 #ifdef USE_LVGL_UI
-                UIDashboard::updateGPS(gpsFix.lat, gpsFix.lon, gpsFix.alt,
-                                       gpsFix.speed_kph, gpsFix.satellites, gpsFix.hdop);
-                UIDashboard::updateCallsign(currentBeacon->callsign.c_str());
-                MapView::setPosition(gpsFix.lat, gpsFix.lon);
+                if (uiActive) {
+                    UIDashboard::updateGPS(gpsFix.lat, gpsFix.lon, gpsFix.alt,
+                                           gpsFix.speed_kph, gpsFix.satellites, gpsFix.hdop);
+                    UIDashboard::updateCallsign(currentBeacon->callsign.c_str());
+                    MapView::setPosition(gpsFix.lat, gpsFix.lon);
+                }
 #endif
             }
 #ifdef USE_LVGL_UI
             // Heure locale : toujours affichée (système ou GPS)
-            {
+            if (uiActive) {
                 time_t now = time(nullptr);
                 struct tm* lt = localtime(&now);
                 UIDashboard::updateTime(lt->tm_mday, lt->tm_mon + 1, lt->tm_year + 1900,
@@ -655,10 +681,12 @@ static void loop() {
         if (lastTx > txInterval) STATION_Utils::checkStandingUpdateTime();
         if (millis() - refreshDisplayTime >= 1000) {
 #ifdef USE_LVGL_UI
-            time_t now = time(nullptr);
-            struct tm* lt = localtime(&now);
-            UIDashboard::updateTime(lt->tm_mday, lt->tm_mon + 1, lt->tm_year + 1900,
-                                    lt->tm_hour, lt->tm_min, lt->tm_sec);
+            if (uiActive) {
+                time_t now = time(nullptr);
+                struct tm* lt = localtime(&now);
+                UIDashboard::updateTime(lt->tm_mday, lt->tm_mon + 1, lt->tm_year + 1900,
+                                        lt->tm_hour, lt->tm_min, lt->tm_sec);
+            }
 #endif
             refreshDisplayTime = millis();
         }
@@ -667,6 +695,7 @@ static void loop() {
     STORAGE_Utils::checkStatsSave();
 
 #ifdef USE_LVGL_UI
+    if (!uiActive) { usleep(10000); return; }
     UIPopups::processPending();
     static uint32_t lastBluetoothUiRefresh = 0;
     if (millis() - lastBluetoothUiRefresh >= 500) {

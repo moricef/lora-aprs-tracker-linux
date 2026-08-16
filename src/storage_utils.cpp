@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
 #include <algorithm>
 #include <deque>
@@ -47,6 +48,7 @@ static LinkStats             _stats = {};
 static std::deque<uint32_t>  _rxTimes;
 static std::deque<uint32_t>  _txTimes;
 static std::vector<DigiStats>   _digiStats;
+static std::deque<uint32_t>     _seenFrameHashes;
 static std::vector<StationStats> _stationStats;
 static std::vector<DashboardRxEntry> _dashRx;
 static std::vector<int>   _rssiHistory;
@@ -62,6 +64,43 @@ static uint32_t _lastStatsSave = 0;
 using json = nlohmann::json;
 
 static void mkdirP(const char* path) { mkdir(path, 0755); }
+
+static bool isGenericDigiAlias(const String &call) {
+    static const char *prefixes[] = {"WIDE", "TRACE", "RELAY", "GATE", "ECHO"};
+    for (const char *p : prefixes) {
+        size_t n = strlen(p);
+        if (call.length() < n) continue;
+        bool match = true;
+        for (size_t i = 0; i < n; i++) {
+            if (toupper((unsigned char)call[i]) != p[i]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+static uint32_t fnv1a32(const String &s) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < s.length(); i++) {
+        h ^= (uint8_t)s[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static bool rememberFrameKey(const String &frameKey) {
+    if (frameKey.isEmpty()) return false;
+    uint32_t h = fnv1a32(frameKey);
+    for (uint32_t seen : _seenFrameHashes) {
+        if (seen == h) return true;
+    }
+    _seenFrameHashes.push_back(h);
+    while (_seenFrameHashes.size() > 512) _seenFrameHashes.pop_front();
+    return false;
+}
 
 namespace STORAGE_Utils {
 
@@ -233,12 +272,16 @@ namespace STORAGE_Utils {
     
     void updateStationStats(const String& callsign, int rssi, float snr, bool isDirect,
                             const String& path, const String& dest,
-                            char symbolTable, char symbol, char payloadType) {
+                            char symbolTable, char symbol, char payloadType,
+                            bool hasPosition, double lat, double lon) {
         for (auto& s : _stationStats) {
             if (s.callsign == callsign) {
                 s.count++;
-                s.lastRssi = rssi; s.lastSnr = snr;
-                s.rssiTotal += rssi; s.snrTotal += snr;
+                if (isDirect) {
+                    s.directCount++;
+                    s.lastRssi = rssi; s.lastSnr = snr;
+                    s.rssiTotal += rssi; s.snrTotal += snr;
+                }
                 s.lastHeard = (uint32_t)time(nullptr);
                 s.lastIsDirect = isDirect;
                 s.lastPath = path;
@@ -246,14 +289,22 @@ namespace STORAGE_Utils {
                 s.lastSymbolTable = symbolTable;
                 s.lastSymbol = symbol;
                 s.lastPayloadType = payloadType;
+                if (hasPosition) {
+                    s.hasPosition = true;
+                    s.lastLat = lat;
+                    s.lastLon = lon;
+                }
                 _statsDirty = true;
                 return;
             }
         }
         StationStats ss;
         ss.callsign = callsign; ss.count = 1;
-        ss.lastRssi = rssi; ss.lastSnr = snr;
-        ss.rssiTotal = rssi; ss.snrTotal = snr;
+        ss.directCount = isDirect ? 1 : 0;
+        ss.lastRssi = isDirect ? rssi : 0;
+        ss.lastSnr  = isDirect ? snr : 0.0f;
+        ss.rssiTotal = isDirect ? rssi : 0;
+        ss.snrTotal  = isDirect ? snr : 0.0f;
         ss.lastHeard = (uint32_t)time(nullptr);
         ss.lastIsDirect = isDirect;
         ss.lastPath = path;
@@ -261,6 +312,9 @@ namespace STORAGE_Utils {
         ss.lastSymbolTable = symbolTable;
         ss.lastSymbol = symbol;
         ss.lastPayloadType = payloadType;
+        ss.hasPosition = hasPosition;
+        ss.lastLat = hasPosition ? lat : 0.0;
+        ss.lastLon = hasPosition ? lon : 0.0;
         _stationStats.push_back(ss);
         _statsDirty = true;
     }
@@ -277,6 +331,7 @@ namespace STORAGE_Utils {
     // ─── Link stats ──────────────────────────────────────────────────────────
     void resetStats()    {
         _stats = {}; _digiStats.clear();
+        _seenFrameHashes.clear();
         _rxTimes.clear(); _txTimes.clear();
         _statsDirty = true;
     }
@@ -317,21 +372,49 @@ namespace STORAGE_Utils {
     }
     void updateAckStats(){ _stats.ackCount++; _statsDirty = true; }
 
-    void updateDigiStats(const String& path) {
+    void updateDigiStats(const String& path, const String& frameKey) {
+        bool duplicate = rememberFrameKey(frameKey);
         int start = 0;
+        int idx = 0;
+        bool changed = false;
         while (true) {
             int comma = path.indexOf(',', start);
             String hop = (comma > 0) ? path.substring(start, comma) : path.substring(start);
             hop.trim();
-            if (!hop.isEmpty()) {
+            bool used = hop.indexOf('*') >= 0;
+            if (used) hop.replace("*", "");
+            if (idx >= 1 && used && !hop.isEmpty() && !isGenericDigiAlias(hop)) {
                 bool found = false;
-                for (auto& d : _digiStats) if (d.callsign == hop) { d.count++; found = true; break; }
-                if (!found) _digiStats.push_back({hop, 1});
+                uint32_t now = (uint32_t)time(nullptr);
+                for (auto& d : _digiStats) {
+                    if (d.callsign == hop) {
+                        d.count++;
+                        d.relayCount++;
+                        if (duplicate) d.duplicateCount++;
+                        else d.newCount++;
+                        d.lastSeen = now;
+                        found = true;
+                        changed = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    DigiStats ds;
+                    ds.callsign = hop;
+                    ds.count = 1;
+                    ds.relayCount = 1;
+                    ds.newCount = duplicate ? 0 : 1;
+                    ds.duplicateCount = duplicate ? 1 : 0;
+                    ds.lastSeen = now;
+                    _digiStats.push_back(ds);
+                    changed = true;
+                }
             }
             if (comma < 0) break;
             start = comma + 1;
+            idx++;
         }
-        _statsDirty = true;
+        if (changed) _statsDirty = true;
     }
 
     LinkStats getStats()                                   { return _stats; }
@@ -387,6 +470,16 @@ namespace STORAGE_Utils {
                 ss.lastSnr     = s.value("lastSnr",    0.0f);
                 ss.rssiTotal   = s.value("rssiTotal",  0);
                 ss.snrTotal    = s.value("snrTotal",   0.0f);
+                ss.directCount = s.value("directCount", 0U);
+                // Avant l'ajout de directCount, les cumuls mélangeaient direct et
+                // relayé : les moyennes décrivaient autant le digi que la station.
+                // On les repart de zéro plutôt que de traîner ce mélange.
+                if (!s.contains("directCount")) {
+                    ss.rssiTotal = 0;
+                    ss.snrTotal  = 0.0f;
+                    ss.lastRssi  = 0;
+                    ss.lastSnr   = 0.0f;
+                }
                 ss.lastHeard   = s.value("lastHeard",  0U);
                 ss.lastIsDirect= s.value("lastIsDirect",false);
                 ss.lastPath    = s.value("lastPath",   "");
@@ -397,7 +490,22 @@ namespace STORAGE_Utils {
                 ss.lastSymbolTable = symTable.empty() ? 0 : symTable[0];
                 ss.lastSymbol      = sym.empty()      ? 0 : sym[0];
                 ss.lastPayloadType = payType.empty()  ? 0 : payType[0];
+                ss.hasPosition = s.value("hasPosition", false);
+                ss.lastLat     = s.value("lastLat",      0.0);
+                ss.lastLon     = s.value("lastLon",      0.0);
                 _stationStats.push_back(ss);
+            }
+        }
+        if (j.contains("digis") && j["digis"].is_array()) {
+            for (const auto& d : j["digis"]) {
+                DigiStats ds;
+                ds.callsign       = d.value("callsign",       "");
+                ds.count          = d.value("count",          0U);
+                ds.relayCount     = d.value("relayCount",     ds.count);
+                ds.newCount       = d.value("newCount",       0U);
+                ds.duplicateCount = d.value("duplicateCount", 0U);
+                ds.lastSeen       = d.value("lastSeen",       0U);
+                if (!ds.callsign.isEmpty()) _digiStats.push_back(ds);
             }
         }
         if (_stats.since > 0) {
@@ -424,6 +532,19 @@ namespace STORAGE_Utils {
         j["link"]["snrMax"]    = _stats.snrMax;
         j["link"]["snrTotal"]  = _stats.snrTotal;
         j["link"]["since"]     = _stats.since;
+        j["digis"] = json::array();
+        int maxDigis = std::min((int)_digiStats.size(), 20);
+        for (int i = 0; i < maxDigis; i++) {
+            const auto& d = _digiStats[i];
+            j["digis"].push_back({
+                {"callsign",       d.callsign.s},
+                {"count",          d.count},
+                {"relayCount",     d.relayCount},
+                {"newCount",       d.newCount},
+                {"duplicateCount", d.duplicateCount},
+                {"lastSeen",       d.lastSeen}
+            });
+        }
         j["stations"] = json::array();
         int max = std::min((int)_stationStats.size(), 20);
         for (int i = 0; i < max; i++) {
@@ -431,6 +552,7 @@ namespace STORAGE_Utils {
             j["stations"].push_back({
                 {"callsign",    s.callsign.s},
                 {"count",       s.count},
+                {"directCount", s.directCount},
                 {"lastRssi",    s.lastRssi},
                 {"lastSnr",     s.lastSnr},
                 {"rssiTotal",   s.rssiTotal},
@@ -441,7 +563,10 @@ namespace STORAGE_Utils {
                 {"lastDest",    s.lastDest.s},
                 {"lastSymbolTable", std::string(s.lastSymbolTable ? 1 : 0, s.lastSymbolTable)},
                 {"lastSymbol",      std::string(s.lastSymbol      ? 1 : 0, s.lastSymbol)},
-                {"lastPayloadType", std::string(s.lastPayloadType ? 1 : 0, s.lastPayloadType)}
+                {"lastPayloadType", std::string(s.lastPayloadType ? 1 : 0, s.lastPayloadType)},
+                {"hasPosition", s.hasPosition},
+                {"lastLat",     s.lastLat},
+                {"lastLon",     s.lastLon}
             });
         }
         std::ofstream f(STATS_FILE);
