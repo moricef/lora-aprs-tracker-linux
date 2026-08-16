@@ -67,6 +67,7 @@ static lv_obj_t *list_wlnk_global = nullptr;
 static lv_obj_t *list_contacts_global = nullptr;
 static lv_obj_t *list_frames_global = nullptr;
 static lv_obj_t *cont_stats_global = nullptr;
+static lv_obj_t *btn_delete_msgs_global = nullptr;
 static lv_obj_t *badge_aprs_unread = nullptr;
 static lv_obj_t *badge_wlnk_unread = nullptr;
 static int current_msg_type = 0; // 0 = APRS, 1 = Winlink, 2 = Contacts
@@ -104,6 +105,7 @@ static lv_obj_t *detail_msgbox = nullptr;
 // Delete confirmation
 static lv_obj_t *confirm_msgbox = nullptr;
 static int pending_delete_msg_index = -1;
+static String pending_delete_conversation_callsign = "";
 static bool msg_longpress_handled = false;
 static bool need_aprs_list_refresh = false;
 
@@ -215,6 +217,7 @@ static void refresh_conversation_messages();
 static void show_contact_edit_screen(const Contact *contact);
 static void show_message_detail(const char *msg);
 static void show_delete_confirmation(const char *message, int msg_index);
+static void update_delete_button_visibility();
 static void frame_item_clicked(lv_event_t *e);
 static void frames_tab_changed(lv_event_t *e);
 static void btn_back_clicked(lv_event_t *e);
@@ -331,8 +334,12 @@ void refreshUnreadBadges() {
 // =============================================================================
 
 static void do_confirm_delete() {
-    if (pending_delete_msg_index == -1) {
-        MSG_Utils::deleteFile(current_msg_type);
+    if (pending_delete_msg_index == -2) {
+        ESP_LOGI(TAG, "Deleting APRS conversation %s",
+                 pending_delete_conversation_callsign.c_str());
+        MSG_Utils::deleteConversation(pending_delete_conversation_callsign);
+    } else if (pending_delete_msg_index == -1) {
+        if (current_msg_type == 1) MSG_Utils::deleteFile(current_msg_type);
     } else {
         MSG_Utils::deleteMessageByIndex(current_msg_type, pending_delete_msg_index);
     }
@@ -343,6 +350,7 @@ static void confirm_yes_cb(lv_event_t *) {
     do_confirm_delete();
     if (confirm_msgbox) { lv_msgbox_close(confirm_msgbox); confirm_msgbox = nullptr; }
     pending_delete_msg_index = -1;
+    pending_delete_conversation_callsign = "";
     lv_timer_create([](lv_timer_t *t) {
         if (need_aprs_list_refresh) {
             if (list_aprs_global) populate_msg_list(list_aprs_global, 0);
@@ -357,6 +365,7 @@ static void confirm_yes_cb(lv_event_t *) {
 static void confirm_no_cb(lv_event_t *) {
     if (confirm_msgbox) { lv_msgbox_close(confirm_msgbox); confirm_msgbox = nullptr; }
     pending_delete_msg_index = -1;
+    pending_delete_conversation_callsign = "";
 }
 
 static void show_delete_confirmation(const char *message, int msg_index) {
@@ -421,6 +430,17 @@ static void conversation_item_clicked(lv_event_t *e) {
     ESP_LOGD(TAG, "Conversation clicked: %s", callsign);
     MSG_Utils::markConversationRead(String(callsign));
     create_conversation_screen(String(callsign));
+}
+
+static void conversation_item_longpress(lv_event_t *e) {
+    const char *callsign = (const char *)lv_event_get_user_data(e);
+    if (!callsign || callsign[0] == '\0')
+        return;
+
+    ESP_LOGD(TAG, "Conversation long-press: %s", callsign);
+    msg_longpress_handled = true;
+    pending_delete_conversation_callsign = String(callsign);
+    show_delete_confirmation("Delete this APRS conversation?", -2);
 }
 
 // =============================================================================
@@ -498,6 +518,8 @@ static void populate_msg_list(lv_obj_t *list, int type) {
                 set_list_button_font(btn, msg_body_font());
                 set_list_icon_color(btn, unread > 0 ? 0xff4444 : 0x000000);
                 lv_obj_add_event_cb(btn, conversation_item_clicked, LV_EVENT_CLICKED,
+                                    (void *)callsign_storage[i].c_str());
+                lv_obj_add_event_cb(btn, conversation_item_longpress, LV_EVENT_LONG_PRESSED,
                                     (void *)callsign_storage[i].c_str());
             }
         }
@@ -1428,15 +1450,17 @@ static void populate_stats(lv_obj_t *cont) {
                 snprintf(buf, sizeof(buf), "%u", (unsigned)s.count);
                 lv_table_set_cell_value(stats_table, row, 1, buf);
 
-                // RSSI (average)
-                float avgRssi = s.count > 0 ? (float)s.rssiTotal / s.count : 0.0f;
-                snprintf(buf, sizeof(buf), "%.1f", avgRssi);
-                lv_table_set_cell_value(stats_table, row, 2, buf);
-
-                // SNR (average)
-                float avgSnr = s.count > 0 ? s.snrTotal / s.count : 0.0f;
-                snprintf(buf, sizeof(buf), "%.1f", avgSnr);
-                lv_table_set_cell_value(stats_table, row, 3, buf);
+                // « -- » signale une station jamais reçue en direct : elle n'est pas
+                // dans le voisinage RF, et son niveau serait celui du digi.
+                if (s.directCount > 0) {
+                    snprintf(buf, sizeof(buf), "%.1f", (float)s.rssiTotal / s.directCount);
+                    lv_table_set_cell_value(stats_table, row, 2, buf);
+                    snprintf(buf, sizeof(buf), "%.1f", s.snrTotal / s.directCount);
+                    lv_table_set_cell_value(stats_table, row, 3, buf);
+                } else {
+                    lv_table_set_cell_value(stats_table, row, 2, "--");
+                    lv_table_set_cell_value(stats_table, row, 3, "--");
+                }
             }
         }
     }
@@ -1462,6 +1486,7 @@ static void msg_tab_changed(lv_event_t *e) {
     if (current_msg_type != (int)tab_idx) {
         current_msg_type = (int)tab_idx;
         ESP_LOGD(TAG, "Messages tab changed to %d", current_msg_type);
+        update_delete_button_visibility();
 
         if (current_msg_type == 1 && list_wlnk_global) {
             populate_msg_list(list_wlnk_global, 1);
@@ -1494,13 +1519,23 @@ static void frames_tab_changed(lv_event_t *e) {
 static void btn_delete_msgs_clicked(lv_event_t *e) {
     ESP_LOGI(TAG, "Delete all button pressed, type %d", current_msg_type);
 
-    if (current_msg_type >= 2) {
+    if (current_msg_type != 1) {
         return;
     }
 
-    const char *msg = (current_msg_type == 0) ? "Delete all APRS messages?"
-                                              : "Delete all Winlink mails?";
-    show_delete_confirmation(msg, -1);
+    show_delete_confirmation("Delete all Winlink mails?", -1);
+}
+
+static void update_delete_button_visibility() {
+    if (!btn_delete_msgs_global) {
+        return;
+    }
+
+    if (current_msg_type == 1) {
+        lv_obj_clear_flag(btn_delete_msgs_global, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(btn_delete_msgs_global, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 // =============================================================================
@@ -1699,6 +1734,7 @@ void createMsgScreen() {
 
     screen_msg = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen_msg, lv_color_hex(0x1a1a2e), 0);
+    current_msg_type = 0;
     // Title bar
     lv_obj_t *title_bar = lv_obj_create(screen_msg);
     lv_obj_set_size(title_bar, SCREEN_WIDTH, titleH);
@@ -1745,12 +1781,13 @@ void createMsgScreen() {
     lv_obj_center(lbl_add);
 
     // --- 3. Delete All button (Red) ---
-    lv_obj_t *btn_delete = lv_btn_create(title_bar);
-    lv_obj_set_size(btn_delete, 40, 25);
-    lv_obj_align(btn_delete, LV_ALIGN_RIGHT_MID, -5, 0);
-    lv_obj_set_style_bg_color(btn_delete, lv_color_hex(0xff4444), 0);
-    lv_obj_add_event_cb(btn_delete, btn_delete_msgs_clicked, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *lbl_delete = lv_label_create(btn_delete);
+    btn_delete_msgs_global = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_delete_msgs_global, 40, 25);
+    lv_obj_align(btn_delete_msgs_global, LV_ALIGN_RIGHT_MID, -5, 0);
+    lv_obj_set_style_bg_color(btn_delete_msgs_global, lv_color_hex(0xff4444), 0);
+    lv_obj_add_event_cb(btn_delete_msgs_global, btn_delete_msgs_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(btn_delete_msgs_global, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *lbl_delete = lv_label_create(btn_delete_msgs_global);
     lv_label_set_text(lbl_delete, LV_SYMBOL_TRASH);
     lv_obj_center(lbl_delete);
     
