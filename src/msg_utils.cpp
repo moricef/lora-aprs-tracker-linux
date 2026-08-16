@@ -470,6 +470,77 @@ namespace MSG_Utils {
         return true;
     }
 
+    bool deleteConversation(const String& callsign) {
+        String cleanCallsign = callsign;
+        cleanCallsign.trim();
+        if (cleanCallsign.length() == 0) {
+            ESP_LOGW(TAG, "Cannot delete conversation with empty callsign");
+            return false;
+        }
+
+        bool changed = false;
+        String filename = "/Messages/conversations/" + cleanCallsign + ".txt";
+        if (STORAGE_Utils::fileExists(filename)) {
+            STORAGE_Utils::removeFile(filename);
+            changed = true;
+        }
+
+        std::vector<String> ordered;
+        bool orderChanged = false;
+        File readFile = STORAGE_Utils::openFile("/Messages/conversations_order.txt", "r");
+        if (readFile) {
+            while (readFile.available()) {
+                String line = readFile.readStringUntil('\n');
+                line.trim();
+                if (line.isEmpty()) continue;
+                if (line == cleanCallsign) {
+                    orderChanged = true;
+                    continue;
+                }
+                ordered.push_back(line);
+            }
+            readFile.close();
+        }
+
+        if (orderChanged) {
+            STORAGE_Utils::removeFile("/Messages/conversations_order.txt");
+            if (!ordered.empty()) {
+                File writeFile = STORAGE_Utils::openFile("/Messages/conversations_order.txt", FILE_WRITE);
+                if (writeFile) {
+                    for (const auto& entry : ordered) writeFile.println(entry);
+                    writeFile.close();
+                } else {
+                    ESP_LOGW(TAG, "Failed to rewrite conversation order");
+                }
+            }
+            changed = true;
+        }
+
+        loadUnreadState();
+        bool unreadChanged = false;
+        for (auto it = unreadAPRSConversations.begin(); it != unreadAPRSConversations.end();) {
+            if (it->callsign == cleanCallsign) {
+                it = unreadAPRSConversations.erase(it);
+                unreadChanged = true;
+            } else {
+                ++it;
+            }
+        }
+
+        if (unreadChanged) {
+            saveUnreadAPRSState();
+            changed = true;
+        }
+
+        if (Config.notification.ledMessage && getUnreadMessagesCount() == 0) messageLed = false;
+
+        if (changed) notifyUnreadChanged();
+
+        ESP_LOGI(TAG, "Deleted conversation with %s: %s",
+                 cleanCallsign.c_str(), changed ? "done" : "not found");
+        return changed;
+    }
+
     bool deleteMessageFromConversation(const String& callsign, int index) {
         String filename = "/Messages/conversations/" + callsign + ".txt";
         if (!STORAGE_Utils::fileExists(filename)) return false;
