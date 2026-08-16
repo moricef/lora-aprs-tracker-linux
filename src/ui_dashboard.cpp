@@ -812,7 +812,7 @@ void updateLastRx() {
     for (size_t i = 0; i < entries.size() && i < 8; i++) {
         const DashboardRxEntry &e = entries[i];
         snprintf(line, sizeof(line), "\n#%s %-10.10s%6d%6.0f    %-9.9s#",
-                 e.isDirect ? "00ff00" : "ff8800",
+                 e.isDirect ? "00ff00" : "ffa726",
                  e.callsign.c_str(), e.rssi, e.snr,
                  e.rfTx.length() ? e.rfTx.c_str() : "?");
         text += line;
