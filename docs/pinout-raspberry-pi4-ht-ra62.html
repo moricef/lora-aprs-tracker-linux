@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pinout Raspberry Pi 4B ↔ HT-RA62 / SX1262</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #10151b;
+      --panel: #18212b;
+      --line: #324252;
+      --text: #edf3f8;
+      --muted: #aebdca;
+      --accent: #54d18b;
+      --spi: #56b4e9;
+      --ctrl: #e6a84b;
+      --gps: #c084fc;
+      --power: #e86a73;
+      --ground: #8b98a5;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #1c2934 0, var(--bg) 42rem);
+      color: var(--text);
+      font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0 64px; }
+    h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 3rem); line-height: 1.12; }
+    h2 { margin-top: 0; font-size: 1.35rem; }
+    p { color: var(--muted); }
+    code { color: #d8f3e4; }
+    .lead { max-width: 760px; font-size: 1.08rem; }
+    .warning {
+      margin: 26px 0;
+      padding: 15px 18px;
+      border: 1px solid #70434a;
+      border-left: 5px solid var(--power);
+      border-radius: 8px;
+      background: #291c21;
+      color: #ffd9dc;
+    }
+    .grid { display: grid; grid-template-columns: 1.3fr .9fr; gap: 22px; margin-top: 24px; }
+    .card { padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    th, td { padding: 11px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+    th { color: var(--muted); font-size: .82rem; text-transform: uppercase; letter-spacing: .05em; }
+    tr:last-child td { border-bottom: 0; }
+    .signal { font-weight: 750; }
+    .spi { color: var(--spi); }
+    .ctrl { color: var(--ctrl); }
+    .gps { color: var(--gps); }
+    .power { color: var(--power); }
+    .ground { color: var(--ground); }
+    .header { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 14px; }
+    .pin {
+      display: grid;
+      grid-template-columns: 2.2rem 1fr;
+      align-items: center;
+      min-height: 34px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #121a22;
+      font-size: .86rem;
+    }
+    .pin b { font-size: .78rem; color: var(--muted); }
+    .used { border-color: currentColor; font-weight: 700; }
+    .legend { display: flex; flex-wrap: wrap; gap: 13px; margin-top: 16px; color: var(--muted); font-size: .85rem; }
+    .dot { display: inline-block; width: .75rem; height: .75rem; margin-right: 5px; border-radius: 50%; background: currentColor; }
+    pre { overflow-x: auto; padding: 15px; border-radius: 8px; background: #0c1116; color: #d8f3e4; }
+    ol, ul { padding-left: 1.35rem; }
+    li + li { margin-top: .35rem; }
+    footer { margin-top: 26px; color: var(--muted); font-size: .88rem; }
+    @media (max-width: 780px) { .grid { grid-template-columns: 1fr; } }
+    @media print {
+      :root { color-scheme: light; --bg:#fff; --panel:#fff; --text:#111; --muted:#444; --line:#bbb; }
+      body { background: white; }
+      main { width: 100%; padding: 12mm; }
+      .card, .pin { background: white; }
+      .warning { background: #fff3f3; }
+      pre { background: #eee; color: #111; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Raspberry Pi 4B ↔ HT-RA62 / SX1262</h1>
+  <p class="lead">Câblage proposé pour le tracker LoRa APRS, utilisant le contrôleur <strong>SPI0</strong> du connecteur 40 broches. Les numéros GPIO indiqués sont les numéros <strong>BCM</strong>, pas les numéros physiques.</p>
+
+  <div class="warning"><strong>Attention :</strong> le HT-RA62 fonctionne en 3,3 V. Ne relier aucune de ses broches au 5 V du Raspberry Pi. Brancher une antenne 433 MHz adaptée avant toute émission.</div>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Table de câblage</h2>
+      <table>
+        <thead><tr><th>HT-RA62</th><th>Broche Pi</th><th>GPIO BCM</th><th>Fonction</th></tr></thead>
+        <tbody>
+          <tr><td class="signal power">3.3V</td><td>1 ou 17</td><td>—</td><td>Alimentation 3,3 V</td></tr>
+          <tr><td class="signal ground">GND</td><td>6</td><td>—</td><td>Masse commune</td></tr>
+          <tr><td class="signal spi">SCK</td><td>23</td><td>GPIO11</td><td>SPI0 SCLK</td></tr>
+          <tr><td class="signal spi">MISO</td><td>21</td><td>GPIO9</td><td>SPI0 MISO</td></tr>
+          <tr><td class="signal spi">MOSI</td><td>19</td><td>GPIO10</td><td>SPI0 MOSI</td></tr>
+          <tr><td class="signal spi">NSS / CS</td><td>24</td><td>GPIO8</td><td>SPI0 CE0</td></tr>
+          <tr><td class="signal ctrl">RESET / NRST</td><td>22</td><td>GPIO25</td><td>Sortie de contrôle</td></tr>
+          <tr><td class="signal ctrl">BUSY</td><td>18</td><td>GPIO24</td><td>Entrée d'état</td></tr>
+          <tr><td class="signal ctrl">DIO1</td><td>16</td><td>GPIO23</td><td>Entrée d'interruption</td></tr>
+          <tr><td class="signal">ANT</td><td>—</td><td>—</td><td>Antenne 433 MHz</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Connecteur du Pi 4B</h2>
+      <p>Vue du dessus, ports USB/Ethernet à droite. Seules les broches utilisées sont colorées.</p>
+      <div class="header" aria-label="Connecteur GPIO 40 broches">
+        <div class="pin power used"><b>1</b> 3.3V</div><div class="pin"><b>2</b> 5V — interdit</div>
+        <div class="pin"><b>3</b> GPIO2</div><div class="pin"><b>4</b> 5V — interdit</div>
+        <div class="pin"><b>5</b> GPIO3</div><div class="pin ground used"><b>6</b> GND</div>
+        <div class="pin"><b>7</b> GPIO4</div><div class="pin gps used"><b>8</b> GPIO14 · GPS RX</div>
+        <div class="pin ground used"><b>9</b> GND · GPS</div><div class="pin gps used"><b>10</b> GPIO15 · GPS TX</div>
+        <div class="pin"><b>11</b> GPIO17</div><div class="pin"><b>12</b> GPIO18</div>
+        <div class="pin"><b>13</b> GPIO27</div><div class="pin"><b>14</b> GND</div>
+        <div class="pin"><b>15</b> GPIO22</div><div class="pin ctrl used"><b>16</b> GPIO23 · DIO1</div>
+        <div class="pin power used"><b>17</b> 3.3V</div><div class="pin ctrl used"><b>18</b> GPIO24 · BUSY</div>
+        <div class="pin spi used"><b>19</b> GPIO10 · MOSI</div><div class="pin"><b>20</b> GND</div>
+        <div class="pin spi used"><b>21</b> GPIO9 · MISO</div><div class="pin ctrl used"><b>22</b> GPIO25 · RESET</div>
+        <div class="pin spi used"><b>23</b> GPIO11 · SCK</div><div class="pin spi used"><b>24</b> GPIO8 · CS</div>
+        <div class="pin"><b>25</b> GND</div><div class="pin"><b>26</b> GPIO7</div>
+        <div class="pin"><b>27</b> GPIO0</div><div class="pin"><b>28</b> GPIO1</div>
+        <div class="pin"><b>29</b> GPIO5</div><div class="pin"><b>30</b> GND</div>
+        <div class="pin"><b>31</b> GPIO6</div><div class="pin"><b>32</b> GPIO12</div>
+        <div class="pin"><b>33</b> GPIO13</div><div class="pin"><b>34</b> GND</div>
+        <div class="pin"><b>35</b> GPIO19</div><div class="pin"><b>36</b> GPIO16</div>
+        <div class="pin"><b>37</b> GPIO26</div><div class="pin"><b>38</b> GPIO20</div>
+        <div class="pin"><b>39</b> GND</div><div class="pin"><b>40</b> GPIO21</div>
+      </div>
+      <div class="legend">
+        <span class="spi"><i class="dot"></i>SPI</span>
+        <span class="ctrl"><i class="dot"></i>Contrôle</span>
+        <span class="gps"><i class="dot"></i>GPS UART</span>
+        <span class="power"><i class="dot"></i>3,3 V</span>
+        <span class="ground"><i class="dot"></i>Masse</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top:22px">
+    <h2>Module GPS UART 3,3 V</h2>
+    <p>Les lignes série sont croisées : la sortie TX du GPS va vers l'entrée RX du Raspberry Pi, et inversement.</p>
+    <table>
+      <thead><tr><th>Module GPS</th><th>Broche Pi</th><th>GPIO BCM</th><th>Fonction côté Pi</th></tr></thead>
+      <tbody>
+        <tr><td class="signal power">VCC 3.3V</td><td>1 ou 17</td><td>—</td><td>Alimentation 3,3 V</td></tr>
+        <tr><td class="signal ground">GND</td><td>9</td><td>—</td><td>Masse commune</td></tr>
+        <tr><td class="signal gps">GPS TX</td><td>10</td><td>GPIO15</td><td>UART RXD</td></tr>
+        <tr><td class="signal gps">GPS RX</td><td>8</td><td>GPIO14</td><td>UART TXD</td></tr>
+      </tbody>
+    </table>
+    <div class="warning"><strong>Niveau logique :</strong> le GPS et les GPIO du Raspberry Pi utilisent 3,3 V. Ne jamais injecter un signal série 5 V dans GPIO14 ou GPIO15.</div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Configuration Raspberry Pi OS</h2>
+      <ol>
+        <li>Activer SPI avec <code>sudo raspi-config</code> → Interface Options → SPI.</li>
+        <li>Redémarrer avec <code>sudo reboot</code>.</li>
+        <li>Vérifier la présence de <code>/dev/spidev0.0</code>.</li>
+        <li>Ajouter l'utilisateur aux groupes <code>spi</code> et <code>gpio</code>.</li>
+      </ol>
+      <pre>ls -l /dev/spidev0.0
+sudo usermod -aG spi,gpio "$USER"</pre>
+    </div>
+    <div class="card">
+      <h2>Valeurs côté tracker</h2>
+      <pre>#define PIN_CS    8
+#define PIN_DIO1 23
+#define PIN_RST  25
+#define PIN_BUSY 24</pre>
+      <p>Le code actuel contient encore les numéros GPIO de l'Odroid C2 dans <code>src/lora_utils.cpp</code>. Ils doivent être remplacés ou rendus configurables avant une exécution sur Raspberry Pi.</p>
+    </div>
+  </section>
+
+  <footer>Document de câblage du projet LoRa APRS Tracker Linux — Raspberry Pi 4B et module HT-RA62/SX1262.</footer>
+</main>
+</body>
+</html>
